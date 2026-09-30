@@ -195,6 +195,8 @@ def fill_file(root: Page | Frame, f: LiveField, path: Path, human: Human) -> str
     trigger = root.locator(f.trigger) if f.trigger else None
     human.upload(loc, path, trigger=trigger)
     names = loc.evaluate("e => [...(e.files || [])].map(f => f.name)")
+    if names and names != [path.name]:
+        raise FillError(f"the upload holds {names!r}, not exactly the approved file")
     if path.name not in names:
         # some widgets move the file elsewhere and reset the input; accept if the name shows up
         if path.name not in dom.page_text(root, 50000):

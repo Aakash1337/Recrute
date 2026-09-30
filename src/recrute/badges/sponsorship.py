@@ -184,8 +184,14 @@ _CITIZEN_ALTERNATIVE = re.compile(
     r"|\bor\s+" + _w(3) + r"(?:those|individuals|persons)\s+" + _w(3) + r"authori[sz]ed",
     re.I,
 )
-_BOILERPLATE = re.compile(r"discriminat|without regard|regardless of|protected|equal (?:employment"
-                          r"|opportunity)|immigration reform and control act|e-verify", re.I)
+# Nondiscrimination / EEO language (which mentions citizenship without requiring it). Only
+# the phrases themselves: "protected INFORMATION" or a separate "we participate in E-Verify"
+# statement must not hide a real requirement (independent statements are also evaluated on
+# their own, see eligibility_flags).
+_BOILERPLATE = re.compile(
+    r"discriminat|without regard|regardless of|protected (?:veteran|class|status|characteristic|"
+    r"categor|group|by law)|legally protected|equal (?:employment|opportunity)|"
+    r"immigration reform and control act|e-verify", re.I)
 
 _NON_US_PERSON_OK = re.compile(r"\bnon[- ]?(?:u\.?\s?s\.?|united states)\s+persons?\b|"
                                r"\bregardless of (?:citizenship|nationality|u\.?s\.? person)",
@@ -295,6 +301,15 @@ def _clearance_clause(s: str) -> bool:
 
 
 def _citizenship_required(s: str) -> bool:
+    """Boilerplate is judged on the clause that mentions citizenship: "We participate in
+    E-Verify and U.S. citizenship is required" still requires citizenship."""
+    parts = [p for p in re.split(r";|,?\s+(?:and|but|however|while)\s+", s) if p.strip()]
+    if len(parts) > 1 and _BOILERPLATE.search(s):
+        return any(_citizenship_clause(p) for p in parts if _US_CITIZEN.search(p))
+    return _citizenship_clause(s)
+
+
+def _citizenship_clause(s: str) -> bool:
     if not _US_CITIZEN.search(s) or _BOILERPLATE.search(s):
         return False
     if _CITIZEN_ALTERNATIVE.search(s) or _all_mentions_negated(s, _US_CITIZEN):

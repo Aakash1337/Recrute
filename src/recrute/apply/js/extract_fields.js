@@ -246,7 +246,7 @@
     if (!shown) {
       // Hidden by CSS/aria but enabled: the browser still SUBMITS its value. We can't operate
       // it, so any value it holds must be one you approved (checked before submit), else CP3.
-      const v = isFile ? (el.files && el.files.length ? el.files[0].name : '')
+      const v = isFile ? [...(el.files || [])].map(f => f.name).join(', ')
         : (el.tagName === 'SELECT' ? [...el.selectedOptions].filter(o => o.value !== '')
              .map(o => o.text.trim()).join(' | ') : el.value);
       // native forms only submit NAMED controls; and a hidden input backing a visible widget in
@@ -273,14 +273,16 @@
         const grp = el.closest('[role="group"][aria-required="true"]');
         if (grp) rec.required = true;
       }
-      // some widgets upload, then reset the native input and show the attachment instead
-      let attached = el.files && el.files.length ? el.files[0].name : null;
-      if (!attached) {
+      // EVERY attached file (an extra one must never ride along with the approved upload);
+      // some widgets upload, then reset the native input and show the attachments instead
+      let names = [...(el.files || [])].map(f => f.name);
+      if (!names.length) {
         const c = container(el);
         const box = c ? c.box : el.parentElement;
-        const m = box && (box.innerText || '').match(/([\w\-. ()]+\.(?:pdf|docx?|txt|rtf|odt))\b/i);
-        if (m) attached = m[1].trim();
+        const ms = box ? [...(box.innerText || '').matchAll(/([\w\-. ()]+\.(?:pdf|docx?|txt|rtf|odt))\b/gi)] : [];
+        names = [...new Set(ms.map(m => m[1].trim()))];
       }
+      const attached = names.length > 1 ? names : (names[0] || null);
       Object.assign(rec, {type: 'file', widget: 'file', trigger: trigger(el), current: attached});
     } else if (el.tagName === 'SELECT') {
       const opts = [...el.options].filter(o => o.value !== '' && !o.disabled);

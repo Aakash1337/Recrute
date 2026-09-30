@@ -358,15 +358,19 @@ def notify(session, title: str, body: str, priority: str = "default") -> list:
 
 
 def daily_digest(ctx) -> dict:
-    from recrute.notify.digest import build_digest, collect_stats
+    from recrute.notify import digest
 
     with ctx.session() as s:
         cfg = get_setting(s, "notify")
-        now = datetime.now().astimezone()
+        # the DST-aware system zone: astimezone()'s fixed offset would put the day boundary an
+        # hour off on DST-change days
+        zone = digest.tzlocal()
+        now = datetime.now(zone)
         today = now.date().isoformat()
         if now.hour < int(cfg["digest_hour"]) or get_state(s, "last_digest") == today:
             return {"skipped": "not due"}
-        stats = collect_stats(s, tz=now.tzinfo)
+        stats = digest.collect_stats(s, tz=zone)
+        build_digest = digest.build_digest
         title, body = build_digest(stats, base_url=cfg["ui_base_url"] or None)
         set_state(s, "last_digest_text", {"date": today, "title": title, "body": body})
         if cfg["backend"] == "ui":

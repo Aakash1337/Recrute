@@ -143,3 +143,12 @@ def test_eu_lever_capture_keeps_region():
 
     ref = detect_ats("https://jobs.eu.lever.co/acme/1234abcd-0000-1111-2222-333344445555")
     assert ref is not None and ref.ats == "lever" and ref.token == "eu:acme"
+
+
+def test_linkedin_capture_uses_job_scoped_company_apply_url():
+    src = Path(__file__).parent / "fixtures" / "sources" / "linkedin_session_view_external.html"
+    url = "https://www.linkedin.com/jobs/view/4100000001/"
+    job = raw_job_from_capture(url, src.read_text(encoding="utf-8"), "ignored")
+    assert job is not None
+    assert (job.ats, job.ats_token, job.ats_job_id) == ("greenhouse", "acmesecurity", "7012345")
+    assert job.apply_url.startswith("https://boards.greenhouse.io/acmesecurity/jobs/7012345")

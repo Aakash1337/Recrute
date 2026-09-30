@@ -1061,3 +1061,41 @@ def test_greenhouse_keeps_populated_paste_alternatives():
     kept = GreenhouseAdapter().postprocess(fields)
     assert [f.id for f in kept] == ["resume_text"]
     assert "resume_text" in verify_fields(kept, Packet(job_id=1), {})
+
+
+@pytest.mark.browser
+def test_receipt_html_never_contains_passwords(context):
+    from recrute.apply import dom
+
+    page = context.new_page()
+    page.set_content("""<form><input name="user" value="ada">
+      <input type="password" name="pw" value="CANARY-attr-secret">
+      <input id="typed" type="password" name="pw2">
+      <input autocomplete="one-time-code" name="otp" value="CANARY-otp"></form>""")
+    page.fill("#typed", "CANARY-typed-secret")
+    html = dom.serialize_html(page)
+    assert "CANARY" not in html and 'value="ada"' in html
+    page.close()
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("hidden", [False, True])
+def test_extra_attachment_in_multiple_file_input_is_caught(context, tmp_path, hidden):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    approved, private = tmp_path / "approved.pdf", tmp_path / "private.pdf"
+    approved.write_bytes(b"%PDF a")
+    private.write_bytes(b"%PDF p")
+    page = context.new_page()
+    style = ' style="display:none"' if hidden else ""
+    page.set_content(f"""<form><label for="cv">Resume</label>
+      <input type="file" id="cv" name="cv" multiple{style}></form>""")
+    page.set_input_files("#cv", [str(approved), str(private)])
+    fields = dom.extract_fields(page)
+    f = next(x for x in fields if x.id == "cv")
+    assert "private.pdf" in (f.current if isinstance(f.current, str) else " ".join(f.current))
+    packet = Packet(job_id=1, resume_pdf=str(approved),
+                    answers=[FormAnswer(question_id="cv", value="resume")])
+    assert "cv" in verify_fields(fields, packet, {"resume": approved})
+    page.close()

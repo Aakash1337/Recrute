@@ -28,6 +28,8 @@ class IngestStats:
     updated: int = 0
     merged: int = 0  # same job seen on another source
     new_job_ids: list[int] = field(default_factory=list)
+    # the job each input resolved to (new, updated or merged), in input order
+    job_ids: list[int] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {"new": self.new, "updated": self.updated, "merged": self.merged}
@@ -281,6 +283,7 @@ def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
         src.seen_at = now
         session.add(src)
     session.flush()
+    stats.job_ids.append(job.id)
 
 
 def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
@@ -291,7 +294,8 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
         # inserted the same job/company/source between our lookup and insert, the uniqueness
         # conflict is retried once, which then finds and merges the winner's row.
         for attempt in (1, 2):
-            snap = (stats.new, stats.updated, stats.merged, len(stats.new_job_ids))
+            snap = (stats.new, stats.updated, stats.merged, len(stats.new_job_ids),
+                    len(stats.job_ids))
             try:
                 with session.begin_nested():
                     _ingest_one(session, raw, stats, now)
@@ -299,6 +303,7 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
             except IntegrityError:
                 stats.new, stats.updated, stats.merged = snap[:3]
                 del stats.new_job_ids[snap[3]:]
+                del stats.job_ids[snap[4]:]
                 if attempt == 2:
                     raise
     session.commit()

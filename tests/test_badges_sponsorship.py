@@ -408,3 +408,21 @@ def test_coordination_does_not_invent_requirements(text):
         assert "clearance_required" in flags
     else:
         assert not flags
+
+
+@pytest.mark.parametrize("text", [
+    "U.S. citizenship is required to access protected information.",
+    "We participate in E-Verify and U.S. citizenship is required for this role.",
+])
+def test_citizenship_requirement_next_to_boilerplate_words(text):
+    from recrute.badges.sponsorship import eligibility_flags
+
+    assert "citizenship_required" in eligibility_flags(text)
+
+
+def test_eeo_boilerplate_still_ignored():
+    from recrute.badges.sponsorship import eligibility_flags
+
+    assert not eligibility_flags("We do not discriminate on the basis of citizenship, "
+                                 "protected veteran status or any other legally protected "
+                                 "characteristic.")

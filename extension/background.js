@@ -49,6 +49,11 @@ async function capturePage(tabId) {
           'video, audio, picture source, link, template'
         ).forEach((e) => e.remove());
         root.querySelectorAll("[style]").forEach((e) => e.removeAttribute("style"));
+        // never send secrets: password / one-time-code fields lose any value attribute
+        root.querySelectorAll(
+          'input[type="password" i], input[autocomplete~="current-password"], ' +
+          'input[autocomplete~="new-password"], input[autocomplete~="one-time-code"]'
+        ).forEach((e) => { e.removeAttribute("value"); e.value = ""; });
         return root;
       };
       const full = strip(document.documentElement.cloneNode(true)).outerHTML;

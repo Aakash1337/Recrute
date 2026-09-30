@@ -285,9 +285,20 @@ def _sel_text(soup: BeautifulSoup, *selectors: str) -> str | None:
     return None
 
 
-def _linkedin_apply(soup: BeautifulSoup) -> tuple[bool | None, str | None]:
-    """(is_easy_apply, external apply URL if exposed)."""
+def _linkedin_apply(soup: BeautifulSoup, job_id: str | None = None
+                    ) -> tuple[bool | None, str | None]:
+    """(is_easy_apply, external apply URL if exposed). The page's embedded records for THIS
+    job (logged-in pages: companyApplyUrl, the same parser the session source uses) come first,
+    then the guest page's code#applyUrl, then the top-card button label."""
     external: str | None = None
+    if job_id:
+        from recrute.sources.linkedin_session import job_apply_metadata
+
+        easy, url = job_apply_metadata(soup, job_id)
+        if easy:
+            return True, None
+        if url:
+            return False, unwrap_redirect(url)
     code = soup.find("code", id="applyUrl")
     if code is not None:
         raw = code.string or code.get_text() or ""
@@ -336,7 +347,7 @@ def _from_linkedin(url: str, soup: BeautifulSoup, jp: dict[str, Any] | None) -> 
         ".job-details-jobs-unified-top-card__job-insight"))
     emp = base.employment_type if base and base.employment_type else _employment_from_text(
         criteria)
-    easy, external = _linkedin_apply(soup)
+    easy, external = _linkedin_apply(soup, job_id)
     canonical = linkedin_job_url(job_id) if job_id else url
     if easy:
         ats, ats_token, ats_job_id, apply_url = "linkedin", None, job_id, canonical

@@ -499,9 +499,8 @@ async def api_capture(request: Request):
         return JSONResponse({"ok": False, "error": "not a job page"}, status_code=422)
     with session_scope() as s:
         stats = ingest(s, [raw])
-        from recrute.pipeline.normalize import canonical_url
-
-        job = s.exec(select(Job).where(
-            Job.canonical_url == canonical_url(raw.apply_url or raw.url))).first()
-        return {"ok": True, "job_id": job.id if job else None, "new": stats.new == 1}
+        # the job ingestion actually resolved this capture to (a merge may have matched a job
+        # stored under another key)
+        job_id = stats.job_ids[0] if stats.job_ids else None
+        return {"ok": True, "job_id": job_id, "new": stats.new == 1}
 

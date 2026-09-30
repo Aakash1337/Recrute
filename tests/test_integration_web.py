@@ -722,3 +722,17 @@ def test_failed_regeneration_can_be_rebuilt(engine):
         assert s.get(Job, job_id).status == JobStatus.SHORTLISTED
         assert app.packet and app.approved_at is None
         assert "packet_failures" not in (app.outcome or {})
+
+
+def test_capture_api_returns_job_id_for_identifier_keyed_postings(client):
+    from recrute.web.app import access_token
+
+    page = JOB_PAGE.replace('"title":"Security Analyst",',
+                            '"title":"Security Analyst","identifier":{"@type":"PropertyValue",'
+                            '"name":"Globex","value":"REQ-123"},')
+    h = {"X-Recrute-Token": access_token()}
+    body = {"url": "https://globex.example/jobs/security-engineer", "html": page, "title": "x"}
+    first = client.post("/api/capture", json=body, headers=h).json()
+    assert first["ok"] and first["job_id"] is not None
+    again = client.post("/api/capture", json=body, headers=h).json()
+    assert again["job_id"] == first["job_id"]

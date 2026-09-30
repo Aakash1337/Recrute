@@ -171,3 +171,32 @@ def test_safe_error_hides_yaml_source_lines():
     msg, tb = safe_error(err), safe_traceback(err)
     assert "canary" not in msg and "canary" not in tb  # ...we don't
     assert "line 2" in msg
+
+
+def test_daily_digest_uses_dst_aware_zone(engine, monkeypatch):
+    from datetime import datetime
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+
+    from recrute import tasks
+    from recrute.notify import digest
+    from recrute.settings import set_setting
+
+    ny = ZoneInfo("America/New_York")
+    monkeypatch.setattr(digest, "tzlocal", lambda: ny)
+    seen = {}
+    real = digest.collect_stats
+
+    def spy(session, **kw):
+        seen["tz"] = kw.get("tz")
+        return real(session, **kw)
+
+    monkeypatch.setattr(digest, "collect_stats", spy)
+    with Session(engine) as s:
+        set_setting(s, "notify", {"backend": "ui", "digest_hour": 0})
+    tasks.daily_digest(SimpleNamespace(session=lambda: Session(engine)))
+    tz = seen["tz"]
+    # 2026-11-01 (US fallback): midnight is EDT (-4), noon is EST (-5)
+    assert tz.utcoffset(datetime(2026, 11, 1, 0, 30)) != tz.utcoffset(datetime(2026, 11, 1, 12))
+    start_local, start, _ = digest._day_bounds(datetime(2026, 11, 1, 12, tzinfo=ny), tz)
+    assert start.hour == 4  # 00:00 EDT == 04:00 UTC
