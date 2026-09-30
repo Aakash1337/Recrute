@@ -197,6 +197,8 @@ def _education_value(kind: str, q: FormQuestion, profile: Profile) -> str | None
     if ed is None:
         return None
     value = getattr(ed, field)
+    if kind == "gpa":
+        return _gpa_on_scale(value, f"{q.label} {q.description}")
     if kind == "grad_date" and re.search(r"\byear\b", f"{q.label} {q.description}", re.I):
         m = re.search(r"(19|20)\d{2}", value or "")
         return m.group(0) if m else None
@@ -214,6 +216,27 @@ def _degree_value(q: FormQuestion, profile: Profile) -> str | None:
         ed = education_for(q, profile, "degree")
         return ed.degree if ed is not None and _completed(ed) else None
     return highest_completed_degree(profile)
+
+
+_SCALE_RE = re.compile(r"(?:out of|on an?|scale of|/)\s*(\d+(?:\.\d+)?)"
+                       r"(?:\s*(?:-?point)?\s*scale)?|(\d+(?:\.\d+)?)\s*(?:-?point)?\s*scale",
+                       re.I)
+
+
+def _gpa_on_scale(value: str | None, question: str) -> str | None:
+    """The GPA only when it's known to be on the scale the question asks for ("GPA (on a 4.0
+    scale)"): a profile GPA without a stated scale, or on another scale, is left to you (no
+    conversions are ever invented)."""
+    if not value:
+        return None
+    asked = _SCALE_RE.search(question)
+    if not asked:
+        return value
+    want = float(asked.group(1) or asked.group(2))
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(?:/|out of)\s*(\d+(?:\.\d+)?)\s*", value)
+    if m is None or float(m.group(2)) != want:
+        return None
+    return m.group(1)
 
 
 def profile_answer(q: FormQuestion, profile: Profile) -> FormAnswer | None:

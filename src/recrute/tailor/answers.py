@@ -219,7 +219,9 @@ def _add_answer_locked(path: Path, key: str, text: str) -> str:
             candidate += "\n"
         try:
             parsed = yaml.safe_load(candidate) or {}
-            if (parsed.get("common") or {}).get(key) == text:
+            # the WHOLE file must parse to exactly the old data plus the new entry (an inline
+            # `common: {...}` mapping would otherwise be shadowed by an appended block)
+            if parsed == {**data, "common": {**common, key: text}}:
                 new_text = candidate
         except yaml.YAMLError:
             pass

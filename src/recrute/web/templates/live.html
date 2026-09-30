@@ -38,7 +38,7 @@ in the box to type. Press <b>Done</b> when you've finished (e.g. after submittin
     return new Promise(done => {
       img.onload = () => {
         const old = shownUrl; shownUrl = url; revoke(old);
-        window.__frame = {...meta, shownAt: Date.now()}; done();
+        window.__frame = {...meta, shownAt: meta.capturedAt}; done();
       };
       img.onerror = () => { revoke(url); window.__frame = null; done(); };
       img.src = url;
@@ -49,7 +49,8 @@ in the box to type. Press <b>Done</b> when you've finished (e.g. after submittin
       const r = await fetch('/live/frame', {cache: 'no-store'});
       if (!r.ok) { window.__frame = null; return; }
       const meta = {session: r.headers.get('X-Live-Session'),
-                    width: +r.headers.get('X-Live-Width'), height: +r.headers.get('X-Live-Height')};
+                    width: +r.headers.get('X-Live-Width'), height: +r.headers.get('X-Live-Height'),
+                    capturedAt: Date.now() - 1000 * (+r.headers.get('X-Live-Age') || 0)};
       const blob = await r.blob();
       if (stopped) return;
       await show(URL.createObjectURL(blob), meta);

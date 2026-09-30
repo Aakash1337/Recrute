@@ -31,6 +31,7 @@ ALLOWED_KEYS = {"Enter", "Tab", "Backspace", "Escape", "ArrowDown", "ArrowUp", "
 # session id -> queued input events. In memory only (see module docstring).
 _QUEUES: dict[str, deque[dict[str, Any]]] = {}
 _QLOCK = threading.Lock()
+MAX_INPUT_AGE = 15.0  # seconds an input event may wait before it's replayed
 NO_LOCAL_WORKER = ("remote input needs the worker in the web server's process: run "
                    "`recrute serve --worker`")
 
@@ -64,8 +65,11 @@ def enqueue(paths: Paths, event: dict[str, Any]) -> None:
     session = active_session(paths)
     if not session or event.get("session") != session:
         raise ValueError("no matching live session (it ended or changed); reload the page")
+    info = frame_info(paths)
+    if not info or not info.get("fresh") or info.get("session") != session:
+        raise ValueError("the live view is not current (screenshots stopped); wait for it")
     kind = event.get("type")
-    clean: dict[str, Any] = {"type": kind, "session": session}
+    clean: dict[str, Any] = {"type": kind, "session": session, "at": time.time()}
     if kind == "click":
         clean["x"], clean["y"] = float(event["x"]), float(event["y"])
     elif kind == "type":
@@ -161,6 +165,8 @@ def apply_inputs(paths: Paths, page) -> bool:
         if queue is not None:
             queue.clear()
     for ev in events:
+        if time.time() - float(ev.get("at") or 0) > MAX_INPUT_AGE:
+            continue  # queued too long ago (the page may have changed since): dropped
         if done or not session or ev.get("session") != session:
             continue  # after Done, or meant for another hand-off: dropped, never replayed
         try:

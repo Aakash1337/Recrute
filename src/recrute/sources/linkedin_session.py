@@ -376,8 +376,11 @@ class LinkedInSessionSource:
                  page_factory: Callable[[], AbstractContextManager[PageLike]] | None = None,
                  sleep: Callable[[float], None] = time.sleep,
                  rng: random.Random | None = None,
-                 now: Callable[[], datetime] = datetime.now):
+                 now: Callable[[], datetime] = datetime.now, query_cursor: int = 0):
         self.budget = budget or SessionBudget()
+        # position in the query list, advanced by searches actually made and kept by the
+        # caller across sessions and days: every configured query comes round in turn
+        self.query_cursor = query_cursor
         self.seen_ids = seen_ids if seen_ids is not None else set()
         self.per_session_searches = per_session_searches
         self.per_session_views = per_session_views
@@ -421,9 +424,7 @@ class LinkedInSessionSource:
         qs = self.queries or [q for _, q in ctx.criteria.all_search_queries()]
         if not qs:
             return []
-        # Rotate through the query list across sessions and days.
-        offset = (self.now().toordinal() * self.budget.max_searches
-                  + self.budget.searches_used) % len(qs)
+        offset = self.query_cursor % len(qs)
         return qs[offset:] + qs[:offset]
 
     def _search_url(self, q: str, ctx: SourceContext) -> str:
@@ -457,6 +458,7 @@ class LinkedInSessionSource:
                     break
                 self.budget.searches_used += 1
                 html = self._visit(page, self._search_url(q, ctx))
+                self.query_cursor += 1
                 for c in parse_search_page(html):
                     if c.job_id not in self.seen_ids:
                         cards.setdefault(c.job_id, c)

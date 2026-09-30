@@ -178,17 +178,38 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
             else adapter_for(job, router=ctx.router)
         if suspension(session, adapter.name, datetime.now(UTC)) is not None:
             continue  # the account kill switch applies to assisted fills too; request kept
-        # recorded BEFORE any browser work, like a scheduled attempt: the assisted hand-off
-        # holds today's global and site cap slots (see scheduler.day_counts) even if the
-        # worker dies mid-fill
-        outcome_now = {k: v for k, v in app.outcome.items() if k != "assist_requested"}
-        outcome_now["details"] = {**(outcome_now.get("details") or {}),
-                                  "attempt_started_at": datetime.now(UTC).isoformat(),
-                                  "handoff_reservation": True}
-        app.outcome = outcome_now
-        app.attempts = (app.attempts or 0) + 1
-        session.add(app)
-        session.commit()
+        # Caps apply to assisted fills too. Check + reservation happen under the scheduler
+        # lease, so no scheduled run can take the same slot in between.
+        from recrute.apply.scheduler import DEFAULT_LEASE_TTL, cap_block_reason, default_owner
+        from recrute.apply.state import Lease
+
+        lease = Lease(session.get_bind(), default_owner(), DEFAULT_LEASE_TTL,
+                      lambda: datetime.now().astimezone())
+        if not lease.acquire():
+            return None  # a scheduled run is in progress; the request is kept
+        try:
+            session.refresh(app)
+            if reason := cap_block_reason(session, datetime.now().astimezone(), app_id=app.id,
+                                          job=job, channel=app.channel):
+                app.outcome = {**app.outcome, "assist_deferred": reason}  # request kept
+                session.add(app)
+                session.commit()
+                continue
+            # recorded BEFORE any browser work, like a scheduled attempt: the assisted
+            # hand-off holds today's cap slots even if the worker dies mid-fill
+            now_iso = datetime.now(UTC).isoformat()
+            outcome_now = {k: v for k, v in app.outcome.items()
+                           if k not in ("assist_requested", "assist_deferred")}
+            prior = outcome_now.get("details") or {}
+            outcome_now["details"] = {**prior, "last_attempt_at": now_iso,
+                                      "attempt_started_at": prior.get("attempt_started_at")
+                                      or now_iso, "handoff_reservation": True}
+            app.outcome = outcome_now
+            app.attempts = (app.attempts or 0) + 1
+            session.add(app)
+            session.commit()
+        finally:
+            lease.release()
         files = {k: v for k, v in (("resume", app.resume_path),
                                    ("cover_letter", app.cover_letter_path)) if v}
         outcome = apply_job(job, Packet.model_validate(app.packet), mode="fill_and_pause",
@@ -224,7 +245,7 @@ def _record_assist(session: Session, app: Application, outcome) -> None:
                              "submit_attempted": bool(prior_details.get("submit_attempted")
                                                       or details.get("submit_attempted")),
                              "handoff_reservation": True}
-        for key in ("attempted_at", "attempt_started_at"):
+        for key in ("attempted_at", "attempt_started_at", "last_attempt_at"):
             if prior_details.get(key):
                 merged["details"][key] = prior_details[key]
     app.outcome = merged

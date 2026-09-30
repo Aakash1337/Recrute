@@ -787,3 +787,31 @@ def test_company_specific_help_text_answers_are_not_banked(paths, monkeypatch):
     packets._save_to_bank(Job(id=1, title="Analyst", url="u"), packet)
     assert load_answer_bank(paths).common == {}
     assert match_question(question, load_answer_bank(paths)) is None  # nothing reused elsewhere
+
+
+def test_add_answer_keeps_inline_common_mapping(paths):
+    answers_path(paths).write_text(
+        "contact: {full_name: Ada}\ncommon: {old_answer: Previously approved text}\n",
+        encoding="utf-8")
+    add_answer(paths, "New question", "New text")
+    bank = load_answer_bank(paths)
+    assert bank.common == {"old_answer": "Previously approved text", "new_question": "New text"}
+    assert bank.contact.full_name == "Ada"
+
+
+@pytest.mark.parametrize("gpa,label,desc,expected", [
+    ("8.5", "GPA (on a 4.0 scale)", "", None),
+    ("8.5/10", "GPA", "Please report your GPA out of 4.0", None),
+    ("3.8", "GPA (on a 4.0 scale)", "", None),       # scale unknown: you confirm it
+    ("3.8/4.0", "GPA (on a 4.0 scale)", "", "3.8"),
+    ("3.8", "GPA", "", "3.8"),                        # no scale asked: as before
+])
+def test_gpa_scale_qualifiers(gpa, label, desc, expected):
+    from recrute.schemas import Education, FormQuestion, Profile
+    from recrute.tailor.answer_questions import profile_answer
+
+    p = Profile(name="Ada", education=[Education(id="e1", school="Tech U",
+                                                 degree="Bachelor of Science", end="2021",
+                                                 gpa=gpa)])
+    a = profile_answer(FormQuestion(id="g", label=label, description=desc), p)
+    assert (a.value if a else None) == expected

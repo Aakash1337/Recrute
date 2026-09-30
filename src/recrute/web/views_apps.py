@@ -1,6 +1,7 @@
 """Packets (CP2), applications (CP3/tracking), inbox, companies, profile, capture API, files."""
 
 import threading
+import time
 from typing import Annotated
 
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -80,8 +81,8 @@ def live_frame():
     session = live.active_session(paths)
     # only frames of the ACTIVE session; the frame carries its session id + size, so input
     # the page sends is bound to exactly the picture you're looking at
-    if not info or not session or info.get("session") != session:
-        raise HTTPException(404)
+    if not info or not session or info.get("session") != session or not info.get("fresh"):
+        raise HTTPException(404)  # (an expired frame: screenshots stopped; don't act on it)
     f = live.live_dir(paths) / "frame.jpg"
     try:
         data = f.read_bytes()  # read at once: keeps the file open for the shortest time
@@ -90,7 +91,10 @@ def live_frame():
     return Response(data, media_type="image/jpeg", headers={
         "Cache-Control": "no-store", "X-Live-Session": session,
         "X-Live-Width": str(info.get("width") or ""),
-        "X-Live-Height": str(info.get("height") or "")})
+        "X-Live-Height": str(info.get("height") or ""),
+        # how old the picture is: the page's input guard counts from the capture, not from
+        # when the image happened to load
+        "X-Live-Age": f"{max(0.0, time.time() - float(info.get('at') or 0)):.3f}"})
 
 
 @router.get("/live/status", response_class=HTMLResponse)

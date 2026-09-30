@@ -3,10 +3,23 @@ import pytest
 HX = {"HX-Request": "true"}
 
 
+def fresh_frame(paths, sid):
+    """What the worker publishes every second while a hand-off is live."""
+    import json
+    import time
+
+    from recrute import live
+
+    (live.live_dir(paths) / "frame.json").write_text(json.dumps(
+        {"url": "https://x", "width": 800, "height": 600, "at": time.time(), "session": sid}),
+        encoding="utf-8")
+
+
 def test_live_queue_roundtrip(paths):
     from recrute import live
 
     sid = live.start_session(paths)
+    fresh_frame(paths, sid)
     live.enqueue(paths, {"type": "click", "x": "10", "y": "20", "session": sid})
     live.enqueue(paths, {"type": "type", "text": "hello", "session": sid})
     live.enqueue(paths, {"type": "key", "key": "Enter", "session": sid})
@@ -192,6 +205,7 @@ def test_typed_input_never_touches_the_disk(paths):
     from recrute import live
 
     sid = live.start_session(paths)
+    fresh_frame(paths, sid)
     live.enqueue(paths, {"type": "type", "text": "CANARY-p4ssw0rd", "session": sid})
     for f in paths.data.rglob("*"):
         if f.is_file():
@@ -213,7 +227,51 @@ def test_remote_input_without_in_process_worker_is_refused(paths):
     from recrute import live
 
     sid = live.start_session(paths)
+    fresh_frame(paths, sid)
     live._QUEUES.clear()  # as seen from a web server whose worker is another process
     with pytest.raises(ValueError, match="serve --worker"):
         live.enqueue(paths, {"type": "click", "x": 1, "y": 1, "session": sid})
     live.clear(paths)
+
+
+def test_input_refused_and_dropped_when_screenshots_stop(paths, monkeypatch):
+    import time
+
+    from recrute import live
+
+    sid = live.start_session(paths)
+    with pytest.raises(ValueError, match="not current"):  # no frame at all yet
+        live.enqueue(paths, {"type": "click", "x": 1, "y": 1, "session": sid})
+    fresh_frame(paths, sid)
+    live.enqueue(paths, {"type": "type", "text": "late", "session": sid})
+    real = time.time
+    monkeypatch.setattr(time, "time", lambda: real() + 60)  # a minute without screenshots
+    with pytest.raises(ValueError, match="not current"):
+        live.enqueue(paths, {"type": "click", "x": 1, "y": 1, "session": sid})
+
+    class Page:
+        class keyboard:  # noqa: N801
+            @staticmethod
+            def type(text, delay=0):
+                raise AssertionError("a stale event must not be replayed")
+
+    assert live.apply_inputs(paths, Page()) is False
+    live.clear(paths)
+
+
+def test_expired_frame_is_not_served(client, paths):
+    import json
+
+    from recrute import live
+    from recrute.paths import get_paths
+
+    p = get_paths()
+    sid = live.start_session(p)
+    (live.live_dir(p) / "frame.jpg").write_bytes(b"jpg")
+    (live.live_dir(p) / "frame.json").write_text(json.dumps(
+        {"url": "u", "width": 1, "height": 1, "at": 0, "session": sid}), encoding="utf-8")
+    assert client.get("/live/frame").status_code == 404
+    fresh_frame(p, sid)
+    r = client.get("/live/frame")
+    assert r.status_code == 200 and float(r.headers["X-Live-Age"]) < 5
+    live.clear(p)

@@ -332,6 +332,7 @@ def test_session_happy_path_guardrails():
     assert src.new_ids == ["4100000001", "4100000002", "4100000004"]
     assert seen >= set(src.new_ids)
     assert budget.searches_used == 1 and budget.views_used == 3
+    assert src.query_cursor == 1  # advanced by the searches actually made
     assert jobs[0].ats == "greenhouse" and jobs[1].ats == "linkedin_easy_apply"
     # one dwell per page visit, each 8-30s total, spent scrolling
     pages = len(page.visited)
@@ -396,12 +397,24 @@ def test_session_kill_switch_on_redirect_and_ignores_jd_text():
         ls.check_blocked("https://www.linkedin.com/jobs/view/4100000002/", html)
 
 
-def test_session_query_rotation_differs_by_day():
+def test_session_query_rotation_follows_the_cursor():
     c = Criteria()
-    a = make_session(FakePage({}), now=lambda: datetime(2026, 9, 29, 10))._queries(ctx())
-    b = make_session(FakePage({}), now=lambda: datetime(2026, 9, 30, 10))._queries(ctx())
+    a = make_session(FakePage({}))._queries(ctx())
     assert sorted(a) == sorted(q for _, q in c.all_search_queries())
-    assert a[0] != b[0]
+    b = make_session(FakePage({}), query_cursor=3)._queries(ctx())
+    assert b[0] == a[3]
+
+
+def test_session_rotation_covers_every_query_when_sessions_search_less_than_budget():
+    queries = [f"q{i}" for i in range(20)]
+    cursor, searched = 0, []
+    for _day in range(10):
+        for _session in range(2):  # two sessions a day, 3 searches each, budget 10
+            src = make_session(FakePage({}), query_cursor=cursor, queries=queries)
+            order = src._queries(ctx())[:3]
+            searched += order
+            cursor += len(order)
+    assert set(searched) == set(queries)
 
 
 MULTI_JOB_CODE = """<code style="display: none" id="bpr-guid-9">{"included": [

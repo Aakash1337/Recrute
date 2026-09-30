@@ -279,8 +279,12 @@ def _parse(raw: Any, tz: Any = UTC) -> datetime | None:
 
 
 def _attempted_at(app: Application, tz: Any) -> datetime | None:
+    """The LATEST attempt on this application (a hand-off reopened today counts today, while
+    the first attempt's evidence stays recorded under its own keys)."""
     d = _details(app)
-    return _parse(d.get("attempted_at") or d.get("attempt_started_at"), tz)
+    times = [t for k in ("attempted_at", "attempt_started_at", "last_attempt_at")
+             if (t := _parse(d.get(k), tz)) is not None]
+    return max(times) if times else None
 
 
 def packet_revision(app: Application) -> str:
@@ -510,24 +514,31 @@ def submit_gate(bind: Any, *, app_id: int, job_id: int, channel: str, attempt_id
             # everything ELSE sent (or possibly sent) today, plus this submission, counted
             # against the caps of the day the click actually happens (attempts can start
             # before midnight and submit after it)
-            others = day_counts(s, t, exclude_app_id=app_id)
-            if others.total + 1 > int(get_setting(s, "apps_per_day")):
-                return "deferred: daily application cap reached"
-            cap = (get_setting(s, "site_caps") or {}).get(channel)
-            if cap is not None and others.by_channel.get(channel, 0) + 1 > int(cap):
-                return f"deferred: {channel} daily cap reached"
-            # per-company cap/cooldown, with current settings: another application to this
-            # company may have been recorded while this form was being filled
-            if j.company_id is not None:
-                blocked = blocked_companies(
-                    company_events(s, exclude_job_id=job_id), t,
-                    cap=int(get_setting(s, "company_cap")),
-                    cooldown=timedelta(days=int(get_setting(s, "company_cooldown_days"))))
-                if j.company_id in blocked:
-                    return "deferred: company cap/cooldown reached"
-        return None
+            return cap_block_reason(s, t, app_id=app_id, job=j, channel=channel)
 
     return check
+
+
+def cap_block_reason(s: Session, t: datetime, *, app_id: int | None, job: Job,
+                     channel: str) -> str | None:
+    """Would one more application (this one) exceed today's global / site cap or the
+    company's cap/cooldown, with the CURRENT settings? Used right before a scheduled submit
+    and before an assisted fill reserves its slot."""
+    others = day_counts(s, t, exclude_app_id=app_id)
+    if others.total + 1 > int(get_setting(s, "apps_per_day")):
+        return "deferred: daily application cap reached"
+    cap = (get_setting(s, "site_caps") or {}).get(channel)
+    if cap is not None and others.by_channel.get(channel, 0) + 1 > int(cap):
+        return f"deferred: {channel} daily cap reached"
+    # another application to this company may have been recorded meanwhile
+    if job.company_id is not None:
+        blocked = blocked_companies(
+            company_events(s, exclude_job_id=job.id), t,
+            cap=int(get_setting(s, "company_cap")),
+            cooldown=timedelta(days=int(get_setting(s, "company_cooldown_days"))))
+        if job.company_id in blocked:
+            return "deferred: company cap/cooldown reached"
+    return None
 
 
 def finalize(session: Session, *, app_id: int, job_id: int, attempt_id: str, lease: Lease,

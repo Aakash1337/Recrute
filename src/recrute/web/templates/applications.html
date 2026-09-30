@@ -21,6 +21,7 @@
     <td class="muted">
       {% if app %}{{ app.channel }}{% if app.trial %} · trial{% endif %}{% if app.scheduled_for %} · next slot {{ app.scheduled_for }}{% endif %}{% if app.submitted_at %} · submitted {{ app.submitted_at | ago }}{% endif %}{% endif %}
       {% if app and app.outcome and app.outcome.get('reason') %}<br><span class="warn">{{ app.outcome.get('reason') }}</span>{% endif %}
+      {% if app and app.outcome and app.outcome.get('assist_deferred') %}<br><span class="warn">pre-fill waiting: {{ app.outcome.get('assist_deferred') }}</span>{% endif %}
       {% if app and app.outcome and app.outcome.get('unmatched_fields') %}<br>unanswered: {{ app.outcome.get('unmatched_fields') | join(', ') }}{% endif %}
       {% if app and app.last_error %}<br><span class="bad">{{ app.last_error }}</span>{% endif %}
     </td>

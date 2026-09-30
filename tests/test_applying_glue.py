@@ -111,3 +111,55 @@ def test_assisted_fill_reserves_daily_caps_before_browser_work(engine, paths, mo
     assert seen["counts"].total == 1 and seen["counts"].by_channel == {"greenhouse": 1}
     with Session(engine) as s:
         assert day_counts(s, datetime.now(UTC)).total == 1
+
+
+def test_assisted_fill_respects_exhausted_caps(engine, paths, monkeypatch):
+    from datetime import UTC, datetime
+
+    from recrute.apply.scheduler import day_counts
+    from recrute.applying import _run_assist_request
+    from recrute.models import Application, Job, JobStatus
+    from recrute.schemas import Packet
+    from recrute.settings import set_setting
+
+    with Session(engine) as s:
+        set_setting(s, "apps_per_day", 1)
+        done = Job(title="a", apply_url="https://boards.greenhouse.io/acme/jobs/1",
+                   canonical_url="c1", ats="greenhouse", status=JobStatus.APPLIED)
+        job = Job(title="b", apply_url="https://boards.greenhouse.io/acme/jobs/2",
+                  canonical_url="c2", ats="greenhouse", status=JobStatus.NEEDS_HUMAN)
+        s.add(done)
+        s.add(job)
+        s.flush()
+        s.add(Application(job_id=done.id, channel="greenhouse", submitted_at=datetime.now(UTC)))
+        s.add(Application(job_id=job.id, channel="greenhouse",
+                          packet=Packet(job_id=job.id).model_dump(mode="json"),
+                          outcome={"assist_requested": "x"}))
+        s.commit()
+        job_id = job.id
+
+    def never(*a, **kw):
+        raise AssertionError("the browser must not open when the caps are used up")
+
+    monkeypatch.setattr("recrute.apply.runner.apply_job", never)
+    with Session(engine) as s:
+        assert _run_assist_request(SimpleNamespace(router=None, paths=paths), s,
+                                   SimpleNamespace()) is None
+        from sqlmodel import select
+
+        app = s.exec(select(Application).where(Application.job_id == job_id)).one()
+        assert app.outcome["assist_requested"] and "cap" in app.outcome["assist_deferred"]
+        assert day_counts(s, datetime.now(UTC)).total == 1
+
+
+def test_reopened_handoff_counts_on_the_day_it_is_reopened():
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.apply.scheduler import _attempted_at
+    from recrute.models import Application
+
+    today = datetime.now(UTC)
+    app = Application(job_id=1, channel="greenhouse", attempts=2, outcome={"details": {
+        "attempted_at": (today - timedelta(days=1)).isoformat(),
+        "last_attempt_at": today.isoformat(), "handoff_reservation": True}})
+    assert _attempted_at(app, UTC).date() == today.date()

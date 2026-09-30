@@ -292,7 +292,8 @@ def discover_linkedin(ctx) -> dict:
         if getattr(ctx, "config", None) is not None:
             kwargs["page_factory"] = _guarded_page_factory(ctx)
         src = LinkedInSessionSource(budget=budget, seen_ids=seen,
-                                    active_hours=(int(hours[0]), int(hours[1])), **kwargs)
+                                    active_hours=(int(hours[0]), int(hours[1])),
+                                    query_cursor=int(state.get("query_cursor", 0)), **kwargs)
         sctx = SourceContext(http=Http(), criteria=ctx.criteria, router=ctx.router)
         found = []
         result: dict = {}
@@ -325,6 +326,7 @@ def discover_linkedin(ctx) -> dict:
         # only now are the postings stored: acknowledge their ids (a failure before this point
         # leaves them unseen, so the next session fetches them again)
         state["seen_ids"] = sorted(src.seen_ids)[-5000:]
+        state["query_cursor"] = int(getattr(src, "query_cursor", state.get("query_cursor", 0)))
         set_state(s, "linkedin_session", state)
         result.update(searches=state["searches"], views=state["views"])
         if crashed is not None:
