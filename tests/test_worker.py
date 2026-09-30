@@ -176,13 +176,14 @@ def test_safe_error_hides_yaml_source_lines():
 def test_daily_digest_uses_dst_aware_zone(engine, monkeypatch):
     from datetime import datetime
     from types import SimpleNamespace
-    from zoneinfo import ZoneInfo
+
+    from dateutil import tz as dtz
 
     from recrute import tasks
     from recrute.notify import digest
     from recrute.settings import set_setting
 
-    ny = ZoneInfo("America/New_York")
+    ny = dtz.gettz("America/New_York")  # bundled with dateutil (Windows has no tz database)
     monkeypatch.setattr(digest, "tzlocal", lambda: ny)
     seen = {}
     real = digest.collect_stats
