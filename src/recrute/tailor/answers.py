@@ -377,7 +377,9 @@ _FUTURE_RE = re.compile(r"\bfuture\b|at any (point|time)|\bany ?time\b|\bever\b|
 _NEGATED_SPONSOR_RE = re.compile(
     r"\bwithout\b[^?]{0,80}sponsor|\bnot\b[^?]{0,30}\b(need|requir)\w*[^?]{0,40}sponsor|"
     r"sponsor\w*[^?]{0,30}\bnot\b[^?]{0,15}\b(needed|required)")
-_AUTH_WORDS_RE = re.compile(r"authori[sz]ed|eligible|legally|permitted|right to work")
+_AUTH_WORDS_RE = re.compile(r"authori[sz]ed|eligible|legally|permitted|right to work|"
+                            r"able to work|can you work|could you work|allowed to work|"
+                            r"able to (start|begin) work|work in the (us|u\.s|united states)")
 
 
 def _either(a: bool | None, b: bool | None) -> bool | None:

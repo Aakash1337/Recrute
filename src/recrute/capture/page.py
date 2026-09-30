@@ -21,7 +21,6 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup, Tag
 from dateutil import parser as dateparser
-from markdownify import markdownify
 
 from recrute.capture.htmltext import html_to_text
 from recrute.capture.urls import (
@@ -30,6 +29,7 @@ from recrute.capture.urls import (
     linkedin_job_url,
     unwrap_redirect,
 )
+from recrute.htmlmd import html_to_markdown
 from recrute.schemas import RawJob
 
 log = logging.getLogger(__name__)
@@ -493,5 +493,5 @@ def raw_job_from_capture(url: str, html: str, title: str | None = None) -> RawJo
 def description_markdown(job: RawJob) -> str:
     """Convenience for callers that store Job.description_md."""
     if job.description_html:
-        return markdownify(job.description_html, heading_style="ATX").strip()
+        return html_to_markdown(job.description_html)
     return job.description_text or ""

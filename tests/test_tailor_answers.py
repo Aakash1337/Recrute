@@ -640,3 +640,14 @@ def test_sensitive_questions_never_reach_the_llm():
     out = answer_questions(qs, profile=Profile(name="Ada"), bank=AnswerBank(), router=Router())
     assert Router.calls == 0
     assert all(a.value in (None, "") and a.needs_review for a in out.answers)
+
+
+@pytest.mark.parametrize("label", ["Are you able to work in the US without sponsorship?",
+                                   "Can you work in the United States without sponsorship?"])
+@pytest.mark.parametrize("authorized,expected", [(False, False), (None, None), (True, True)])
+def test_work_without_sponsorship_needs_authorization(label, authorized, expected):
+    from recrute.tailor.answers import WorkAuthorization, sponsorship_answer
+
+    wa = WorkAuthorization(authorized_to_work_in_us=authorized,
+                           requires_sponsorship_now=False, requires_sponsorship_future=False)
+    assert sponsorship_answer(label, wa) is expected

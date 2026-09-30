@@ -604,3 +604,39 @@ def test_unsnooze_never_erases_a_fresh_snooze(engine):
         s.add(job)
         s.commit()
         assert unsnooze_due(s) == 1
+
+
+def test_script_contents_never_reach_descriptions(engine):
+    from recrute.capture.page import raw_job_from_capture
+
+    html = """<html><head><title>Security Analyst - Acme</title></head><body><main>
+      <h1>Security Analyst</h1><p>Monitor SIEM alerts for Acme.</p>
+      <script>window.session = {accessToken: "SECRET-TOKEN-123"};</script>
+      <noscript>enable js SECRET-NOSCRIPT</noscript>
+      <style>.x{content:"SECRET-STYLE"}</style>
+    </main></body></html>"""
+    rj = raw_job_from_capture("https://acme.example/jobs/1", html, "Security Analyst")
+    with Session(engine) as s:
+        ingest(s, [rj] if rj else [raw(description_html=html)])
+        job = s.exec(select(Job)).one()
+        assert "SECRET" not in job.description_md and "SIEM" in job.description_md
+
+
+def test_title_specialisations_are_distinct_openings(engine):
+    from recrute.pipeline.normalize import normalize_title
+
+    assert normalize_title("Security Engineer - Product") != \
+        normalize_title("Security Engineer - Infrastructure")
+    assert normalize_title("Security Engineer - Remote") == normalize_title("Security Engineer")
+    assert normalize_title("Security Engineer - Austin, TX") == \
+        normalize_title("Security Engineer")
+    with Session(engine) as s:
+        ingest(s, [raw(source="capture", ats=None, ats_token=None, ats_job_id=None,
+                       url="https://acme.example/jobs/product",
+                       title="Security Engineer - Product"),
+                   raw(source="capture", ats=None, ats_token=None, ats_job_id=None,
+                       url="https://acme.example/jobs/infra",
+                       title="Security Engineer - Infrastructure")])
+        jobs = {j.title: j.apply_url for j in s.exec(select(Job)).all()}
+        assert jobs == {"Security Engineer - Product": "https://acme.example/jobs/product",
+                        "Security Engineer - Infrastructure": "https://acme.example/jobs/infra"}

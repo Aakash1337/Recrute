@@ -309,3 +309,15 @@ def test_himalayas_application_link_is_apply_url():
     assert (j1.ats, j1.ats_token) == ("lever", "acme")
     assert j2.url == other["guid"] and j2.apply_url == "https://careers.b.example/apply/42"
     assert j2.ats is None
+
+
+def test_hn_roles_get_their_own_requirements():
+    from recrute.sources.hn import role_sections
+
+    text = ("Acme | Remote (US) | Full-time\\nWe protect hospitals.\\n"
+            "Security Analyst: 2+ years of SOC experience.\\n"
+            "Senior Security Engineer: 10+ years of experience required.")
+    secs = role_sections(text, ["Security Analyst", "Senior Security Engineer"])
+    assert "10+" not in secs["Security Analyst"] and "2+" in secs["Security Analyst"]
+    assert "We protect hospitals" in secs["Security Analyst"]
+    assert "10+" in secs["Senior Security Engineer"]

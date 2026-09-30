@@ -203,12 +203,32 @@ def build_prompt(batch: list[dict[str, Any]]) -> str:
     return PROMPT.format(comments="\n\n".join(blocks))
 
 
+def role_sections(text: str, titles: list[str]) -> dict[str, str]:
+    """Split a multi-role comment so each role gets the shared header (company intro, perks)
+    plus ONLY its own section, not other roles' requirements (a junior role mustn't inherit a
+    senior role's "10+ years"). A title not found in the text gets just the shared header."""
+    low = text.lower()
+    found = sorted((p, t) for t in titles if (p := low.find(t.lower())) >= 0)
+    header_end = found[0][0] if found else len(text)
+    header = text[:header_end].strip()
+    out = {t: header for t in titles}
+    for i, (pos, t) in enumerate(found):
+        end = found[i + 1][0] if i + 1 < len(found) else len(text)
+        out[t] = (header + "\n\n" + text[pos:end].strip()).strip()
+    return out
+
+
 def jobs_from_extraction(result: Any, batch: list[dict[str, Any]]) -> list[RawJob]:
     if isinstance(result, str):
         result = json.loads(result)
     by_id = {int(c["id"]): c for c in batch}
     out: list[RawJob] = []
-    for j in (result or {}).get("jobs") or []:
+    rows = (result or {}).get("jobs") or []
+    titles_by_comment: dict[int, list[str]] = {}
+    for j in rows:
+        titles_by_comment.setdefault(int(j.get("comment_id") or 0), []).append(
+            (j.get("title") or "").strip())
+    for j in rows:
         c = by_id.get(int(j.get("comment_id") or 0))
         if c is None or not (j.get("title") or "").strip() or not (j.get("company") or "").strip():
             continue  # hallucinated id or empty row
@@ -217,11 +237,18 @@ def jobs_from_extraction(result: Any, batch: list[dict[str, Any]]) -> list[RawJo
                           and apply_url not in htmllib.unescape(c.get("text") or "")):
             apply_url = None  # only trust links that actually appear in the comment
         lo, hi = j.get("salary_min"), j.get("salary_max")
-        out.append(_rawjob(c, j["company"], j["title"], j.get("locations") or [],
-                           j.get("remote"), apply_url, j.get("employment_type"),
-                           lo if isinstance(lo, int) and lo > 0 else None,
-                           hi if isinstance(hi, int) and hi > 0 else None,
-                           j.get("salary_currency")))
+        titles = [t for t in titles_by_comment.get(int(c["id"]), []) if t]
+        role_text = None
+        if len(titles) > 1:  # several roles in one comment: role-specific description
+            role_text = role_sections(comment_text(c), titles).get(j["title"].strip())
+        rj = _rawjob(c, j["company"], j["title"], j.get("locations") or [],
+                     j.get("remote"), apply_url, j.get("employment_type"),
+                     lo if isinstance(lo, int) and lo > 0 else None,
+                     hi if isinstance(hi, int) and hi > 0 else None,
+                     j.get("salary_currency"), role_text)
+        if role_text is not None:
+            rj = rj.model_copy(update={"description_html": None})  # html holds every role
+        out.append(rj)
     return out
 
 

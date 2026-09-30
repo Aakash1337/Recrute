@@ -8,9 +8,9 @@ import re
 from datetime import UTC, datetime
 
 from dateutil import parser as dtparser
-from markdownify import markdownify
 
 from recrute.criteria import Criteria
+from recrute.htmlmd import html_to_markdown
 from recrute.sources.ats_url import find_ats_link, parse_ats_url
 
 log = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ def html_to_text(s: str | None) -> str | None:
     if not s or not s.strip():
         return None
     try:
-        md = markdownify(s, heading_style="ATX", strip=["img", "script", "style"])
+        md = html_to_markdown(s)
     except Exception as e:  # markdownify is robust, but never let one posting kill a run
         log.debug("markdownify failed: %s", e)
         return re.sub(r"<[^>]+>", " ", s).strip() or None
