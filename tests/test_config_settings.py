@@ -56,3 +56,17 @@ def test_site_caps_and_unknown_keys(engine):
             set_setting(s, "nope", 1)
         with pytest.raises(ValueError):
             set_setting(s, "active_hours", [22, 9])
+
+
+def test_dict_settings_partial_update_and_types(engine):
+    with Session(engine) as s:
+        set_setting(s, "notify", {"backend": "ntfy", "ntfy_url": "https://ntfy.sh/x"})
+        set_setting(s, "notify", {"instant_alert_score": "95"})
+        n = get_setting(s, "notify")
+        assert n["backend"] == "ntfy" and n["ntfy_url"] == "https://ntfy.sh/x"
+        assert n["instant_alert_score"] == 95 and n["digest_hour"] == 8
+        with pytest.raises(ValueError):
+            set_setting(s, "notify", {"bogus": 1})
+        set_setting(s, "sources_enabled", {"linkedin_session": "true"})
+        assert get_setting(s, "sources_enabled")["linkedin_session"] is True
+        assert get_setting(s, "sources_enabled")["greenhouse"] is True

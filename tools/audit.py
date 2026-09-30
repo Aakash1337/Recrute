@@ -77,7 +77,7 @@ def build_scope(paths: list[str], changed: bool) -> str:
     if paths:
         return "only these paths (read others just for context):\n" + "\n".join(
             f"- {p}" for p in paths)
-    return ("the whole repository (skip .venv/, uv.lock, and vendored "
+    return ("the whole repository (skip .venv/, .claude/, uv.lock, and vendored "
             "src/recrute/web/static/htmx.min.js)")
 
 

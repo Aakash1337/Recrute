@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Filtered · Recrute{% endblock %}
+{% block content %}
+<form hx-get="/filtered" hx-target="body" hx-push-url="true">
+  <input name="q" value="{{ q }}" placeholder="search title / company / reason"> <button>Search</button>
+</form>
+<p class="muted">Jobs dropped by rules or low fit score. Restoring one sends it straight to the review queue.</p>
+<table>
+  <tr><th>job</th><th>reason</th><th></th></tr>
+  {% for job, company in rows %}
+  <tr>
+    <td><a href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">{{ job.title }}</a><br>{% include "_job_row_meta.html" %}</td>
+    <td>{{ job.filter_reason }}</td>
+    <td><button hx-post="/jobs/{{ job.id }}/restore" hx-swap="outerHTML">Restore</button></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="3" class="muted">Nothing filtered out.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

@@ -32,8 +32,17 @@ def build_providers(config: Config, paths: Paths) -> dict[str, Provider]:
     }
 
 
-def cache_key(task: str, req: LLMRequest) -> str:
-    blob = json.dumps([task, req.system, req.prompt, req.schema], sort_keys=True)
+def cache_key(task: str, req: LLMRequest, config: Config | None = None) -> str:
+    """Includes the task's execution config (routes, models, provider args) so switching a
+    model re-runs instead of returning the previous model's cached answer."""
+    fingerprint = None
+    if config is not None:
+        fingerprint = [
+            [r.provider, r.model or config.llm.providers[r.provider].model,
+             config.llm.providers[r.provider].extra_args]
+            for r in config.llm.route(task)
+        ]
+    blob = json.dumps([task, req.system, req.prompt, req.schema, fingerprint], sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
@@ -47,13 +56,16 @@ class LLMRouter:
     def complete(self, task: str, prompt: str, *, schema: dict[str, Any] | None = None,
                  system: str | None = None, use_cache: bool = True) -> Any:
         base = LLMRequest(prompt=prompt, schema=schema, system=system)
-        key = cache_key(task, base)
+        key = cache_key(task, base, self.config)
         if use_cache and (hit := self._cached(key)) is not None:
             return hit
 
         errors: list[str] = []
         for route in self.config.llm.route(task):
-            provider = self.providers[route.provider]
+            provider = self.providers.get(route.provider)
+            if provider is None:
+                errors.append(f"{route.provider}: not configured")
+                continue
             if self._cooling_down(route.provider):
                 errors.append(f"{route.provider}: cooling down after usage limit")
                 continue

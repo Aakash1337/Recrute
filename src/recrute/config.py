@@ -7,7 +7,7 @@ import tomllib
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from recrute.paths import Paths, get_paths
 
@@ -51,6 +51,16 @@ class LLMConfig(BaseModel):
             "codex": ProviderConfig(command="codex"),
         }
     )
+    @field_validator("providers", mode="before")
+    @classmethod
+    def _merge_default_providers(cls, value):
+        """Overriding one provider must not drop the other's defaults."""
+        merged = {"claude": {"command": "claude"}, "codex": {"command": "codex"}}
+        for name, cfg in (value or {}).items():
+            base = merged.get(name, {})
+            merged[name] = {**base, **(cfg.model_dump() if isinstance(cfg, BaseModel) else cfg)}
+        return merged
+
     # task -> ordered list of "provider" or "provider:model"; later entries are fallbacks when
     # earlier ones fail or hit a usage limit.
     routing: dict[str, list[str]] = Field(

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Settings · Recrute{% endblock %}
+{% block content %}
+{% macro dictform(key, title, help='') %}
+<fieldset>
+  <legend>{{ title }}</legend>
+  {% if help %}<p class="muted">{{ help }}</p>{% endif %}
+  <form hx-post="/settings/{{ key }}" hx-target="find .result">
+    {% for k, v in settings[key].items() %}
+      <label class="f">
+      {% if v is sameas true or v is sameas false %}
+        <input type="checkbox" name="{{ k }}" {{ 'checked' if v }}> {{ k }}
+      {% elif v is iterable and v is not string %}
+        {{ k }}: {% for opt in ['P0','P1','P2','P3'] %}<label><input type="checkbox" name="{{ k }}" value="{{ opt }}" {{ 'checked' if opt in v }}> {{ opt }}</label> {% endfor %}
+      {% else %}
+        {{ k }}: <input name="{{ k }}" value="{{ v }}">
+      {% endif %}
+      </label>
+    {% endfor %}
+    <button>Save</button> <span class="result"></span>
+  </form>
+</fieldset>
+{% endmacro %}
+
+<h2>Volume</h2>
+{% include "_knob.html" %}
+<fieldset>
+  <legend>Active hours (submissions only happen inside this window)</legend>
+  <form hx-post="/settings/active_hours" hx-target="find .result">
+    <input name="start" type="number" min="0" max="23" value="{{ settings.active_hours[0] }}"> –
+    <input name="end" type="number" min="1" max="24" value="{{ settings.active_hours[1] }}">
+    <button>Save</button> <span class="result"></span>
+  </form>
+</fieldset>
+{{ dictform('site_caps', 'Per-site daily caps', 'Not raised by the global knob. Raising the LinkedIn Easy Apply cap increases account risk.') }}
+{{ dictform('sources_enabled', 'Discovery sources', 'linkedin_session browses LinkedIn logged in as you (read-only, budgeted, kill switch). Off by default.') }}
+{{ dictform('linkedin_session_budget', 'LinkedIn session budget per day') }}
+{{ dictform('auto_approve', 'Auto-approve packets (CP2)', 'When enabled, packets for jobs at or above min_score in the chosen priorities, with no new LLM-drafted answers and no verifier flags, are approved without you. Off by default.') }}
+<fieldset>
+  <legend>Trial period / follow-ups</legend>
+  {% for key in ['trial_threshold', 'follow_up_days', 'ghost_days'] %}
+  <form hx-post="/settings/{{ key }}" hx-target="find .result" class="f">
+    {{ key }}: <input name="value" type="number" min="0" value="{{ settings[key] }}"> <button>Save</button> <span class="result"></span>
+  </form>
+  {% endfor %}
+</fieldset>
+{{ dictform('notify', 'Notifications', 'backend: ui | ntfy | telegram | email. Secrets (Telegram bot token, SMTP password) are stored in the OS keyring via the CLI, never here.') }}
+{{ dictform('imap', 'Inbox tracking (IMAP)', 'Password/app password is stored in the OS keyring: recrute inbox set-password') }}
+
+<h2>Access</h2>
+<p class="muted">Access token (for LAN login and the browser extension): <code>{{ token }}</code></p>
+{% endblock %}

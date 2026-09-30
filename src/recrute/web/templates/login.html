@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Log in</h2>
+<p class="muted">Access from another device needs the access token. Run <code>recrute token</code> on the server to see it.</p>
+<form method="post" action="/login">
+  <input type="hidden" name="next" value="{{ next }}">
+  <input name="token" type="password" placeholder="access token" autofocus size="40">
+  <button class="primary">Log in</button>
+  {% if error %}<span class="bad">{{ error }}</span>{% endif %}
+</form>
+{% endblock %}

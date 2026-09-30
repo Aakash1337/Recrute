@@ -18,6 +18,9 @@ build/
 !/resources/*/
 !/resources/*/.gitkeep
 
+# Agent worktrees / local tool state
+.claude/
+
 # OS / editors
 .DS_Store
 Thumbs.db

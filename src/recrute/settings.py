@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from sqlalchemy.dialects.sqlite import insert
 from sqlmodel import Session
 
 from recrute.models import Setting, utcnow
@@ -18,12 +19,39 @@ DEFAULTS: dict[str, Any] = {
     "active_hours": [9, 22],
     # Fraction of the LLM subscription window to leave for your own use (0 = no reserve).
     "llm_reserve": 0.0,
+    # Discovery sources on/off. linkedin_session (logged-in browsing) is opt-in.
+    "sources_enabled": {
+        "greenhouse": True, "lever": True, "ashby": True, "workable": True,
+        "smartrecruiters": True, "remotive": True, "remoteok": True, "himalayas": True,
+        "hn_whoshiring": True, "linkedin_guest": True, "linkedin_session": False,
+        "adzuna": True,
+    },
+    # Logged-in LinkedIn browsing budget per day (PLAN 3.2 Tier 3 guardrails).
+    "linkedin_session_budget": {"searches": 10, "views": 80},
+    # First N submissions per adapter are fill-and-pause (trial period).
+    "trial_threshold": 5,
+    # CP2 auto-approval (M7). Off by default.
+    "auto_approve": {"enabled": False, "min_score": 85, "priorities": ["P0", "P1"]},
+    "follow_up_days": 14,
+    "ghost_days": 30,
+    # Notifications: backend is one of ui | ntfy | telegram | email.
+    "notify": {"backend": "ui", "ntfy_url": "", "telegram_chat_id": "", "email_to": "",
+               "smtp_host": "", "smtp_port": 587, "smtp_user": "", "instant_alert_score": 90,
+               "digest_hour": 8},
+    # Inbox tracking (IMAP). Password lives in the OS keyring, never here.
+    "imap": {"enabled": False, "host": "imap.gmail.com", "port": 993, "user": "",
+             "folder": "INBOX"},
 }
+
+# Settings whose values are dicts: updates are merged key-by-key with type checking.
+_DICT_KEYS = {"sources_enabled", "linkedin_session_budget", "auto_approve", "notify", "imap"}
 
 
 def get_setting(session: Session, key: str) -> Any:
     row = session.get(Setting, key)
     if row is not None:
+        if key in _DICT_KEYS and isinstance(row.value, dict):
+            return {**DEFAULTS[key], **row.value}  # new default fields appear automatically
         return row.value
     if key in DEFAULTS:
         return DEFAULTS[key]
@@ -33,15 +61,17 @@ def get_setting(session: Session, key: str) -> Any:
 def set_setting(session: Session, key: str, value: Any) -> None:
     if key not in DEFAULTS:
         raise KeyError(f"unknown setting: {key}")
+    if key in _DICT_KEYS and isinstance(value, dict):
+        value = {**get_setting(session, key), **value}  # partial updates keep other fields
     value = _validate(key, value)
-    row = session.get(Setting, key)
-    if row is None:
-        row = Setting(key=key, value=value)
-    else:
-        row.value = value
-        row.updated_at = utcnow()
-    session.add(row)
+    now = utcnow()
+    # Atomic upsert: concurrent first writes can't collide on the primary key.
+    stmt = insert(Setting).values(key=key, value=value, updated_at=now)
+    stmt = stmt.on_conflict_do_update(index_elements=["key"],
+                                      set_={"value": value, "updated_at": now})
+    session.execute(stmt)
     session.commit()
+    session.expire_all()
 
 
 def all_settings(session: Session) -> dict[str, Any]:
@@ -68,4 +98,28 @@ def _validate(key: str, value: Any) -> Any:
         value = float(value)
         if not 0.0 <= value < 1.0:
             raise ValueError("llm_reserve must be in [0, 1)")
+    elif key in ("trial_threshold", "follow_up_days", "ghost_days"):
+        value = int(value)
+        if value < 0:
+            raise ValueError(f"{key} must be >= 0")
+    elif key in _DICT_KEYS:
+        if not isinstance(value, dict):
+            raise ValueError(f"{key} must be a mapping")
+        default = DEFAULTS[key]
+        unknown = set(value) - set(default)
+        if unknown and key != "sources_enabled":
+            raise ValueError(f"unknown {key} fields: {sorted(unknown)}")
+        merged = dict(default)
+        for k, v in value.items():
+            ref = default.get(k)
+            if isinstance(ref, bool):
+                v = v if isinstance(v, bool) else str(v).lower() in ("1", "true", "yes", "on")
+            elif isinstance(ref, int):
+                v = int(v)
+            elif isinstance(ref, list):
+                v = list(v)
+            elif isinstance(ref, str):
+                v = str(v)
+            merged[k] = v
+        value = merged
     return value

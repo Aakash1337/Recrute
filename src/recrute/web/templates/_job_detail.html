@@ -1,0 +1,35 @@
+<h3 style="margin-top:0">{{ job.title }}</h3>
+<div>{% include "_job_row_meta.html" %}</div>
+<p>
+  <a href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">Open posting ↗</a>
+  <span class="muted">· status {{ job.status.value }}{% if job.ats %} · {{ job.ats }}{% endif %}{% if job.years_required %} · {{ job.years_required }}+ yrs{% endif %}</span>
+</p>
+{% if job.status.value in ('discovered', 'snoozed') %}
+<p>
+  <button class="primary" onclick="recruteDecide && recruteDecide('approve')">Approve <kbd>a</kbd></button>
+  <select id="reject-reason" onchange="if (this.value) recruteDecide('reject', this.value)">
+    <option value="">Reject… <kbd>r</kbd></option>
+    {% for r in reasons %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
+  </select>
+  <button onclick="recruteDecide('snooze')">Snooze <kbd>s</kbd></button>
+  <button onclick="recruteDecide('manual')">I'll apply myself <kbd>m</kbd></button>
+</p>
+{% endif %}
+{% if job.filter_reason %}<p class="warn">Filtered: {{ job.filter_reason }}</p>{% endif %}
+{% if score %}
+<h2>Fit {{ score.score }}</h2>
+<p>{{ score.reason }}</p>
+{% set d = score.details or {} %}
+<table>
+  {% if d.get('meets') %}<tr><th>meets</th><td>{{ d.meets | join('; ') }}</td></tr>{% endif %}
+  {% if d.get('gaps') %}<tr><th>gaps</th><td>{{ d.gaps | join('; ') }}</td></tr>{% endif %}
+  {% if d.get('red_flags') %}<tr><th>red flags</th><td class="warn">{{ d.red_flags | join('; ') }}</td></tr>{% endif %}
+</table>
+{% endif %}
+{% if job.sponsorship_note %}<p class="muted">🛂 “{{ job.sponsorship_note }}”</p>{% endif %}
+<h2>Description</h2>
+<div class="desc">{{ job.description_md | md }}</div>
+<h2>Seen on</h2>
+<ul>{% for src in sources %}<li><a href="{{ src.url | safe_url }}" target="_blank" rel="noopener noreferrer">{{ src.source }}</a> <span class="muted">{{ src.seen_at | ago }}</span></li>{% endfor %}</ul>
+<h2>History</h2>
+<ul class="muted">{% for e in events %}<li>{{ e.created_at | ago }}: {{ e.status.value }}{% if e.note %}, {{ e.note }}{% endif %}</li>{% endfor %}</ul>

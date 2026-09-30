@@ -1,0 +1,220 @@
+"""Upsert RawJobs into the DB with deduplication and company-registry maintenance."""
+
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from datetime import timedelta
+
+from sqlmodel import Session, select
+
+from recrute.models import Company, Job, JobSource, JobStatus, StatusEvent, utcnow
+from recrute.pipeline.normalize import (
+    canonical_url,
+    content_hash,
+    description_markdown,
+    fuzzy_key,
+    normalize_company,
+)
+from recrute.schemas import RawJob
+
+# A fuzzy (company+title) match only merges with jobs seen this recently; older ones are
+# treated as a new opening (reposts are common).
+FUZZY_WINDOW = timedelta(days=45)
+
+
+@dataclass
+class IngestStats:
+    new: int = 0
+    updated: int = 0
+    merged: int = 0  # same job seen on another source
+    new_job_ids: list[int] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {"new": self.new, "updated": self.updated, "merged": self.merged}
+
+
+def upsert_company(session: Session, raw: RawJob) -> Company:
+    company = None
+    if raw.ats and raw.ats_token:
+        company = session.exec(select(Company).where(
+            Company.ats == raw.ats, Company.ats_token == raw.ats_token)).first()
+    if company is None:
+        norm = normalize_company(raw.company)
+        for c in session.exec(select(Company).where(Company.name == raw.company)).all():
+            company = c
+            break
+        if company is None and norm:
+            # Name variants ("Acme, Inc." vs "Acme"): compare normalized names.
+            for c in session.exec(select(Company)).all():
+                if normalize_company(c.name) == norm:
+                    company = c
+                    break
+    if company is None:
+        ats_known = raw.ats and raw.ats_token and raw.ats not in ("linkedin_easy_apply",)
+        company = Company(name=raw.company, domain=raw.company_domain,
+                          ats=raw.ats if ats_known else None,
+                          ats_token=raw.ats_token if ats_known else None,
+                          origin="discovered")
+        session.add(company)
+        session.flush()
+    else:
+        learn_company_board(session, company, raw)
+    return company
+
+
+def learn_company_board(session: Session, company: Company, raw: RawJob) -> None:
+    """Record where a company hosts its ATS board, so it can be polled directly."""
+    if not (raw.ats and raw.ats_token) or company.ats or raw.ats == "linkedin_easy_apply":
+        return
+    clash = session.exec(select(Company).where(
+        Company.ats == raw.ats, Company.ats_token == raw.ats_token)).first()
+    if clash is None:
+        company.ats, company.ats_token = raw.ats, raw.ats_token
+        session.add(company)
+
+
+def _find_existing(session: Session, raw: RawJob, canon: str, fkey: str) -> Job | None:
+    job = session.exec(select(Job).where(Job.canonical_url == canon)).first()
+    if job:
+        return job
+    src = session.exec(select(JobSource).where(JobSource.source == raw.source,
+                                               JobSource.url == raw.url)).first()
+    if src:
+        return session.get(Job, src.job_id)
+    if raw.ats and raw.ats_job_id:
+        job = session.exec(select(Job).where(Job.ats == raw.ats,
+                                             Job.ats_job_id == raw.ats_job_id)).first()
+        if job:
+            return job
+    since = utcnow() - FUZZY_WINDOW
+    for job in session.exec(select(Job).where(Job.fuzzy_key == fkey)).all():
+        # Two postings on the same ATS with different requisition ids are distinct openings.
+        if raw.ats and job.ats == raw.ats and raw.ats_job_id and job.ats_job_id \
+                and raw.ats_job_id != job.ats_job_id:
+            continue
+        last_seen = job.last_seen if job.last_seen.tzinfo else job.last_seen.replace(
+            tzinfo=since.tzinfo)
+        if last_seen >= since:
+            return job
+    return None
+
+
+# Statuses whose derived data (filters/score) is recomputed when the posting's content changes.
+RESCORABLE = {JobStatus.DISCOVERED, JobStatus.FILTERED_OUT}
+
+
+def _prefer(raw: RawJob) -> bool:
+    """Whether this source's data should overwrite a merged job's apply target: direct ATS
+    postings beat aggregator/LinkedIn listings because we have adapters for them."""
+    return raw.ats in {"greenhouse", "lever", "ashby", "workable", "smartrecruiters"}
+
+
+def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
+    stats = IngestStats()
+    now = utcnow()
+    for raw in raws:
+        target = raw.apply_url or raw.url
+        canon = canonical_url(target)
+        fkey = fuzzy_key(raw.company, raw.title, raw.locations)
+        desc = description_markdown(raw.description_html, raw.description_text)
+        job = _find_existing(session, raw, canon, fkey)
+        if job is None:
+            company = upsert_company(session, raw)
+            job = Job(company_id=company.id, title=raw.title.strip(), locations=raw.locations,
+                      remote=raw.remote, employment_type=raw.employment_type,
+                      salary_min=raw.salary_min, salary_max=raw.salary_max,
+                      salary_currency=raw.salary_currency, description_md=desc,
+                      description_hash=content_hash(desc), apply_url=target,
+                      canonical_url=canon, ats=raw.ats, ats_job_id=raw.ats_job_id,
+                      posted_at=raw.posted_at, department=raw.department, fuzzy_key=fkey)
+            session.add(job)
+            session.flush()
+            session.add(StatusEvent(job_id=job.id, status=JobStatus.DISCOVERED,
+                                    note=f"source={raw.source}"))
+            stats.new += 1
+            stats.new_job_ids.append(job.id)
+        else:
+            known = session.exec(select(JobSource).where(JobSource.job_id == job.id,
+                                                         JobSource.source == raw.source)).first()
+            if known is None:
+                stats.merged += 1
+            else:
+                stats.updated += 1
+            job.last_seen = now
+            if job.status == JobStatus.CLOSED:
+                job.status = JobStatus.DISCOVERED
+                job.priority = None  # re-run rules and triage for the reopened posting
+                job.score = None
+                job.filter_reason = None
+                session.add(StatusEvent(job_id=job.id, status=JobStatus.DISCOVERED,
+                                        note=f"posting reopened (source={raw.source})"))
+            job.closed_at = None
+            company = session.get(Company, job.company_id) if job.company_id else None
+            if company is not None:
+                learn_company_board(session, company, raw)
+            if _prefer(raw) and job.ats != raw.ats:
+                existing = session.exec(select(Job).where(Job.canonical_url == canon)).first()
+                if existing is None or existing.id == job.id:
+                    job.apply_url, job.canonical_url = target, canon
+                    job.ats, job.ats_job_id = raw.ats, raw.ats_job_id
+            authoritative = known is not None and (raw.ats == job.ats or not job.ats)
+            if authoritative:
+                # Re-poll of the same source: its current data replaces what we had.
+                changed = bool(desc) and content_hash(desc) != job.description_hash
+                if desc:
+                    job.description_md, job.description_hash = desc, content_hash(desc)
+                job.title = raw.title.strip() or job.title
+                for attr in ("salary_min", "salary_max", "salary_currency", "employment_type",
+                             "remote", "department", "posted_at"):
+                    if getattr(raw, attr) is not None:
+                        setattr(job, attr, getattr(raw, attr))
+                if raw.locations:
+                    job.locations = raw.locations
+                if changed and job.status in RESCORABLE:
+                    job.status = JobStatus.DISCOVERED
+                    job.priority = job.score = job.filter_reason = None
+                    job.years_required = None
+            else:
+                # A different source for the same job: only fill gaps.
+                if len(desc) > len(job.description_md):
+                    job.description_md, job.description_hash = desc, content_hash(desc)
+                for attr in ("salary_min", "salary_max", "salary_currency", "employment_type",
+                             "remote", "department", "posted_at"):
+                    if getattr(job, attr) is None and getattr(raw, attr) is not None:
+                        setattr(job, attr, getattr(raw, attr))
+                if not job.locations and raw.locations:
+                    job.locations = raw.locations
+            session.add(job)
+        src = session.exec(select(JobSource).where(JobSource.source == raw.source,
+                                                   JobSource.url == raw.url)).first()
+        if src is None:
+            session.add(JobSource(job_id=job.id, source=raw.source,
+                                  source_job_id=raw.source_job_id, url=raw.url))
+        else:
+            src.seen_at = now
+            session.add(src)
+        session.flush()
+    session.commit()
+    return stats
+
+
+def mark_missing_closed(session: Session, source: str, company_id: int,
+                        seen_urls: set[str]) -> int:
+    """After a successful full poll of one company's board, jobs from that board that
+    disappeared are closed (only while not yet applied)."""
+    open_states = {JobStatus.DISCOVERED, JobStatus.SHORTLISTED, JobStatus.SNOOZED,
+                   JobStatus.PACKET_READY, JobStatus.FILTERED_OUT}
+    closed = 0
+    rows = session.exec(select(Job, JobSource).join(JobSource, JobSource.job_id == Job.id).where(
+        Job.company_id == company_id, JobSource.source == source)).all()
+    for job, src in rows:
+        if src.url in seen_urls or job.closed_at is not None:
+            continue
+        job.closed_at = utcnow()
+        if job.status in open_states:
+            job.status = JobStatus.CLOSED
+            session.add(StatusEvent(job_id=job.id, status=JobStatus.CLOSED,
+                                    note="posting removed from board"))
+        session.add(job)
+        closed += 1
+    session.commit()
+    return closed
