@@ -47,13 +47,62 @@ def doctor() -> None:
         raise typer.Exit(1)
 
 
+def _setup_logging() -> None:
+    import logging
+
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
 @app.command()
-def serve(host: str | None = None, port: int | None = None) -> None:
-    """Run the web UI."""
+def serve(host: str | None = None, port: int | None = None,
+          worker: Annotated[bool, typer.Option(help="also run the background worker")] = False
+          ) -> None:
+    """Run the web UI (optionally with the background worker in the same process)."""
     import uvicorn
 
+    _setup_logging()
+    init_db()
+    if worker:
+        from recrute import worker as w
+
+        w.start()
     cfg = get_config().server
     uvicorn.run("recrute.web.app:app", host=host or cfg.host, port=port or cfg.port)
+
+
+@app.command("worker")
+def worker_cmd() -> None:
+    """Run the background worker (discovery, triage, packets, drip submissions, inbox)."""
+    from recrute import worker as w
+
+    _setup_logging()
+    init_db()
+    w.run_forever()
+
+
+@app.command("run")
+def run_task_cmd(task: str) -> None:
+    """Run one worker task now, e.g. `recrute run discover_boards` / `filter` / `score`."""
+    from recrute import worker as w
+
+    _setup_logging()
+    init_db()
+    tasks = {t.name: t for t in w.default_tasks()}
+    if task not in tasks:
+        typer.echo(f"unknown task; choose from: {', '.join(tasks)}", err=True)
+        raise typer.Exit(1)
+    typer.echo(json.dumps(w.run_task(w.build_ctx(), tasks[task]), indent=2, default=str))
+
+
+@app.command()
+def token() -> None:
+    """Print the access token (LAN login + browser extension)."""
+    from recrute.web.security import get_or_create_token
+
+    init_db()
+    with session_scope() as s:
+        typer.echo(get_or_create_token(s))
 
 
 @app.command("settings")
