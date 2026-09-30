@@ -504,3 +504,15 @@ def test_checkpoint_during_dwell_stops_scrolling_at_once():
     with pytest.raises(SourceBlocked):
         list(src.fetch(ctx()))
     assert page.mouse.wheels == []  # not a single scroll after it
+
+
+def test_query_cut_short_is_not_marked_covered():
+    page = FakePage(session_routes())
+    src = make_session(page, per_session_searches=1, per_session_views=1)
+    jobs = list(src.fetch(ctx()))
+    assert len(jobs) == 1 and len(src.searched_queries) == 1
+    assert src.completed_queries() == []  # its other postings were never fetched
+
+    full = make_session(FakePage(session_routes()), per_session_searches=1)
+    list(full.fetch(ctx()))
+    assert full.completed_queries() == full.searched_queries  # everything delivered

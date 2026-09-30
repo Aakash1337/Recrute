@@ -502,3 +502,19 @@ def test_subject_title_must_be_complete_for_a_confident_match(engine, db, subjec
         job_id, conf = match_job(s, cls("rejection", "Neural Widgets"),
                                  "talent@neuralwidgets.example", subject)
         assert job_id == db["ml"] and (conf >= AUTO_APPLY_THRESHOLD) is auto
+
+
+def test_credentials_in_assessment_invites_are_redacted():
+    router = FakeRouter(lambda p: {"results": []})
+    body = ("Hi Ada, please complete the Security Engineer assessment for Acme.\n"
+            "Sign in using these credentials:\n"
+            "Username: ada.lovelace@example.com\n"
+            "Temporary password: AuditCanary123!\n"
+            "Your PIN is 90210CANARY. Access code - CANARYCODE\n"
+            "Good luck!")
+    m = msg("1", "support@hackerrank.com", "Complete your Acme assessment", body)
+    assert prefilter(m)  # still tracked as an assessment...
+    classify_messages(router, [m])
+    prompt = router.calls[0][1]
+    assert "CANARY" not in prompt and "AuditCanary" not in prompt  # ...without the secrets
+    assert "Temporary password: [redacted]" in prompt and "Good luck!" in prompt

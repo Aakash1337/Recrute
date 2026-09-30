@@ -396,6 +396,8 @@ class LinkedInSessionSource:
         # position in the query list, advanced by searches actually made and kept by the
         # caller across sessions and days: every configured query comes round in turn
         self.query_cursor = query_cursor
+        self.searched_queries: list[str] = []
+        self._pending: dict[str, set[str]] = {}  # query -> its new cards not yet delivered
         self.seen_ids = seen_ids if seen_ids is not None else set()
         self.per_session_searches = per_session_searches
         self.per_session_views = per_session_views
@@ -438,6 +440,12 @@ class LinkedInSessionSource:
         check_blocked(page.url, html)
         return html
 
+    def completed_queries(self) -> list[str]:
+        """Searched queries ALL of whose new postings were delivered: only these are covered.
+        One cut short (view budget used up, a page timed out, a stop) keeps its previous
+        checkpoint, so its next search looks back far enough to find what was left."""
+        return [q for q in self.searched_queries if not self._pending.get(q)]
+
     def _queries(self, ctx: SourceContext) -> list[str]:
         qs = self.queries or [q for _, q in ctx.criteria.all_search_queries()]
         if not qs:
@@ -469,6 +477,8 @@ class LinkedInSessionSource:
         views = min(self.per_session_views, self.budget.views_left)
         if ctx.max_items is not None:
             views = min(views, ctx.max_items)
+        self.searched_queries = []
+        self._pending = {}
         with self.page_factory() as page:
             cards: dict[str, SearchCard] = {}
             for q in self._queries(ctx)[:searches]:
@@ -476,9 +486,12 @@ class LinkedInSessionSource:
                     break
                 html = self._visit(page, self._search_url(q, ctx))
                 self.query_cursor += 1
+                self.searched_queries.append(q)
+                self._pending[q] = set()
                 for c in parse_search_page(html):
                     if c.job_id not in self.seen_ids:
                         cards.setdefault(c.job_id, c)
+                        self._pending[q].add(c.job_id)
             for jid, card in cards.items():
                 if views <= 0 or not self.budget.take("views"):
                     break
@@ -487,3 +500,5 @@ class LinkedInSessionSource:
                 self.seen_ids.add(jid)
                 self.new_ids.append(jid)
                 yield to_rawjob(parse_job_view(html, jid), card)
+                for pending in self._pending.values():
+                    pending.discard(jid)

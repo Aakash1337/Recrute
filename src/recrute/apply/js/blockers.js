@@ -27,7 +27,19 @@
   if (/^(just a moment|attention required|verify you are human|security check)/i.test(document.title.trim()))
     return 'captcha: bot challenge page';
   const scopeEl = (args.scope && document.querySelector(args.scope)) || document.body;
-  const text = (document.body ? document.body.innerText : '').slice(0, 30000);
+  // Page text WITHOUT the job's own content (description, job cards): a security posting that
+  // says "investigate unusual activity" or "log in to your SIEM" is not a checkpoint.
+  let text = '';
+  if (document.body) {
+    if (args.exclude) {
+      const clone = document.body.cloneNode(true);
+      clone.querySelectorAll(args.exclude).forEach(e => e.remove());
+      clone.querySelectorAll('script, style, noscript, template').forEach(e => e.remove());
+      text = (clone.textContent || '').replace(/\s+/g, ' ').slice(0, 30000);
+    } else {
+      text = document.body.innerText.slice(0, 30000);
+    }
+  }
   const pw = [...document.querySelectorAll('input[type="password"]')].some(e => {
     const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== 'hidden';
   });

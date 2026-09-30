@@ -256,12 +256,20 @@ def extract_fields(root: Page | Frame, *, scope: str | None = None,
 BLOCKERS_JS = load_js("blockers.js")
 
 
+# the job's own content (never evidence of a checkpoint or login wall, whatever it says)
+JOB_CONTENT = ('#job-details, [class*="jobs-description"], [class*="job-description" i], '
+               '[class*="jobDescription"], [class*="job-card"], [class*="jobs-search-results"], '
+               '[class*="posting-description"], [class*="job-details"], '
+               '[data-testid*="description" i]')
+
+
 def detect_page_blockers(page: Page, *, scope: str | None = None,
-                         extra: Sequence[tuple[str, str]] = ()) -> str | None:
+                         extra: Sequence[tuple[str, str]] = (),
+                         exclude: str = JOB_CONTENT) -> str | None:
     """CAPTCHA (visible challenge only; invisible v3/Enterprise badges are fine), login walls,
     assessments. Checks every frame, since forms are often embedded in iframes.
     `extra` = [(reason, regex)] adapter-specific patterns matched against text and URL."""
-    args = {"scope": scope, "extra": [list(e) for e in extra]}
+    args = {"scope": scope, "extra": [list(e) for e in extra], "exclude": exclude}
     for frame in page.frames:
         try:
             hit = frame.evaluate(BLOCKERS_JS, args)

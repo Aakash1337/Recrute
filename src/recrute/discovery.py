@@ -358,9 +358,13 @@ def discover_linkedin(ctx) -> dict:
         # only now are the postings stored: acknowledge their ids (a failure before this point
         # leaves them unseen, so the next session fetches them again)
         cursor_after = int(getattr(src, "query_cursor", cursor_before))
-        # the queries actually searched this session are now covered up to `now`
-        searched = [rotated[i % len(rotated)] for i in range(cursor_after - cursor_before)] \
-            if rotated else []
+        # only queries whose postings were ALL delivered (and are now stored) are covered up to
+        # `now`; one cut short keeps its older checkpoint so nothing it found is skipped
+        if hasattr(src, "completed_queries"):
+            searched = list(src.completed_queries())
+        else:
+            searched = [rotated[i % len(rotated)] for i in range(cursor_after - cursor_before)] \
+                if rotated else []
 
         def finish(cur: dict):  # merged into the CURRENT state (another run may have saved)
             ids = set(cur.get("seen_ids") or []) | set(src.seen_ids)

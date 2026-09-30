@@ -113,11 +113,20 @@ _AUTH_MAIL = re.compile(
     r"\b(?:reset|change|set|create|forgot) (?:your |the )?password\b|\bpassword (?:reset|change)|"
     r"\b(?:verify|confirm|activate) (?:your )?(?:email|e-mail|account|identity)\b|"
     r"\btwo[- ]factor\b|\b2fa\b|\bnew (?:sign[- ]?in|login|device)\b|"
-    r"\baccount (?:locked|security|verification)\b", re.I)
+    r"\baccount (?:locked|security|verification)\b|"
+    r"\b(?:your|temporary) (?:login )?credentials\b(?! for (?:the|your|this) (?:assessment|"
+    r"test|challenge))", re.I)
 
 
 def is_auth_mail(msg: MailMessage) -> bool:
-    return bool(_AUTH_MAIL.search(msg.subject) or _AUTH_MAIL.search(msg.text[:2000]))
+    """Sign-in / verification / password mail. Judged on the subject; the body only counts
+    when the email isn't about an application (an assessment invite that includes a login is
+    still tracked, with its credentials redacted: see redact_secrets)."""
+    if _AUTH_MAIL.search(msg.subject):
+        return True
+    head = msg.text[:2000]
+    return bool(_AUTH_MAIL.search(head)) and not (
+        _SUBJECT_KEYWORDS.search(msg.subject) or _BODY_KEYWORDS.search(head))
 
 
 # credential-bearing parts of an otherwise relevant email, removed before any LLM call.
@@ -130,10 +139,22 @@ _LONG_TOKEN = re.compile(r"\b[A-Za-z0-9_\-]{24,}\b")
 _BARE_CODE = re.compile(r"(?<![\d\-+(])\b\d{6,8}\b(?![\d\-)])")
 
 
+# "Temporary password: X", "Username - ada", "Your PIN is 1234", "Login: ada / Pa55!" ...
+_CRED_FIELD = (r"(?:temporary |one[- ]time |initial )?(?:password|passcode|pass code|pwd|pin|"
+               r"user ?name|user ?id|login(?: id)?|log-in|sign[- ]in|credentials?|"
+               r"access code|security code|verification code|secret)")
+_CRED_LINE = re.compile(rf"(?im)\b({_CRED_FIELD})\b(\s*(?:\([^)]*\))?\s*[:=\-–]\s*)\S[^\n]*")
+_CRED_IS = re.compile(rf"(?i)\b({_CRED_FIELD})(\s+(?:is|will be|was set to)\s+)\S+")
+
+
 def redact_secrets(text: str) -> str:
     """Links are reduced to their host name, codes and token-like strings are masked. What
     classification needs (who, which role, what happened) stays."""
     text = _URL.sub(r"[link to \1]", text)
+    # credentials handed out in the email (assessment logins, temporary passwords): the label
+    # stays, the value goes
+    text = _CRED_LINE.sub(r"\1\2[redacted]", text)
+    text = _CRED_IS.sub(r"\1\2[redacted]", text)
     text = _CODE_NEAR.sub(r"\1\2[redacted]", text)
     text = _LONG_TOKEN.sub("[redacted]", text)
     return _BARE_CODE.sub("[redacted]", text)

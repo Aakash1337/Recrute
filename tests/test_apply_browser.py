@@ -1212,3 +1212,20 @@ def test_nameless_and_aria_checkboxes_are_verified(context):
     uncovered = coverage_check(fields, packet)
     assert set(problems) | set(uncovered) >= {f.id for f in fields}
     page.close()
+
+
+@pytest.mark.browser
+def test_job_description_text_is_not_a_checkpoint(context):
+    from recrute.apply.adapters.linkedin_easy_apply import LinkedInEasyApplyAdapter
+
+    adapter = LinkedInEasyApplyAdapter()
+    page = context.new_page()
+    page.set_content("""<main><div class="jobs-description__content" id="job-details">
+      <p>As a Security Analyst you will investigate unusual activity and log in to our SIEM
+      to review alerts. You must be able to sign in to continue incident triage.</p></div>
+      <button aria-label="Easy Apply to Security Analyst">Easy Apply</button></main>""")
+    assert adapter.detect_blockers(page) is None
+    page.set_content("""<main><h1>Let's do a quick security check</h1>
+      <p>We noticed unusual activity on your account.</p></main>""")
+    assert adapter.detect_blockers(page) == "linkedin: security checkpoint"
+    page.close()
