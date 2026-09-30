@@ -92,6 +92,8 @@ class LeverAdapter(BaseAdapter):
     submit_selector = ("#btn-submit, button[data-qa=btn-submit], "
                        "#application-form button[type=submit]")
     key_prefer = ("name", "id")
+    # each question card carries its serialized definition (the questions, not answers)
+    transport_fields = (r"cards\[[0-9a-f-]+\]\[baseTemplate\]",)
     aliases: ClassVar[dict[str, list[str]]] = {}
     confirm_url_re = re.compile(r"/(thanks|confirmation)\b", re.I)
 

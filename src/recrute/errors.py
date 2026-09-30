@@ -8,11 +8,19 @@ import traceback
 def safe_error(e: BaseException) -> str:
     """Error text for logs/UI without echoing data. Validation errors (e.g. a malformed profile)
     carry the offending input values, so only their field paths are kept."""
+    import yaml
     from pydantic import ValidationError
 
     if isinstance(e, ValidationError):
         locs = ", ".join(".".join(str(p) for p in err["loc"]) for err in e.errors()[:5])
         return f"ValidationError in {e.title}: invalid field(s) {locs}"
+    if isinstance(e, yaml.YAMLError):
+        # YAML errors quote the offending source line (e.g. your email): position only
+        mark = getattr(e, "problem_mark", None) or getattr(e, "context_mark", None)
+        where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        name = getattr(mark, "name", "") if mark else ""
+        src = f" in {name}" if name and not name.startswith("<") else ""
+        return f"{e.__class__.__name__}: invalid YAML{src}{where}"
     return f"{e.__class__.__name__}: {str(e)[:200]}"
 
 

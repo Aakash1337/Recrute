@@ -127,7 +127,11 @@ class GreenhouseAdapter(BaseAdapter):
     def postprocess(self, fields: list[LiveField]) -> list[LiveField]:
         out = []
         for f in fields:
-            if f.id.startswith("iti-") or f.id in ("resume_text", "cover_letter_text"):
-                continue  # phone-country search box / paste-instead-of-upload alternatives
+            if f.id.startswith("iti-"):
+                continue  # the phone widget's country search box
+            if f.id in ("resume_text", "cover_letter_text") and f.current in (None, ""):
+                # an EMPTY paste-instead-of-upload alternative; one holding text would be
+                # submitted with the upload, so it stays and must match an approved answer
+                continue
             out.append(f)
         return out

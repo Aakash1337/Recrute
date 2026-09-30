@@ -487,6 +487,8 @@ class BaseAdapter:
     submit_selector: str = "button[type=submit], input[type=submit]"
     key_prefer: tuple[str, ...] = ("id", "name")
     container_key_attr: str | None = None
+    # names (regex, full match) of this site's hidden metadata inputs: never answers
+    transport_fields: tuple[str, ...] = ()
     aliases: ClassVar[dict[str, list[str]]] = {}
     blocker_patterns: ClassVar[tuple[tuple[str, str], ...]] = ()
     confirm_text_re: re.Pattern[str] = CONFIRM_TEXT_RE
@@ -578,7 +580,8 @@ class BaseAdapter:
         root = self.form_root(page)
         return self.postprocess(dom.extract_fields(root, scope=self.form_selector,
                                                    prefer=self.key_prefer,
-                                                   container_key_attr=self.container_key_attr))
+                                                   container_key_attr=self.container_key_attr,
+                                                   transport=self.transport_fields))
 
     def postprocess(self, fields: list[LiveField]) -> list[LiveField]:
         return fields

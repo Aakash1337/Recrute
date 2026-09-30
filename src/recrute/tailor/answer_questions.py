@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
+from recrute.apply.dom import parse_date
 from recrute.schemas import FormAnswer, FormQuestion, Profile, ResumeSelection
 from recrute.tailor.answers import (
     CONTACT_KINDS,
@@ -202,6 +203,19 @@ def _education_value(kind: str, q: FormQuestion, profile: Profile) -> str | None
     return value or None
 
 
+_DEGREE_QUALIFIER = re.compile(r"undergrad|bachelor|\bgraduate\b|grad school|master|ph\.?d|"
+                               r"doctor|most recent|current|latest", re.I)
+
+
+def _degree_value(q: FormQuestion, profile: Profile) -> str | None:
+    """"Degree (undergraduate)" is about THAT entry; only an unqualified "Degree" / "Highest
+    degree" means the highest degree actually earned."""
+    if _DEGREE_QUALIFIER.search(f"{q.label} {q.description}"):
+        ed = education_for(q, profile, "degree")
+        return ed.degree if ed is not None and _completed(ed) else None
+    return highest_completed_degree(profile)
+
+
 def profile_answer(q: FormQuestion, profile: Profile) -> FormAnswer | None:
     kind = classify_question(q)
     if kind not in CONTACT_KINDS:
@@ -209,8 +223,12 @@ def profile_answer(q: FormQuestion, profile: Profile) -> FormAnswer | None:
         kind = next((k for k, rx in _PROFILE_RULES if rx.fullmatch(core)), None)
     if kind is None or q.type in ("file", "checkbox"):
         return None
-    raw = (_education_value(kind, q, profile) if kind in ("gpa", "major", "school", "grad_date")
-           else _profile_value(kind, profile))
+    if kind == "degree":
+        raw = _degree_value(q, profile)
+    elif kind in ("gpa", "major", "school", "grad_date"):
+        raw = _education_value(kind, q, profile)
+    else:
+        raw = _profile_value(kind, profile)
     value = format_value(q, raw)
     if value is None:
         return None
@@ -357,6 +375,9 @@ def answer_questions(questions: list[FormQuestion], *, profile: Profile, bank: A
             continue
         hit = match_question(q, bank, priority=priority) or profile_answer(q, profile)
         if hit is not None:
+            if q.type == "date" and hit.value not in (None, "") and parse_date(hit.value) is None:
+                # "May 2024" / "2024" is not a calendar date: never pad it with an invented day
+                hit = hit.model_copy(update={"needs_review": True, "confidence": 0.3})
             done[q.id] = hit
             continue
         kind = classify_question(q)

@@ -321,3 +321,21 @@ def test_hn_roles_get_their_own_requirements():
     assert "10+" not in secs["Security Analyst"] and "2+" in secs["Security Analyst"]
     assert "We protect hospitals" in secs["Security Analyst"]
     assert "10+" in secs["Senior Security Engineer"]
+
+
+def test_hn_role_without_link_does_not_borrow_another_roles_posting():
+    from recrute.sources.hn import jobs_from_extraction
+
+    c = {"id": 42, "created_at_i": 1_750_000_000,
+         "text": "Acme | Remote (US)<p>Security Engineer: apply at "
+                 "<a href=\"https://boards.greenhouse.io/acme/jobs/111\">"
+                 "https://boards.greenhouse.io/acme/jobs/111</a><p>"
+                 "Data Analyst: email jobs@acme.test"}
+    rows = {"jobs": [
+        {"comment_id": 42, "company": "Acme", "title": "Security Engineer", "apply_url": None},
+        {"comment_id": 42, "company": "Acme", "title": "Data Analyst", "apply_url": None}]}
+    jobs = {j.title: j for j in jobs_from_extraction(rows, [c])}
+    assert jobs["Security Engineer"].ats_job_id == "111"
+    assert jobs["Data Analyst"].ats_job_id is None
+    assert "111" not in (jobs["Data Analyst"].apply_url or "")
+    assert jobs["Data Analyst"].source_job_id != jobs["Security Engineer"].source_job_id

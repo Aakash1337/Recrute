@@ -434,7 +434,9 @@ def profile_ingest():
                                lambda: Session(get_engine()))
             ingest_resume(paths, router, apply=False)
         except Exception as e:
-            _ingest_state["error"] = f"{e.__class__.__name__}: {str(e)[:300]}"
+            from recrute.errors import safe_error
+
+            _ingest_state["error"] = safe_error(e)
         finally:
             _ingest_state["running"] = False
 

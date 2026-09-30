@@ -712,3 +712,34 @@ def test_future_ever_still_answered(label):
     wa = WorkAuthorization(authorized_to_work_in_us=True, requires_sponsorship_now=False,
                            requires_sponsorship_future=False)
     assert sponsorship_answer(label, wa) is False
+
+
+@pytest.mark.parametrize("label,desc,expected", [
+    ("Degree (undergraduate)", "", "Bachelor of Science"),
+    ("Degree", "Your undergraduate degree", "Bachelor of Science"),
+    ("Degree", "", "Master of Science"),
+])
+def test_degree_answers_respect_qualifiers(label, desc, expected):
+    from recrute.schemas import Education, FormQuestion, Profile
+    from recrute.tailor.answer_questions import profile_answer
+
+    p = Profile(name="Ada", education=[
+        Education(id="e1", school="Tech U", degree="Master of Science", end="2024"),
+        Education(id="e2", school="State U", degree="Bachelor of Science", end="2021")])
+    a = profile_answer(FormQuestion(id="d", label=label, description=desc), p)
+    assert a is not None and a.value == expected
+
+
+@pytest.mark.parametrize("end", ["May 2024", "2024", "2024-05"])
+def test_partial_dates_are_not_padded_into_date_fields(end):
+    from recrute.apply.dom import date_text, parse_date
+    from recrute.schemas import Education, FormQuestion, Profile
+
+    p = Profile(name="Ada", education=[
+        Education(id="e1", school="Tech U", degree="Master of Science", end=end)])
+    res = answer_questions([FormQuestion(id="g", label="Graduation date", type="date")],
+                           profile=p, bank=AnswerBank(), router=None)
+    a = res.answers[0]
+    assert a.needs_review
+    assert parse_date(end) is None and date_text(end) is None
+    assert parse_date("2024-05-17") is not None and parse_date("May 17, 2024") is not None

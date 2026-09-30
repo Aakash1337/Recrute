@@ -1008,3 +1008,45 @@ def test_static_form_includes_form_associated_controls():
       <select id="s" name="sponsor" form="f"><option>Yes</option><option>No</option></select>
       <input name="elsewhere" form="g"></body></html>""")
     assert {q.id for q in qs} == {"n", "sponsor"}
+
+
+@pytest.mark.browser
+def test_hidden_answers_with_metadata_like_names_or_json_are_verified(context):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <label for="n">Name</label><input id="n" name="n" value="Ada">
+      <input type="hidden" name="language_proficiency" value="Native">
+      <input type="hidden" name="screening_answers" value='{"sponsorship":"No"}'>
+      <input type="hidden" name="source" value="LinkedIn">
+      <input type="hidden" name="authenticity_token" value="abc">
+      <input type="hidden" name="loginCsrfParam" value="abc">
+      <input type="hidden" name="cards[1c719ca9-0000][baseTemplate]" value='{"text":"Q"}'>
+    </form>""")
+    fields = {f.id: f for f in dom.extract_fields(page)}
+    assert {"language_proficiency", "screening_answers", "source"} <= set(fields)
+    assert "authenticity_token" not in fields and "loginCsrfParam" not in fields
+    assert "cards[1c719ca9-0000][baseTemplate]" in fields  # generic: not exempt
+    lever = {f.id for f in dom.extract_fields(
+        page, transport=[r"cards\[[0-9a-f-]+\]\[baseTemplate\]"])}
+    assert "cards[1c719ca9-0000][baseTemplate]" not in lever
+    problems = verify_fields(list(fields.values()),
+                             Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")]),
+                             {})
+    assert {"language_proficiency", "screening_answers", "source"} <= set(problems)
+    page.close()
+
+
+def test_greenhouse_keeps_populated_paste_alternatives():
+    from recrute.apply.base import LiveField, verify_fields
+
+    fields = [LiveField(id="resume_text", label="Paste resume", type="textarea",
+                        current="UNAPPROVED resume text"),
+              LiveField(id="cover_letter_text", label="Paste cover letter", type="textarea",
+                        current=None),
+              LiveField(id="iti-0__search-input", label="Search", type="text", current="x")]
+    kept = GreenhouseAdapter().postprocess(fields)
+    assert [f.id for f in kept] == ["resume_text"]
+    assert "resume_text" in verify_fields(kept, Packet(job_id=1), {})

@@ -51,7 +51,10 @@ def parse_llm[M: BaseModel](model: type[M], output: Any, what: str) -> M:
     try:
         return model.model_validate(output)
     except ValidationError as e:
-        raise LLMError(f"{what}: LLM output did not match the schema: {e}") from e
+        from recrute.errors import safe_error
+
+        # the error would quote the output (your profile facts): field paths only
+        raise LLMError(f"{what}: LLM output did not match the schema: {safe_error(e)}") from None
 
 
 # --------------------------------------------------------------------------- misc text

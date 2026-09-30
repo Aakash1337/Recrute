@@ -106,7 +106,7 @@ def same_value(qtype: str, current: Any, approved: Any) -> bool:
     Only explicit, type-specific equivalences apply:
       * all types: surrounding whitespace, Unicode NFC form, CRLF vs LF;
       * email: case-insensitive;
-      * tel: formatting ignored (digits compared, national vs +country form).
+      * tel: formatting ignored (digits compared; +1 optional on ten-digit US numbers).
     Dates are compared by calendar day elsewhere (dates_equal)."""
     def canon(v: Any) -> str:
         return unicodedata.normalize("NFC", as_text(v)).replace("\r\n", "\n").strip()
@@ -114,8 +114,10 @@ def same_value(qtype: str, current: Any, approved: Any) -> bool:
     a, b = canon(current), canon(approved)
     if qtype == "tel":
         da, db = re.sub(r"\D", "", a), re.sub(r"\D", "", b)
-        return bool(db) and (da == db or (len(db) >= 7 and len(da) >= 7
-                                          and (da.endswith(db) or db.endswith(da))))
+        # the whole number must match; the only accepted difference is the US country code
+        # on a ten-digit NANP number (5551234567 vs +1 555 123 4567)
+        us = {da, db} == {da[-10:], "1" + da[-10:]} and len(da[-10:]) == 10
+        return bool(db) and (da == db or us)
     if qtype == "email":
         return a.casefold() == b.casefold()
     return a == b
@@ -157,10 +159,14 @@ def parse_date(value: Any, hint: str = "") -> date | None:
         pass
     order = _date_order(hint)
     try:
-        return dateparser.parse(s, dayfirst=order == "dmy", yearfirst=order == "ymd",
-                                default=datetime(2000, 1, 1)).date()
+        # parsed against two different defaults: a component that isn't in the text (a
+        # bare year, "May 2024") would be invented from the default, so partial dates -> None
+        a, b = (dateparser.parse(s, dayfirst=order == "dmy", yearfirst=order == "ymd",
+                                 default=d).date()
+                for d in (datetime(2000, 1, 1), datetime(2004, 2, 2)))
     except (ValueError, OverflowError):
         return None
+    return a if a == b else None
 
 
 def date_text(value: Any, hint: str = "") -> str | None:
@@ -197,14 +203,16 @@ EXTRACT_JS = load_js("extract_fields.js")
 def extract_fields(root: Page | Frame, *, scope: str | None = None,
                    prefer: Sequence[str] = ("id", "name"), container_key_attr: str | None = None,
                    include_hidden: bool = False, form_index: int | None = None,
+                   transport: Sequence[str] = (),
                    ) -> list[LiveField]:
     """Read the fields currently in the DOM under `scope` (or document.forms[form_index])
-    without touching them."""
+    without touching them. `transport`: regexes (full match) for the names of hidden inputs
+    that are known site metadata, not answers (adapter-specific)."""
     from recrute.apply.base import LiveField
 
     raw = root.evaluate(EXTRACT_JS, {"scope": scope, "prefer": list(prefer),
                                      "containerKeyAttr": container_key_attr,
-                                     "formIndex": form_index})
+                                     "formIndex": form_index, "transport": list(transport)})
     fields: list[LiveField] = []
     seen: dict[str, int] = {}
     for i, r in enumerate(raw):

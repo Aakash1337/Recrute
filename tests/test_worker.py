@@ -156,3 +156,18 @@ def test_debug_traceback_keeps_validation_inputs_out_of_logs(engine, caplog):
     assert "CANARY" not in text
     assert "birth_date" in text and "test_worker.py" in text and not any(
         r.exc_info for r in caplog.records)
+
+
+def test_safe_error_hides_yaml_source_lines():
+    import yaml
+
+    from recrute.errors import safe_error, safe_traceback
+
+    try:
+        yaml.safe_load("contact:\n  email: canary@example.test: [broken\n")
+    except yaml.YAMLError as e:
+        err = e
+    assert "canary" in str(err)  # PyYAML quotes the source line...
+    msg, tb = safe_error(err), safe_traceback(err)
+    assert "canary" not in msg and "canary" not in tb  # ...we don't
+    assert "line 2" in msg

@@ -123,6 +123,11 @@
     if (!scope.contains(e) && !external.includes(e)) external.push(e);
   }
   const all = s => [...scope.querySelectorAll(s), ...external.filter(e => e.matches(s))];
+  const TRANSPORT_WORDS = new Set(['csrf', 'xsrf', 'csrfmiddlewaretoken', 'authenticity',
+    'nonce', 'captcha', 'recaptcha', 'hcaptcha', 'turnstile', 'utm', 'trk', 'fingerprint']);
+  const TRANSPORT_NAMES = new Set(['_token', 'token', '_method', 'gh_src', 'gh_jid',
+    'session_redirect', 'redirect', 'redirect_url', 'return_to', 'timestamp', 'locale']);
+  const transport = (args.transport || []).map(p => new RegExp(`^(?:${p})$`));
   const out = [];
   const used = new Set();
   // Help/description text attached to a field (aria-describedby, or hint text in its
@@ -208,12 +213,16 @@
     if (used.has(el)) continue;
     const t = (el.getAttribute('type') || el.type || '').toLowerCase();
     if (t === 'hidden') {
-      // Native hidden inputs are usually transport metadata (CSRF, tracking, requisition ids,
-      // CAPTCHA tokens, serialized form definitions) or back a visible widget. Anything else
+      // Native hidden inputs are usually transport metadata (CSRF, tracking, CAPTCHA tokens) or
+      // back a visible widget. Exempt only names made of known metadata words, or names the
+      // adapter lists (exact patterns, e.g. Lever's serialized card definitions). Anything else
       // with a value may be an applicant answer the form will submit: verify it.
-      const TRANSPORT = /csrf|token|authenticity|nonce|captcha|turnstile|basetemplate|utm_|referr|source|tracking|gh_src|gh_jid|job_?id|posting|requisition|req_?id|board|_method|origin|session|timestamp|form_?id|version|lever-|account_?id|applicationform|fingerprint|locale|lang/i;
       const v = (el.value || '').trim();
-      if (!el.name || !v || TRANSPORT.test(el.name) || /^[\[{]/.test(v)) continue;
+      if (!el.name || !v) continue;
+      if (transport.some(rx => rx.test(el.name))) continue;
+      const words = el.name.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
+        .split(/[^a-z0-9]+/).filter(Boolean);
+      if (words.some(w => TRANSPORT_WORDS.has(w)) || TRANSPORT_NAMES.has(el.name.toLowerCase())) continue;
       const c1 = container(el);
       const backs1 = c1 && [...c1.box.querySelectorAll('input, select, textarea, [role="combobox"]')]
         .some(o => o !== el && o.type !== 'hidden' && visible(o));

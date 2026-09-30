@@ -170,10 +170,14 @@ def heuristic_parse(c: dict[str, Any], title_rx: re.Pattern[str] | None = None) 
 
 def _rawjob(c: dict[str, Any], company: str, title: str, locations: list[str],
             remote: str | None, apply_url: str | None, etype: str | None, lo: int | None,
-            hi: int | None, cur: str | None, text: str | None = None) -> RawJob:
+            hi: int | None, cur: str | None, text: str | None = None,
+            link_text: str | None = None) -> RawJob:
+    """`link_text`: where an ATS link may be inferred from when there is no explicit
+    apply_url (a multi-role comment passes only the role's own section: another role's
+    posting link must never become this role's destination)."""
     raw_html = htmllib.unescape(c.get("text") or "")
     text = text if text is not None else comment_text(c)
-    ats = ats_fields(raw_html, apply_url=apply_url)
+    ats = ats_fields(raw_html if link_text is None else link_text, apply_url=apply_url)
     if not ats.get("apply_url") and apply_url:
         ats["apply_url"] = apply_url
     return RawJob(
@@ -207,15 +211,20 @@ def role_sections(text: str, titles: list[str]) -> dict[str, str]:
     """Split a multi-role comment so each role gets the shared header (company intro, perks)
     plus ONLY its own section, not other roles' requirements (a junior role mustn't inherit a
     senior role's "10+ years"). A title not found in the text gets just the shared header."""
+    header, own = _split_roles(text, titles)
+    return {t: (header + "\n\n" + own[t]).strip() if own.get(t) else header for t in titles}
+
+
+def _split_roles(text: str, titles: list[str]) -> tuple[str, dict[str, str]]:
+    """(shared header, {title: that role's own section}) for a multi-role comment."""
     low = text.lower()
     found = sorted((p, t) for t in titles if (p := low.find(t.lower())) >= 0)
     header_end = found[0][0] if found else len(text)
-    header = text[:header_end].strip()
-    out = {t: header for t in titles}
+    own: dict[str, str] = {}
     for i, (pos, t) in enumerate(found):
         end = found[i + 1][0] if i + 1 < len(found) else len(text)
-        out[t] = (header + "\n\n" + text[pos:end].strip()).strip()
-    return out
+        own[t] = text[pos:end].strip()
+    return text[:header_end].strip(), own
 
 
 def jobs_from_extraction(result: Any, batch: list[dict[str, Any]]) -> list[RawJob]:
@@ -238,14 +247,15 @@ def jobs_from_extraction(result: Any, batch: list[dict[str, Any]]) -> list[RawJo
             apply_url = None  # only trust links that actually appear in the comment
         lo, hi = j.get("salary_min"), j.get("salary_max")
         titles = [t for t in titles_by_comment.get(int(c["id"]), []) if t]
-        role_text = None
+        role_text = link_text = None
         if len(titles) > 1:  # several roles in one comment: role-specific description
             role_text = role_sections(comment_text(c), titles).get(j["title"].strip())
+            link_text = _split_roles(comment_text(c), titles)[1].get(j["title"].strip(), "")
         rj = _rawjob(c, j["company"], j["title"], j.get("locations") or [],
                      j.get("remote"), apply_url, j.get("employment_type"),
                      lo if isinstance(lo, int) and lo > 0 else None,
                      hi if isinstance(hi, int) and hi > 0 else None,
-                     j.get("salary_currency"), role_text)
+                     j.get("salary_currency"), role_text, link_text)
         if role_text is not None:
             rj = rj.model_copy(update={"description_html": None})  # html holds every role
         out.append(rj)

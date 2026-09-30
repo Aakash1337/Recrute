@@ -274,10 +274,10 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
         receipt.snapshot(page, "error")
         if clicked_submit:
             keep_open = True
-            return done("needs_human", f"error after submit was clicked (verify manually): {e}"
-                        [:300])
+            return done("needs_human", "error after submit was clicked (verify manually): "
+                        f"{safe_error(e)}"[:300])
         keep_open = mode == "fill_and_pause"
-        return done("failed", f"error before submit: {type(e).__name__}: {e}"[:300])
+        return done("failed", f"error before submit: {safe_error(e)}"[:300])
     finally:
         if not keep_open:
             try:

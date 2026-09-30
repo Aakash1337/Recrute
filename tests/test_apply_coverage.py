@@ -386,6 +386,10 @@ def test_values_are_compared_exactly_not_like_labels():
     assert same_value("tel", "(415) 555-0100", "4155550100")
     assert same_value("tel", "+1 415 555 0100", "415-555-0100")
     assert not same_value("tel", "415 555 0199", "4155550100")
+    assert not same_value("tel", "555 0100", "4155550100")  # missing area code
+    assert not same_value("tel", "+44 415 555 0100", "4155550100")  # other country code
+    assert not same_value("tel", "+1 415 555 0100", "+91 415 555 0100")
+    assert same_value("tel", "+91 98765 43210", "+919876543210")
     assert same_value("textarea", "line1\r\nline2", "line1\nline2")
     f = LiveField(id="u", label="Portfolio", type="text", current=url.lower())
     assert not value_matches(f, url.lower(), url)
