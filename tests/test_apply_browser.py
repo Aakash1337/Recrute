@@ -451,6 +451,8 @@ def li_packet(resume: Path) -> Packet:
                               "sponsorship for employment visa status?", type="select",
                               options=["Yes", "No"])]
     return Packet(job_id=4, resume_pdf=str(resume), questions=questions, answers=[
+        a("first_name", "Ada"), a("last_name", "Lovelace"), a("email", "ada@example.com"),
+        a("phone_country", "United States (+1)"),
         a("phone", "4155550100"), a("bank_py_years", "3"), a("bank_auth", True),
         a("bank_sponsor", "No"),
     ])

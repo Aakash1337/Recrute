@@ -488,3 +488,19 @@ def test_guest_queries_rotate_across_runs():
         list(src.fetch(SourceContext(http=FakeHttp({}), criteria=crit)))
         offset = src.next_offset
     assert set(all_q) <= set(searched)  # every configured query covered within 3 runs
+
+
+def test_checkpoint_during_dwell_stops_scrolling_at_once():
+    from recrute.sources import SourceBlocked
+
+    page = FakePage(session_routes())
+    src = make_session(page)
+    checkpoint = read("linkedin_session_checkpoint.html")
+
+    def sleep(seconds):  # the checkpoint appears during the first pause
+        page._url, page._html = "https://www.linkedin.com/checkpoint/challenge/AgF", checkpoint
+
+    src.sleep = sleep
+    with pytest.raises(SourceBlocked):
+        list(src.fetch(ctx()))
+    assert page.mouse.wheels == []  # not a single scroll after it

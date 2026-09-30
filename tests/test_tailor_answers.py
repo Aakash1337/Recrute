@@ -815,3 +815,16 @@ def test_gpa_scale_qualifiers(gpa, label, desc, expected):
                                                  gpa=gpa)])
     a = profile_answer(FormQuestion(id="g", label=label, description=desc), p)
     assert (a.value if a else None) == expected
+
+
+@pytest.mark.parametrize("phone,expected", [("+1 415 555 0100", "United States (+1)"),
+                                            ("(415) 555-0100", "United States (+1)"),
+                                            ("+44 20 7946 0958", None), ("", None)])
+def test_phone_country_is_answered_only_for_us_numbers(phone, expected):
+    from recrute.schemas import FormQuestion, Profile
+    from recrute.tailor.answer_questions import profile_answer
+
+    q = FormQuestion(id="pc", label="Phone country code", type="select",
+                     options=["United States (+1)", "Canada (+1)", "United Kingdom (+44)"])
+    a = profile_answer(q, Profile(name="Ada", phone=phone))
+    assert (a.value if a else None) == expected

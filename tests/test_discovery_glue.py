@@ -367,3 +367,46 @@ def test_linkedin_ingest_failure_leaves_ids_unseen(engine, monkeypatch):
     with Session(engine) as s:
         st = get_state(s, "linkedin_session")
         assert st.get("seen_ids", []) == [] and st["searches"] == 2  # budget still counted
+
+
+def test_linkedin_session_looks_back_to_each_querys_last_search(engine, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    import recrute.sources.linkedin_session as ls
+    from recrute.settings import get_state, set_setting, set_state
+
+    queries = [q for _, q in Criteria().all_search_queries()]
+    seen = {}
+
+    class Source:
+        per_session_searches = 3
+
+        def __init__(self, **kw):
+            from recrute.sources.linkedin_session import SessionBudget
+
+            self.budget = SessionBudget(max_searches=10, max_views=10)
+            self.seen_ids = set(kw.get("seen_ids") or ())
+            self.query_cursor = kw.get("query_cursor", 0)
+
+        def fetch(self, ctx):
+            seen["since"] = ctx.since
+            self.query_cursor += 3  # searched the three queries due
+            return iter(())
+
+    four_days = datetime.now(UTC) - timedelta(days=4)
+    with Session(engine) as s:
+        set_setting(s, "sources_enabled", {"linkedin_session": True})
+        set_setting(s, "active_hours", [0, 24])
+        set_state(s, "linkedin_session", {"query_cursor": 0, "query_ok": {
+            q: four_days.isoformat() for q in queries[:3]}})
+    monkeypatch.setattr(ls, "LinkedInSessionSource", Source)
+    monkeypatch.setattr(discovery, "Http", lambda **kw: None)
+    discovery.discover_linkedin(_ctx(engine))
+    assert seen["since"] <= four_days  # the whole gap since those queries last ran
+    with Session(engine) as s:
+        st = get_state(s, "linkedin_session")
+        assert st["query_cursor"] == 3
+        assert all(datetime.fromisoformat(st["query_ok"][q]) > four_days for q in queries[:3])
+    # queries never searched before: a whole rotation back, not just 24 hours
+    discovery.discover_linkedin(_ctx(engine))
+    assert datetime.now(UTC) - seen["since"] > timedelta(days=2)

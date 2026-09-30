@@ -402,11 +402,14 @@ class LinkedInSessionSource:
         return start <= self.now().hour < end
 
     def _dwell(self, page: PageLike) -> None:
-        """Spend 8-30s on the page, scrolling down in uneven steps (sometimes back up)."""
+        """Spend 8-30s on the page, scrolling down in uneven steps (sometimes back up). The page
+        is re-checked for a checkpoint / sign-in wall after every pause, BEFORE the next scroll:
+        a security check stops all input at once (SourceBlocked)."""
         total = self.rng.uniform(*self.dwell)
         weights = [self.rng.uniform(0.6, 1.4) for _ in range(self.rng.randint(3, 7))]
         for i, w in enumerate(weights):
             self.sleep(total * w / sum(weights))
+            check_blocked(page.url, page.content())
             dy = self.rng.randint(250, 900)
             if i > 1 and self.rng.random() < 0.2:
                 dy = -self.rng.randint(100, 400)

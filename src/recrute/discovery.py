@@ -2,6 +2,7 @@
 budgeted logged-in LinkedIn session. Everything found goes through the normal ingest/dedup."""
 
 import logging
+import math
 from datetime import UTC, date, datetime, timedelta
 
 from sqlmodel import Session, select
@@ -260,6 +261,10 @@ def _guarded_page_factory(ctx):
     return factory
 
 
+# how often the worker runs a logged-in LinkedIn session (worker.default_tasks)
+LINKEDIN_SESSION_EVERY = timedelta(hours=12)
+
+
 def discover_linkedin(ctx) -> dict:
     """Logged-in, read-only LinkedIn browsing with a persisted daily budget, seen-ID cache and
     kill-switch backoff (PLAN 3.2 Tier 3). Off unless enabled in Settings."""
@@ -291,10 +296,24 @@ def discover_linkedin(ctx) -> dict:
         kwargs = {}
         if getattr(ctx, "config", None) is not None:
             kwargs["page_factory"] = _guarded_page_factory(ctx)
+        cursor_before = int(state.get("query_cursor", 0))
         src = LinkedInSessionSource(budget=budget, seen_ids=seen,
                                     active_hours=(int(hours[0]), int(hours[1])),
-                                    query_cursor=int(state.get("query_cursor", 0)), **kwargs)
-        sctx = SourceContext(http=Http(), criteria=ctx.criteria, router=ctx.router)
+                                    query_cursor=cursor_before, **kwargs)
+        # each query only comes round every few sessions: look back to the OLDEST successful
+        # search of the queries due now (a never-searched one: a whole rotation)
+        queries = [q for _, q in ctx.criteria.all_search_queries()]
+        per = max(1, int(getattr(src, "per_session_searches", 3)))
+        rotated = (queries[cursor_before % len(queries):]
+                   + queries[:cursor_before % len(queries)]) if queries else []
+        due = rotated[:per]
+        ok = state.get("query_ok") or {}
+        rotation = LINKEDIN_SESSION_EVERY * math.ceil(len(queries) / per) if queries \
+            else LINKEDIN_SESSION_EVERY
+        since = min((datetime.fromisoformat(ok[q]) if q in ok else now - rotation
+                     for q in due), default=None)
+        sctx = SourceContext(http=Http(), criteria=ctx.criteria, router=ctx.router,
+                             since=since - timedelta(hours=1) if since else None)
         found = []
         result: dict = {}
         crashed: Exception | None = None
@@ -326,7 +345,12 @@ def discover_linkedin(ctx) -> dict:
         # only now are the postings stored: acknowledge their ids (a failure before this point
         # leaves them unseen, so the next session fetches them again)
         state["seen_ids"] = sorted(src.seen_ids)[-5000:]
-        state["query_cursor"] = int(getattr(src, "query_cursor", state.get("query_cursor", 0)))
+        cursor_after = int(getattr(src, "query_cursor", cursor_before))
+        state["query_cursor"] = cursor_after
+        # the queries actually searched this session are now covered up to `now`
+        searched = [rotated[i % len(rotated)] for i in range(cursor_after - cursor_before)] \
+            if rotated else []
+        state["query_ok"] = {**ok, **{q: now.isoformat() for q in searched}}
         set_state(s, "linkedin_session", state)
         result.update(searches=state["searches"], views=state["views"])
         if crashed is not None:

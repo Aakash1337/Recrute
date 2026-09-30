@@ -175,12 +175,10 @@ def is_contact_field(q: FormQuestion) -> bool:
 
 def prefill_ok(q: FormQuestion, accept_prefilled: bool, packet: Packet | None = None,
                aliases: Mapping[str, Sequence[str]] = {}) -> bool:
-    """May a value already on the page stand without an approved answer? Never for a question
-    that changed since CP2 (it must be approved again)."""
-    if packet is not None and identity_changed(q, packet, aliases):
-        return False
-    return (accept_prefilled and is_contact_field(q)
-            and getattr(q, "current", None) not in (None, "", []))
+    """May a value already on the page stand without an approved answer? No: every value that
+    is submitted must be one you approved at CP2 (PLAN 3.7), contact details included. Sites
+    that prefill contact fields (LinkedIn) get those answered in the packet instead."""
+    return False
 
 
 _FAMILY = {"text": "text", "textarea": "text", "email": "text", "tel": "text", "url": "text",

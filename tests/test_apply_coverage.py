@@ -118,11 +118,19 @@ def test_label_match_and_aliases():
                           aliases=GreenhouseAdapter.aliases) == []
 
 
-def test_prefilled_only_counts_when_allowed():
+def test_prefilled_contact_value_needs_an_approved_answer():
     live = LiveField(id="email", label="Email address", type="select", required=True,
                      current="ada@example.com", options=["ada@example.com"])
     assert coverage_check([live], packet()) == ["email"]
-    assert coverage_check([live], packet(), accept_prefilled=True) == []
+    # a site's prefill is never approval (PLAN 3.7): even where the adapter allows prefills
+    assert coverage_check([live], packet(), accept_prefilled=True) == ["email"]
+    country = LiveField(id="phone_country", label="Phone country code", type="select",
+                        required=True, current="United States (+1)",
+                        options=["United States (+1)", "Canada (+1)"])
+    assert coverage_check([country], packet(a("phone_country", None)),
+                          accept_prefilled=True) == ["phone_country"]
+    assert coverage_check([country], packet(a("phone_country", "United States (+1)")),
+                          accept_prefilled=True) == []
 
 
 # --------------------------------------------------------------------------- parsers
@@ -325,7 +333,7 @@ def test_prefilled_screening_question_is_not_covered():
                         required=True, options=["Yes", "No"], current="No")
     phone = LiveField(id="p", label="Mobile phone number", type="tel", required=True,
                       current="4155550100")
-    assert coverage_check([sponsor, phone], packet(), accept_prefilled=True) == ["s"]
+    assert coverage_check([sponsor, phone], packet(), accept_prefilled=True) == ["s", "p"]
 
 
 def test_prefilled_resume_file_is_never_coverage():
@@ -354,7 +362,7 @@ def test_verify_fields_flags_unapproved_and_wrong_values(tmp_path):
     got = verify_fields(fields, pk, files, accept_prefilled=False)
     assert set(got) == {"gender", "sponsor", "email", "cv"}
     got = verify_fields(fields, pk, files, accept_prefilled=True)
-    assert set(got) == {"gender", "sponsor", "cv"}
+    assert set(got) == {"gender", "sponsor", "email", "cv"}  # prefills need approval too
 
 
 def test_dates_compare_by_calendar_day():

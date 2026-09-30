@@ -373,6 +373,7 @@ def test_changed_contact_question_is_not_accepted_as_prefill(answered):
                      description="Use your current employer's work email address")
     assert coverage_check([live], packet, accept_prefilled=True) == ["email"]
     assert "email" in verify_fields([live], packet, {}, accept_prefilled=True)
-    # unchanged, the LinkedIn contact prefill is still accepted
+    # unchanged: covered only by an approved answer that matches (prefills aren't approval)
     same = live.model_copy(update={"description": ""})
-    assert coverage_check([same], packet, accept_prefilled=True) == []
+    assert coverage_check([same], packet, accept_prefilled=True) == ([] if answered
+                                                                      else ["email"])

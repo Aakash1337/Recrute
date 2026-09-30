@@ -8,9 +8,9 @@ Additional questions -> Review, driven by footer buttons aria-labelled "Continue
 <Company>!".
 
 Rules specific to this channel:
-  * only CONTACT fields (name, email, phone, phone country, city) that LinkedIn prefills from
-    the user's own profile may keep their value; screening / consent questions always need an
-    approved answer, and unapproved defaults are cleared or sent to CP3;
+  * every value must be an approved packet answer, including the contact fields LinkedIn
+    prefills from your profile (name, email, phone, phone country): the packet answers them
+    (BASELINE_QUESTIONS), and a prefilled value without a matching approved answer goes to CP3;
   * the packet's resume must be attached and shown as selected, else CP3 (LinkedIn would
     otherwise send a previously saved resume);
   * questions only appear step by step, so coverage is re-checked on EVERY step and the
@@ -63,7 +63,7 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
     name = "linkedin_easy_apply"
     ats_names = ("linkedin", "linkedin_easy_apply")
     hosts = ("linkedin.com",)
-    accept_prefilled = True  # contact-field allowlist only (see base.is_contact_field)
+    accept_prefilled = False  # prefills are never approval (see base.prefill_ok)
     # a logout mid-session is unexpected here: we rely on the saved session
     account_security_kinds: ClassVar[tuple[str, ...]] = ("captcha", "checkpoint", "login_wall")
     form_selector = MODAL

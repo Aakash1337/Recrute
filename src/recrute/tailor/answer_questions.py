@@ -25,6 +25,7 @@ from recrute.tailor.answers import (
     is_sensitive_question,
     match_option,
     match_question,
+    phone_country,
 )
 from recrute.tailor.common import (
     STR,
@@ -142,6 +143,7 @@ def _profile_value(kind: str, profile: Profile) -> str | None:
         "full_name": profile.name or None,
         "email": profile.email or None,
         "phone": profile.phone or None,
+        "phone_country": phone_country(profile.phone),
         "city": profile.location or None,
         "linkedin": links.get("linkedin"),
         "github": links.get("github"),

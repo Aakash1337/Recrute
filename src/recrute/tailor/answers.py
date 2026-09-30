@@ -266,6 +266,8 @@ _FIELD_RULES: list[tuple[str, re.Pattern[str]]] = [
         ("last_name", r"(legal )?(last name|surname|family name)"),
         ("full_name", r"(full |legal |full legal )?name"),
         ("email", r"e-?mail( address)?"),
+        ("phone_country", r"(mobile |phone )?(country|dialing|calling) (calling )?code|"
+                          r"phone (number )?country( code)?"),
         ("phone", r"((mobile|cell|home|primary) )?(phone|telephone)( number)?|"
                   r"(mobile|cell)( number)?"),
         ("linkedin", r"linked ?in( profile)?( url| link)?"),
@@ -641,6 +643,15 @@ def relocation_answer(q: FormQuestion, willing: bool | None) -> bool | None:
     return willing if _PLAIN_RELOCATE.fullmatch(t) else None
 
 
+def phone_country(phone: str | None) -> str | None:
+    """The phone country for a "Phone country code" picker, from YOUR number: only a US/NANP
+    number (+1 or ten digits) is answered; anything else is left for you to pick."""
+    digits = re.sub(r"\D", "", phone or "")
+    if (phone or "").strip().startswith("+"):
+        return "United States (+1)" if digits.startswith("1") and len(digits) == 11 else None
+    return "United States (+1)" if len(digits) == 10 else None
+
+
 def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
               priority: str | None) -> bool | str | int | None:
     wa, c, label = bank.work_authorization, bank.contact, clean_label(q.label)
@@ -694,6 +705,8 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
             return getattr(c, kind) or None
         case "city":
             return c.current_city or None
+        case "phone_country":
+            return phone_country(c.phone)
     return None  # citizenship: deliberately not answered from the bank
 
 
