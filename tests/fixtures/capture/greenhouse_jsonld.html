@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Job Application for SOC Analyst at Acme Security</title>
+  <meta property="og:title" content="SOC Analyst">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {"@type": "Organization", "name": "Acme Security"},
+      {
+        "@type": "JobPosting",
+        "title": "SOC Analyst",
+        "datePosted": "2026-09-20",
+        "employmentType": ["FULL_TIME"],
+        "hiringOrganization": {"@type": "Organization", "name": "Acme Security, Inc.",
+                               "sameAs": "https://www.acmesec.example"},
+        "jobLocation": [
+          {"@type": "Place", "address": {"@type": "PostalAddress", "addressLocality": "New York",
+            "addressRegion": "NY", "addressCountry": "US"}},
+          {"@type": "Place", "address": {"@type": "PostalAddress", "addressLocality": "Austin",
+            "addressRegion": "TX", "addressCountry": {"@type": "Country", "name": "US"}}}
+        ],
+        "baseSalary": {"@type": "MonetaryAmount", "currency": "USD",
+          "value": {"@type": "QuantitativeValue", "minValue": 85000, "maxValue": 110000,
+                    "unitText": "YEAR"}},
+        "description": "&lt;p&gt;Triage alerts in our SOC.&lt;/p&gt;&lt;ul&gt;&lt;li&gt;We are unable to sponsor visas.&lt;/li&gt;&lt;/ul&gt;",
+        "directApply": true,
+        "identifier": {"@type": "PropertyValue", "name": "Acme", "value": "7012345"},
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <h1>SOC Analyst</h1>
+  <div id="content"><p>Triage alerts in our SOC.</p></div>
+  <button>Apply</button>
+</body>
+</html>
