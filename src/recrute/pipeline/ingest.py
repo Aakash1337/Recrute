@@ -100,12 +100,15 @@ def job_canonical(raw: RawJob) -> tuple[str, str]:
         return target, canon
     if raw.apply_url is None:
         return target, f"{canon}#{sid}"
-    if raw.source in MULTI_ROLE_SOURCES:
-        from recrute.sources.ats_url import parse_ats_url
+    from recrute.sources.ats_url import parse_ats_url
 
-        ref = parse_ats_url(target)
-        if ref is None or not ref.job_id:  # a careers page, not one job
-            return target, f"{canon}#{sid}"
+    ref = parse_ats_url(target)
+    # a company's whole board (no requisition id), from ANY source: several postings share
+    # it, so it can't be one job's identity
+    if ref is not None and not ref.job_id:
+        return target, f"{canon}#{sid}"
+    if raw.source in MULTI_ROLE_SOURCES and ref is None:  # a careers page, not one job
+        return target, f"{canon}#{sid}"
     return target, canon
 
 

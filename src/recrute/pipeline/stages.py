@@ -81,16 +81,21 @@ def filter_new(session: Session, criteria: Criteria,
 
 
 def restore_filtered(session: Session, job_id: int) -> None:
-    """User overrides a filter decision: the job goes straight to the review queue."""
-    job = session.get(Job, job_id)
-    if job is None or job.status != JobStatus.FILTERED_OUT:
+    """User overrides a filter decision: the job goes straight to the review queue. Conditional
+    on the job STILL being filtered out: a second (delayed) restore request can never undo the
+    decision you made after the first one."""
+    from sqlalchemy import func, update
+
+    res = session.execute(
+        update(Job).where(Job.id == job_id, Job.status == JobStatus.FILTERED_OUT)
+        .values(status=JobStatus.DISCOVERED, filter_reason=None,
+                # so the rule stage doesn't re-filter it / auto-triage doesn't re-score it
+                priority=func.coalesce(Job.priority, Priority.P3.name),
+                score=func.coalesce(Job.score, 0))
+        .execution_options(synchronize_session=False))
+    if res.rowcount != 1:
+        session.rollback()
         return
-    job.status = JobStatus.DISCOVERED
-    job.filter_reason = None
-    if job.priority is None:
-        job.priority = Priority.P3  # so the rule stage doesn't re-filter it
-    if job.score is None:
-        job.score = 0  # skip auto-triage; the user explicitly wants to see it
-    session.add(StatusEvent(job_id=job.id, status=JobStatus.DISCOVERED, note="restored by user"))
-    session.add(job)
+    session.add(StatusEvent(job_id=job_id, status=JobStatus.DISCOVERED, note="restored by user"))
     session.commit()
+    session.expire_all()

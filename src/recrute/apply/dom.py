@@ -284,6 +284,12 @@ def page_text(root: Page | Frame, limit: int = 20000) -> str:
 # Clone the document and copy live values (typed text, selections, checks) into attributes so
 # the saved HTML shows what was actually on the form; the live DOM is not modified.
 SERIALIZE_JS = load_js("serialize.js")
+# fields whose value is (or may be) a secret: masked in receipt screenshots
+SECRET_FIELDS = ('input[type="password" i], input[autocomplete~="current-password"], '
+                 'input[autocomplete~="new-password"], input[autocomplete~="one-time-code"], '
+                 'input[name*="password" i], input[id*="password" i], input[name*="passcode" i], '
+                 'input[name*="otp" i], input[id*="otp" i], input[name*="code" i], '
+                 'input[id*="code" i], input[name*="verification" i], input[name*="token" i]')
 
 
 def serialize_html(root: Page | Frame) -> str:

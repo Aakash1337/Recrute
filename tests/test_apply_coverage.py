@@ -396,3 +396,14 @@ def test_values_are_compared_exactly_not_like_labels():
     sel = LiveField(id="s", label="Sponsor", type="select", widget="select",
                     options=["Yes", "No"], current="No")
     assert value_matches(sel, "No", "no")  # option LABELS still match as labels
+
+
+def test_empty_form_read_never_passes_presubmit(monkeypatch):
+    from recrute.apply.base import NO_FIELDS
+    from recrute.schemas import Packet
+
+    gh = GreenhouseAdapter()
+    monkeypatch.setattr(gh, "read_form", lambda page: [])  # the form vanished / rerendered
+    assert NO_FIELDS in gh.presubmit_problems(None, Packet(job_id=1), {})
+    li = LinkedInEasyApplyAdapter()
+    assert li.requires_fields is False  # its field-less review step is checked separately

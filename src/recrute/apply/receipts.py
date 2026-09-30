@@ -56,13 +56,18 @@ class Receipt:
                 out.mkdir(exist_ok=True)
                 shutil.copy2(path, out / f"{role}{path.suffix}")
 
-    def snapshot(self, page: Page, stem: str, root: Page | Frame | None = None) -> None:
+    def snapshot(self, page: Page, stem: str, root: Page | Frame | None = None, *,
+                 screenshot: bool = True) -> None:
         """Full-page screenshot + HTML with live values. Never raises (receipts are evidence,
-        not control flow)."""
-        try:
-            page.screenshot(path=str(self.dir / f"{stem}.png"), full_page=True)
-        except Exception as e:  # noqa: BLE001
-            log.warning("receipt screenshot %s failed: %s", stem, e)
+        not control flow). Secrets never reach a receipt: password / one-time-code / PIN-like
+        fields are masked in the picture (every frame) and emptied in the HTML;
+        `screenshot=False` (sign-in / security-check pages) saves no picture at all."""
+        if screenshot:
+            try:
+                mask = [f.locator(dom.SECRET_FIELDS) for f in page.frames]
+                page.screenshot(path=str(self.dir / f"{stem}.png"), full_page=True, mask=mask)
+            except Exception as e:  # noqa: BLE001
+                log.warning("receipt screenshot %s failed: %s", stem, e)
         try:
             html = dom.serialize_html(root or page)
             name = "form.html" if stem == "before_submit" else f"{stem}.html"

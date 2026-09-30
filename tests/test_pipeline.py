@@ -773,3 +773,35 @@ def test_retarget_never_overwrites_a_concurrent_decision(engine, decision):
     with Session(engine) as s:
         expected = JobStatus.APPLIED if decision == "mark_applied" else JobStatus.REJECTED
         assert s.get(Job, job_id).status == expected
+
+
+def test_aggregator_postings_sharing_a_board_link_stay_separate(engine):
+    raws = [RawJob(source="remotive", source_job_id=sid, url=f"https://remotive.com/job/{sid}",
+                   apply_url="https://jobs.lever.co/acme", title=title, company="Acme",
+                   locations=["Remote"])
+            for sid, title in (("111", "Security Engineer"), ("222", "Data Analyst"))]
+    with Session(engine) as s:
+        ingest(s, raws)
+        titles = sorted(j.title for j in s.exec(select(Job)).all())
+        assert titles == ["Data Analyst", "Security Engineer"]
+
+
+def test_delayed_restore_never_overwrites_a_later_decision(engine):
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="u", canonical_url="c", status=JobStatus.FILTERED_OUT,
+                  filter_reason="requires 5+ years")
+        s.add(job)
+        s.commit()
+        job_id = job.id
+    with Session(engine) as late:
+        late.get(Job, job_id)  # the second request read it while still filtered out
+        with Session(engine) as s:
+            restore_filtered(s, job_id)
+            j = s.get(Job, job_id)
+            assert j.status == JobStatus.DISCOVERED and j.priority == Priority.P3
+            j.status = JobStatus.SHORTLISTED  # then you approved it at CP1
+            s.add(j)
+            s.commit()
+        restore_filtered(late, job_id)
+    with Session(engine) as s:
+        assert s.get(Job, job_id).status == JobStatus.SHORTLISTED

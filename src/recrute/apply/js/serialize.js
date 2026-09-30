@@ -16,7 +16,9 @@
   // Secrets never reach a receipt: password / one-time-code fields lose any value, including
   // one already present as an attribute in the page's markup.
   clone.querySelectorAll('input[type="password" i], input[autocomplete~="current-password"], ' +
-                         'input[autocomplete~="new-password"], input[autocomplete~="one-time-code"]')
+                         'input[autocomplete~="new-password"], input[autocomplete~="one-time-code"], ' +
+                         'input[name*="password" i], input[id*="password" i], input[name*="passcode" i], ' +
+                         'input[name*="otp" i], input[id*="otp" i], input[name*="verification" i]')
     .forEach(c => { c.removeAttribute('value'); c.value = ''; });
   clone.querySelectorAll('script').forEach(s => s.remove());
   return '<!DOCTYPE html>\n' + clone.outerHTML;

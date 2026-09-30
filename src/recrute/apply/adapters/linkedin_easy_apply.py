@@ -67,6 +67,7 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
     # a logout mid-session is unexpected here: we rely on the saved session
     account_security_kinds: ClassVar[tuple[str, ...]] = ("captcha", "checkpoint", "login_wall")
     form_selector = MODAL
+    requires_fields = False  # the final review step has no fields (checked separately)
     submit_selector = SUBMIT
     blocker_patterns: ClassVar[tuple[tuple[str, str], ...]] = (
         ("linkedin: security checkpoint",

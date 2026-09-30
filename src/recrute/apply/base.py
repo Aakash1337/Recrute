@@ -125,6 +125,9 @@ class Adapter(Protocol):
 # --------------------------------------------------------------------------- answers & coverage
 
 
+NO_FIELDS = "_no_fields"
+
+
 def has_value(answer: FormAnswer | None) -> bool:
     if answer is None:
         return False
@@ -503,6 +506,9 @@ class BaseAdapter:
     submit_selector: str = "button[type=submit], input[type=submit]"
     key_prefer: tuple[str, ...] = ("id", "name")
     container_key_attr: str | None = None
+    # a single-page ATS form always has fields: reading none means it wasn't verified.
+    # (Multi-step flows whose review step has no fields validate that step themselves.)
+    requires_fields: ClassVar[bool] = True
     # names (regex, full match) of this site's hidden metadata inputs: never answers
     transport_fields: tuple[str, ...] = ()
     aliases: ClassVar[dict[str, list[str]]] = {}
@@ -616,6 +622,8 @@ class BaseAdapter:
         final = self.read_form(page)
         report.unmatched = self.coverage(final, packet, files)
         report.problems.update(self.verify(final, packet, files))
+        if not final and self.requires_fields:
+            report.problems[NO_FIELDS] = "no form fields found: the form could not be verified"
         report.ready_to_submit = not (report.unmatched or report.failed or report.problems)
         return report
 
@@ -658,6 +666,9 @@ class BaseAdapter:
         fields = self.read_form(page)
         problems = {u: "required, not covered by the approved packet"
                     for u in self.coverage(fields, packet, files)}
+        if not fields and self.requires_fields:
+            # nothing was read: the form disappeared / rerendered, so nothing was verified
+            problems[NO_FIELDS] = "no form fields found: the form could not be verified"
         for k, v in self.verify(fields, packet, files).items():
             problems.setdefault(k, v)
         return problems

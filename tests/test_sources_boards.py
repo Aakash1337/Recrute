@@ -307,3 +307,21 @@ def test_smartrecruiters_full_page_without_total_keeps_paging(total):
     payload = SmartRecruitersSource().fetch_board(ctx, company)
     assert len(pages) == 2 and len(payload["content"]) == PAGE + 3
     assert not ctx.incomplete
+
+
+def test_malformed_workable_row_marks_the_board_incomplete():
+    from recrute.criteria import Criteria
+    from recrute.sources.base import CompanyRef, SourceContext
+    from recrute.sources.workable import WorkableSource
+
+    class Http:
+        def get_json(self, url):
+            return {"name": "Acme", "jobs": [
+                {"shortcode": "AB12", "title": "Security Engineer", "city": "Austin"},
+                {"title": "Row without a code"}]}
+
+    ctx = SourceContext(http=Http(), criteria=Criteria(),
+                        companies=[CompanyRef(name="Acme", ats="workable", ats_token="acme")])
+    jobs = list(WorkableSource().fetch(ctx))
+    assert [j.source_job_id for j in jobs] == ["AB12"]  # valid rows kept
+    assert "workable:acme" in ctx.incomplete  # -> no closures from this snapshot

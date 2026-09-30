@@ -205,7 +205,7 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
             if stage == "prepared":
                 adapter.prepare(page, job, human)
             if blocker := adapter.detect_blockers(page):
-                receipt.snapshot(page, "blocked")
+                receipt.snapshot(page, "blocked", screenshot=False)
                 keep_open = mode != "dry_run"
                 return blocked(blocker)
 
@@ -296,7 +296,7 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
                         + "; ".join(errors[:3]))
         return done("needs_human", "submit clicked but no confirmation seen; verify manually")
     except BlockedError as e:
-        receipt.snapshot(page, "blocked")
+        receipt.snapshot(page, "blocked", screenshot=False)
         keep_open = mode != "dry_run"
         return blocked(str(e))
     except Exception as e:  # noqa: BLE001

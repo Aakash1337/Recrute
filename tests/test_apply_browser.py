@@ -1133,3 +1133,52 @@ def test_real_reload_changes_the_target(context):
     page.reload()
     assert live.page_target(page) != before
     page.close()
+
+
+@pytest.mark.browser
+def test_receipt_screenshots_mask_secret_fields(context, paths):
+    from datetime import UTC, datetime
+
+    from recrute.apply.receipts import Receipt
+
+    page = context.new_page()
+    page.set_content("""<input name="user" value="ada">
+      <input id="otp" name="otp" value="482913">
+      <input name="new_password" type="text" value="revealed-secret">""")
+    seen = {}
+    real = page.screenshot
+
+    def spy(**kw):
+        seen["masked"] = sum(loc.count() for loc in kw.get("mask", []))
+        return real(**kw)
+
+    page.screenshot = spy
+    receipt = Receipt(paths, 1, datetime.now(UTC))
+    receipt.snapshot(page, "error")
+    assert seen["masked"] == 2 and (receipt.dir / "error.png").exists()
+    receipt.snapshot(page, "blocked", screenshot=False)
+    assert not (receipt.dir / "blocked.png").exists()
+    html = (receipt.dir / "blocked.html").read_text(encoding="utf-8")
+    assert "482913" not in html and "revealed-secret" not in html and 'value="ada"' in html
+    page.close()
+
+
+@pytest.mark.browser
+def test_hidden_backing_values_of_a_picker_are_recognized(context):
+    from recrute.apply import dom
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <div class="field-wrapper select"><label for="loc">Location</label>
+        <div class="select__control"><input id="loc" role="combobox" value="Austin, TX"></div>
+        <input type="hidden" name="location_latitude" value="30.26">
+        <input type="hidden" name="location_longitude" value="-97.74"></div>
+      <label>Current city <input id="city" class="location-input" list="cities">
+        <input type="hidden" name="selectedLocation" value='{"name":"Austin"}'></label>
+      <div><label for="n">Name</label><input id="n" name="n" value="Ada">
+        <input type="hidden" name="requires_sponsorship" value="No"></div>
+    </form>""")
+    ids = {f.id for f in dom.extract_fields(page)}
+    assert not {"location_latitude", "location_longitude", "selectedLocation"} & ids
+    assert "requires_sponsorship" in ids  # next to a plain text box: still verified
+    page.close()

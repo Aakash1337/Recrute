@@ -128,6 +128,27 @@
   const TRANSPORT_NAMES = new Set(['_token', 'token', '_method', 'gh_src', 'gh_jid',
     'session_redirect', 'redirect', 'redirect_url', 'return_to', 'timestamp', 'locale']);
   const transport = (args.transport || []).map(p => new RegExp(`^(?:${p})$`));
+  // A hidden input that stores the value of ONE visible picker (a location combobox's
+  // coordinates, a typeahead's selected id). Explicit association only: inside that control's
+  // own <label>, or the nearest wrapper holding exactly one visible control, and that control
+  // is a picker. A hidden input next to several fields, or next to a plain text box, is not.
+  const PICKER = '[role="combobox"], [aria-autocomplete], input[list], [class*="select" i], ' +
+    '[class*="autocomplete" i], [class*="typeahead" i], [class*="picker" i], [class*="location" i]';
+  const backsWidget = el => {
+    const lab = el.closest('label');
+    if (lab && lab.control && lab.control !== el && lab.control.type !== 'hidden' && visible(lab.control))
+      return true;
+    let cur = el.parentElement;
+    for (let d = 0; cur && d < 3 && cur !== document.body; d++, cur = cur.parentElement) {
+      const shown = [...cur.querySelectorAll('input, select, textarea, [role="combobox"]')]
+        .filter(o => o !== el && o.type !== 'hidden' && visible(o));
+      if (!shown.length) continue;
+      if (shown.length > 1) return false;
+      const w = shown[0];
+      return w.matches(PICKER) || !!w.closest(PICKER);
+    }
+    return false;
+  };
   const out = [];
   const used = new Set();
   // Help/description text attached to a field (aria-describedby, or hint text in its
@@ -223,10 +244,7 @@
       const words = el.name.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
         .split(/[^a-z0-9]+/).filter(Boolean);
       if (words.some(w => TRANSPORT_WORDS.has(w)) || TRANSPORT_NAMES.has(el.name.toLowerCase())) continue;
-      const c1 = container(el);
-      const backs1 = c1 && [...c1.box.querySelectorAll('input, select, textarea, [role="combobox"]')]
-        .some(o => o !== el && o.type !== 'hidden' && visible(o));
-      if (backs1) continue;
+      if (backsWidget(el)) continue;
       const lab = labelOf(el);
       push({key: keyOf(el), label: clean(lab.text) || el.name, required: false, selector: sel(el),
             options: [], option_selectors: [], current: v, visible: false, trigger: '',
@@ -251,10 +269,7 @@
              .map(o => o.text.trim()).join(' | ') : el.value);
       // native forms only submit NAMED controls; and a hidden input backing a visible widget in
       // the same field (react-select, custom pickers) is checked through that widget
-      const c0 = container(el);
-      const backs = c0 && [...c0.box.querySelectorAll('input, select, textarea, [role="combobox"]')]
-        .some(o => o !== el && visible(o));
-      if (v && el.name && !backs) {
+      if (v && el.name && !backsWidget(el)) {
         const lab = labelOf(el);
         push({key: keyOf(el), label: clean(lab.text) || el.name || el.id, required: false,
               selector: sel(el), options: [], option_selectors: [], current: v,
