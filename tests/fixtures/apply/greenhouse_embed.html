@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<!-- A company careers page embedding the Greenhouse form in an iframe (#grnhse_iframe), the way
+     boards.greenhouse.io/embed/job_app?for=<token>&token=<job id> is used in the wild. -->
+<html lang="en"><head><meta charset="utf-8"><title>Careers at Acme</title></head>
+<body>
+  <header><a href="/">Acme</a> | <a href="/careers/acme">Careers</a></header>
+  <h1>Security Analyst</h1>
+  <div id="grnhse_app">
+    <iframe id="grnhse_iframe" title="Greenhouse Job Board" width="100%" height="2600"
+            frameborder="0" scrolling="no"
+            src="/greenhouse/embed/job_app?for=acme&amp;token=1001"></iframe>
+  </div>
+</body></html>

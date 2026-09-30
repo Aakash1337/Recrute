@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<!-- Local fixture modelled on job-boards.greenhouse.io (studied read-only, Sept 2026):
+     inputs keyed by id (no name), react-select comboboxes (input.select__input[role=combobox]
+     + hidden required input), multi-select checkbox groups in <fieldset id="question_N[]">,
+     visually-hidden file inputs behind "Attach" buttons, invisible reCAPTCHA Enterprise badge,
+     JS submission. Query flags: ?extra=1 adds a required question the packet doesn't answer;
+     ?reject=1 makes the "server" reject the submission (no confirmation). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Job Application for Security Analyst at Acme</title>
+<style>
+  body { font-family: sans-serif; margin: 0 auto; max-width: 760px; padding: 24px; }
+  .field-wrapper { margin: 18px 0; }
+  .label { display: block; font-weight: 600; margin-bottom: 4px; }
+  .input { width: 100%; padding: 8px; box-sizing: border-box; }
+  textarea.input { height: 120px; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .select-shell { position: relative; }
+  .select__control { display: flex; border: 1px solid #999; padding: 6px; }
+  .select__value-container { flex: 1; position: relative; }
+  .select__placeholder, .select__single-value { position: absolute; left: 0; top: 0; pointer-events: none; color: #666; }
+  .select__single-value { color: #000; }
+  .select__input { border: 0; outline: 0; width: 100%; }
+  .select__menu { position: absolute; left: 0; right: 0; background: #fff; border: 1px solid #999; z-index: 10; }
+  .select__option { padding: 6px; cursor: pointer; }
+  .select__option:hover { background: #def; }
+  .requiredInput { opacity: 0; width: 1px; height: 1px; position: absolute; }
+  .helper-text--error { color: #b00; }
+  .jd { color: #333; }
+  .grecaptcha-badge { width: 256px; height: 60px; position: fixed; bottom: 14px; right: -186px; box-shadow: gray 0 0 5px; }
+  fieldset { border: 0; padding: 0; }
+</style>
+</head>
+<body>
+<h1 class="section-header section-header--large">Security Analyst</h1>
+<div class="jd">
+  <p>Acme is hiring a Security Analyst to help with vulnerability assessment and incident response.</p>
+  <p>Thank you for applying — we read every application. Thank you for your interest in Acme.</p>
+</div>
+
+<form id="application-form" class="application--form" novalidate>
+<div class="application--questions">
+
+  <div class="field-wrapper"><div class="text-input-wrapper"><div class="input-wrapper">
+    <label class="label" for="first_name" id="first_name-label">First Name<span aria-hidden="true">*</span></label>
+    <input id="first_name" class="input input__single-line" type="text" aria-required="true" maxlength="255" autocomplete="given-name">
+  </div></div></div>
+
+  <div class="field-wrapper"><div class="text-input-wrapper"><div class="input-wrapper">
+    <label class="label" for="last_name" id="last_name-label">Last Name<span aria-hidden="true">*</span></label>
+    <input id="last_name" class="input input__single-line" type="text" aria-required="true" maxlength="255">
+  </div></div></div>
+
+  <div class="field-wrapper"><div class="text-input-wrapper"><div class="input-wrapper">
+    <label class="label" for="email" id="email-label">Email<span aria-hidden="true">*</span></label>
+    <input id="email" class="input input__single-line" type="text" aria-required="true" maxlength="255">
+  </div></div></div>
+
+  <div class="field-wrapper select" data-select="country" data-options='["United States +1","United States Minor Outlying Islands +1","Canada +1","United Kingdom +44"]'>
+    <div class="select__container">
+      <label class="label select__label" for="country" id="country-label">Country<span aria-hidden="true">*</span></label>
+      <div class="select-shell">
+        <div class="select__control"><div class="select__value-container">
+          <div class="select__placeholder">Select...</div>
+          <div class="select__input-container"><input class="select__input" id="country" role="combobox" type="text" aria-required="true" aria-expanded="false" aria-haspopup="true" autocomplete="off"></div>
+        </div><div class="select__indicators"><button type="button" aria-label="Toggle flyout" class="icon-button" tabindex="-1">&#9662;</button></div></div>
+        <input aria-hidden="true" class="requiredInput" required tabindex="-1" value="">
+      </div>
+    </div>
+  </div>
+
+  <div class="field-wrapper"><div class="text-input-wrapper"><div class="input-wrapper">
+    <label class="label" for="phone" id="phone-label">Phone<span aria-hidden="true">*</span></label>
+    <input id="phone" class="input input__single-line iti__tel-input" type="tel" aria-required="true">
+    <input id="iti-0__search-input" type="search" role="combobox" class="iti__search-input" style="display:none" aria-label="Search">
+  </div></div></div>
+
+  <div class="field-wrapper select" data-select="candidate-location" data-options='["San Francisco, California, United States","New York, New York, United States","Austin, Texas, United States"]'>
+    <div class="select__container">
+      <label class="label select__label" for="candidate-location" id="candidate-location-label">Location (City)<span aria-hidden="true">*</span></label>
+      <div class="select-shell">
+        <div class="select__control"><div class="select__value-container">
+          <div class="select__placeholder"></div>
+          <div class="select__input-container"><input class="select__input" id="candidate-location" role="combobox" type="text" aria-required="true" autocomplete="off"></div>
+        </div></div>
+        <input aria-hidden="true" class="requiredInput" required tabindex="-1" value="">
+      </div>
+    </div>
+  </div>
+
+  <div class="field-wrapper">
+    <div class="file-upload" role="group" aria-labelledby="upload-label-resume" aria-required="true">
+      <div class="label upload-label" id="upload-label-resume">Resume/CV<span class="required">*</span></div>
+      <div class="file-upload__wrapper"><div class="button-container">
+        <div class="secondary-button"><div>
+          <button class="btn btn--pill" type="button" data-attach="resume">Attach</button>
+          <label class="visually-hidden" for="resume">Attach</label>
+          <input id="resume" class="visually-hidden" type="file" accept=".pdf,.doc,.docx,.txt,.rtf">
+        </div></div>
+        <div class="secondary-button"><button class="btn btn--pill" type="button">Dropbox</button></div>
+        <div class="secondary-button"><div>
+          <button class="btn btn--pill" type="button" data-testid="resume-text">Enter manually</button>
+          <label class="visually-hidden" for="resume_text">Enter manually</label>
+        </div></div>
+        <p class="file-upload__filetypes">Accepted file types: pdf, doc, docx, txt, rtf</p>
+        <p class="file-name" id="resume-filename"></p>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="field-wrapper">
+    <div class="file-upload" role="group" aria-labelledby="upload-label-cover_letter" aria-required="false">
+      <div class="label upload-label" id="upload-label-cover_letter">Cover Letter</div>
+      <div class="file-upload__wrapper"><div class="button-container">
+        <div class="secondary-button"><div>
+          <button class="btn btn--pill" type="button" data-attach="cover_letter">Attach</button>
+          <label class="visually-hidden" for="cover_letter">Attach</label>
+          <input id="cover_letter" class="visually-hidden" type="file" accept=".pdf,.doc,.docx,.txt,.rtf">
+        </div></div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="field-wrapper"><div class="text-input-wrapper"><div class="input-wrapper">
+    <label class="label" for="question_1001" id="question_1001-label">LinkedIn Profile</label>
+    <input id="question_1001" class="input input__single-line" type="text" aria-required="false" maxlength="255">
+  </div></div></div>
+
+  <div class="field-wrapper"><div class="text-input-wrapper"><div class="input-wrapper">
+    <label class="label" for="question_1002" id="question_1002-label">Why do you want to work at Acme?<span aria-hidden="true">*</span></label>
+    <textarea id="question_1002" class="input" aria-required="true"></textarea>
+  </div></div></div>
+
+  <div class="field-wrapper select" data-select="question_1003" data-options='["Yes","No"]'>
+    <div class="select__container">
+      <label class="label select__label" for="question_1003" id="question_1003-label">Will you now or in the future require immigration sponsorship to work at Acme?<span aria-hidden="true">*</span></label>
+      <div class="select-shell">
+        <div class="select__control"><div class="select__value-container">
+          <div class="select__placeholder">Select...</div>
+          <div class="select__input-container"><input class="select__input" id="question_1003" role="combobox" type="text" aria-required="true" autocomplete="off"></div>
+        </div><div class="select__indicators"><button type="button" aria-label="Toggle flyout" class="icon-button" tabindex="-1">&#9662;</button></div></div>
+        <input aria-hidden="true" class="requiredInput" required tabindex="-1" value="">
+      </div>
+    </div>
+  </div>
+
+  <div class="field-wrapper">
+    <fieldset aria-required="true" class="checkbox" id="question_1004[]">
+      <legend class="label checkbox__description">Which areas interest you?<span class="required">*</span></legend>
+      <div class="checkbox__wrapper"><div class="checkbox__input"><input id="question_1004[]_1" name="question_1004[]" type="checkbox" value="1"></div><label for="question_1004[]_1">Detection engineering</label></div>
+      <div class="checkbox__wrapper"><div class="checkbox__input"><input id="question_1004[]_2" name="question_1004[]" type="checkbox" value="2"></div><label for="question_1004[]_2">Incident response</label></div>
+      <div class="checkbox__wrapper"><div class="checkbox__input"><input id="question_1004[]_3" name="question_1004[]" type="checkbox" value="3"></div><label for="question_1004[]_3">Red team</label></div>
+    </fieldset>
+  </div>
+
+  <div class="field-wrapper">
+    <fieldset aria-required="true" class="checkbox" id="question_1005[]">
+      <legend class="label checkbox__description">Please review and acknowledge Acme's Candidate Privacy Policy.<span class="required">*</span></legend>
+      <div class="checkbox__wrapper"><div class="checkbox__input"><input id="question_1005[]_9" name="question_1005[]" type="checkbox" value="9" required></div><label for="question_1005[]_9">Acknowledge/Confirm</label></div>
+    </fieldset>
+  </div>
+
+  <div id="conditional-slot"></div>
+
+  <div class="field-wrapper"><div class="text-input-wrapper"><div class="input-wrapper">
+    <label class="label" for="question_1007" id="question_1007-label">Earliest start date</label>
+    <input id="question_1007" class="input input__date" type="date" aria-required="false">
+  </div></div></div>
+
+  <div id="extra-slot"></div>
+
+  <div class="eeoc__container">
+    <h3>U.S. Standard Demographic Questions</h3>
+    <div class="field-wrapper select" data-select="gender" data-options='["Male","Female","Decline To Self Identify"]'>
+      <div class="select__container">
+        <label class="label select__label" for="gender" id="gender-label">Gender</label>
+        <div class="select-shell"><div class="select__control"><div class="select__value-container">
+          <div class="select__placeholder">Select...</div>
+          <div class="select__input-container"><input class="select__input" id="gender" role="combobox" type="text" aria-required="false" autocomplete="off"></div>
+        </div></div><input aria-hidden="true" class="requiredInput" tabindex="-1" value=""></div>
+      </div>
+    </div>
+    <div class="field-wrapper select" data-select="veteran_status" data-options='["I am not a protected veteran","I identify as one or more of the classifications of a protected veteran","I don&#39;t wish to answer"]'>
+      <div class="select__container">
+        <label class="label select__label" for="veteran_status" id="veteran_status-label">Veteran Status</label>
+        <div class="select-shell"><div class="select__control"><div class="select__value-container">
+          <div class="select__placeholder">Select...</div>
+          <div class="select__input-container"><input class="select__input" id="veteran_status" role="combobox" type="text" aria-required="false" autocomplete="off"></div>
+        </div></div><input aria-hidden="true" class="requiredInput" tabindex="-1" value=""></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+<div class="application--submit"><button type="submit" class="btn btn--pill">Submit application</button></div>
+<p id="form-status" role="alert"></p>
+</form>
+
+<div class="grecaptcha-badge" data-style="bottomright">
+  <iframe title="reCAPTCHA" width="256" height="60" role="presentation" name="a-fixture"
+          src="/recaptcha/enterprise/anchor?ar=1&amp;k=fixture&amp;size=invisible"></iframe>
+</div>
+
+<script>
+(function () {
+  const params = new URLSearchParams(location.search);
+  const state = {};
+
+  // --- react-select look-alike -------------------------------------------------------------
+  document.querySelectorAll('[data-select]').forEach(wrap => {
+    const key = wrap.dataset.select;
+    const options = JSON.parse(wrap.dataset.options);
+    const input = wrap.querySelector('input.select__input');
+    const shell = wrap.querySelector('.select-shell');
+    const vc = wrap.querySelector('.select__value-container');
+    const hidden = wrap.querySelector('.requiredInput');
+    let menu = null;
+    const close = () => { if (menu) { menu.remove(); menu = null; } input.setAttribute('aria-expanded', 'false'); };
+    const open = () => {
+      close();
+      const q = input.value.trim().toLowerCase();
+      menu = document.createElement('div');
+      menu.className = 'select__menu';
+      menu.setAttribute('role', 'listbox');
+      options.filter(o => !q || o.toLowerCase().includes(q)).forEach((o, i) => {
+        const d = document.createElement('div');
+        d.className = 'select__option';
+        d.id = `react-select-${key}-option-${i}`;
+        d.setAttribute('role', 'option');
+        d.textContent = o;
+        d.addEventListener('mousedown', e => { e.preventDefault(); choose(o); });
+        menu.appendChild(d);
+      });
+      shell.appendChild(menu);
+      input.setAttribute('aria-expanded', 'true');
+    };
+    const choose = o => {
+      state[key] = o;
+      hidden.value = o;
+      input.value = '';
+      vc.querySelectorAll('.select__placeholder, .select__single-value').forEach(n => n.remove());
+      const sv = document.createElement('div');
+      sv.className = 'select__single-value';
+      sv.textContent = o;
+      vc.prepend(sv);
+      close();
+      if (key === 'question_1003' && params.get('captcha_mid') === '1') {  // scored mid-fill
+        document.body.insertAdjacentHTML('beforeend', '<iframe title="Main content of the hCaptcha challenge" width="400" height="580" style="position:fixed;top:40px;left:40px" src="/hcaptcha/hcaptcha.html#frame=challenge"></iframe>');
+      }
+    };
+    input.addEventListener('focus', open);
+    input.addEventListener('input', open);
+    input.addEventListener('blur', () => setTimeout(close, 150));
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Escape') close();
+      if (e.key === 'Enter') { e.preventDefault(); const f = menu && menu.querySelector('.select__option'); if (f) choose(f.textContent); }
+    });
+  });
+
+  // --- Attach buttons open the hidden file inputs -------------------------------------------
+  document.querySelectorAll('[data-attach]').forEach(btn => {
+    const input = document.getElementById(btn.dataset.attach);
+    btn.addEventListener('click', () => input.click());
+    input.addEventListener('change', () => {
+      const out = document.getElementById(`${input.id}-filename`);
+      if (out) out.textContent = input.files.length ? input.files[0].name : '';
+    });
+  });
+
+  if (params.get('extra') === '1') {
+    document.getElementById('extra-slot').innerHTML = `
+      <div class="field-wrapper"><div class="text-input-wrapper"><div class="input-wrapper">
+        <label class="label" for="question_1099" id="question_1099-label">What is your favorite security tool?<span aria-hidden="true">*</span></label>
+        <input id="question_1099" class="input input__single-line" type="text" aria-required="true">
+      </div></div></div>`;
+  }
+
+  // ?lowercase=1: the site "normalizes" the LinkedIn URL on blur (breaks case-sensitive paths)
+  if (params.get('lowercase') === '1') {
+    const li = document.getElementById('question_1001');
+    li.addEventListener('blur', () => { li.value = li.value.toLowerCase(); });
+  }
+
+  // ?conditional=1: ticking "Incident response" reveals a required follow-up question
+  if (params.get('conditional') === '1') {
+    const ir = document.getElementById('question_1004[]_2');
+    const slot = document.getElementById('conditional-slot');
+    const sync = () => {
+      slot.innerHTML = ir.checked ? `
+        <div class="field-wrapper"><div class="text-input-wrapper"><div class="input-wrapper">
+          <label class="label" for="question_1006" id="question_1006-label">Describe an incident you handled.<span aria-hidden="true">*</span></label>
+          <input id="question_1006" class="input input__single-line" type="text" aria-required="true">
+        </div></div></div>` : '';
+    };
+    ir.addEventListener('change', sync);
+  }
+
+  // --- validation + submission ----------------------------------------------------------------
+  const form = document.getElementById('application-form');
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    form.querySelectorAll('.helper-text--error').forEach(n => n.remove());
+    const errors = [];
+    const err = (id, el) => {
+      errors.push(id);
+      const p = document.createElement('p');
+      p.className = 'helper-text helper-text--error';
+      p.id = `${id}-error`;
+      p.textContent = 'This field is required.';
+      (el || document.getElementById(id)).after(p);
+      const inp = document.getElementById(id);
+      if (inp) inp.setAttribute('aria-invalid', 'true');
+    };
+    form.querySelectorAll('input.input[aria-required="true"], textarea[aria-required="true"]').forEach(el => { if (!el.value.trim()) err(el.id); });
+    document.querySelectorAll('[data-select]').forEach(w => {
+      const inp = w.querySelector('input.select__input');
+      if (inp.getAttribute('aria-required') === 'true' && !state[w.dataset.select]) err(inp.id);
+    });
+    if (!document.getElementById('resume').files.length) err('resume', document.getElementById('resume-filename'));
+    form.querySelectorAll('fieldset[aria-required="true"]').forEach(fs => {
+      if (!fs.querySelector('input:checked')) err(fs.id, fs.querySelector('legend'));
+    });
+    if (errors.length) return;
+
+    const fd = new FormData();
+    form.querySelectorAll('input.input, textarea').forEach(el => fd.append(el.id, el.value));
+    Object.entries(state).forEach(([k, v]) => fd.append(k, v));
+    form.querySelectorAll('fieldset').forEach(fs => fs.querySelectorAll('input:checked').forEach(c => fd.append(fs.id, c.labels[0].textContent)));
+    ['resume', 'cover_letter'].forEach(id => { const f = document.getElementById(id).files[0]; if (f) fd.append(id, f, f.name); });
+    const url = location.pathname + (params.get('reject') === '1' ? '?reject=1' : '');
+    const res = await fetch(url, {method: 'POST', body: fd});
+    if (!res.ok) {
+      document.getElementById('form-status').textContent = 'There was a problem submitting your application. Please try again.';
+      return;
+    }
+    location.assign(location.pathname.replace(/\/$/, '') + '/confirmation');
+  });
+})();
+</script>
+</body>
+</html>

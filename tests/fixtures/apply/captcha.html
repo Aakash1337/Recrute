@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<!-- A Greenhouse-style form showing a VISIBLE (fake, local) CAPTCHA challenge.
+     ?kind=hcaptcha | recaptcha | turnstile | recaptcha_invisible (the last must NOT count). -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Job Application for Security Analyst at Acme</title></head>
+<body>
+<form id="application-form" class="application--form" novalidate>
+  <label class="label" for="first_name">First Name<span aria-hidden="true">*</span></label>
+  <input id="first_name" class="input" type="text" aria-required="true">
+  <div id="captcha-slot" style="margin:20px 0"></div>
+  <button type="submit">Submit application</button>
+</form>
+<script>
+(function () {
+  const kind = new URLSearchParams(location.search).get('kind') || 'hcaptcha';
+  const slot = document.getElementById('captcha-slot');
+  const frames = {
+    hcaptcha: '<iframe title="Widget containing checkbox for hCaptcha security challenge" width="303" height="78" src="/hcaptcha/checkbox.html#frame=checkbox&amp;id=0"></iframe>',
+    recaptcha: '<div class="g-recaptcha"><iframe title="recaptcha challenge expires in two minutes" width="400" height="580" src="/recaptcha/api2/bframe?hl=en&amp;k=fixture"></iframe></div>',
+    turnstile: '<div class="cf-turnstile-wrapper"><iframe title="Widget containing a Cloudflare security challenge" width="300" height="65" src="/turnstile/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2/av0/rcv/fixture"></iframe></div>',
+    recaptcha_invisible: '<div class="grecaptcha-badge" style="width:256px;height:60px"><iframe title="reCAPTCHA" width="256" height="60" src="/recaptcha/api2/anchor?ar=1&amp;k=fixture&amp;size=invisible"></iframe></div>',
+  };
+  slot.innerHTML = frames[kind];
+})();
+</script>
+</body>
+</html>
