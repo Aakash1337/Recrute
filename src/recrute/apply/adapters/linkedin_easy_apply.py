@@ -44,6 +44,10 @@ REVIEW = 'button[aria-label="Review your application"]'
 NEXT = 'button[aria-label="Continue to next step"]'
 MAX_STEPS = 12
 RESUME_KEY = "_resume"
+CARD = ".jobs-document-upload-redesign-card__container"
+CARD_NAME = ".jobs-document-upload-redesign-card__file-name"
+CARD_SELECTED_JS = ("c => c.getAttribute('aria-checked') === 'true'"
+                    " || /--selected/.test(c.className) || !!c.querySelector('input:checked')")
 
 BASELINE_QUESTIONS = [
     FormQuestion(id="first_name", label="First name", required=True),
@@ -135,6 +139,59 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
             out.append(RESUME_KEY)
         return out
 
+    # ----- resume documents: the one SELECTED is what LinkedIn sends
+
+    def _resume_cards(self, page: Page) -> list[tuple[str, Locator, bool]]:
+        modal = self._visible(page, MODAL)
+        if modal is None:
+            return []
+        cards = modal.locator(CARD)
+        out = []
+        for i in range(cards.count()):
+            c = cards.nth(i)
+            if not c.is_visible():
+                continue
+            name_el = c.locator(CARD_NAME)
+            name = (name_el.first.inner_text() if name_el.count() else c.inner_text()).strip()
+            out.append((name, c, bool(c.evaluate(CARD_SELECTED_JS))))
+        return out
+
+    def select_resume(self, page: Page, human: Human, name: str) -> str | None:
+        """Make the uploaded approved resume the selected document; None if that is verified,
+        else the problem. With no document list at all, the attached file is what's sent."""
+        cards = self._resume_cards(page)
+        if not cards:
+            return None
+        target = [c for n, c, _ in cards if n == name]
+        if not target:
+            return f"uploaded resume {name!r} is not in the document list"
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            selected = [n for n, _, s in self._resume_cards(page) if s]
+            if selected == [name]:
+                return None
+            if name not in selected:
+                human.click(target[0])
+            page.wait_for_timeout(200)
+        selected = [n for n, _, s in self._resume_cards(page) if s]
+        return (f"approved resume {name!r} is not the selected document (selected: {selected})"
+                "; LinkedIn would send that one")
+
+    def _review_problem(self, page: Page, resume: Path) -> str | None:
+        if resume.name not in self._signature(page):
+            return f"review step does not show the approved resume {resume.name!r}"
+        return None
+
+    def presubmit_problems(self, page: Page, packet: Packet,
+                           files: Mapping[str, Path]) -> dict[str, str]:
+        problems = super().presubmit_problems(page, packet, files)
+        resume = files.get("resume")
+        if resume is None:
+            problems[RESUME_KEY] = "approved resume file missing"
+        elif self._visible(page, SUBMIT) and (why := self._review_problem(page, resume)):
+            problems[RESUME_KEY] = why
+        return problems
+
     def fill(self, page: Page, job: Job, packet: Packet, files: Mapping[str, Path], *,
              human: Human, pause_only: bool = False) -> FillReport:
         report = FillReport(steps=0)
@@ -144,10 +201,22 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
             report.labels[RESUME_KEY] = "Resume (the approved packet PDF is missing)"
             report.notes.append("not starting: approved resume file missing")
             return report
-        resume_attached = False
+        resume_selected = False
+
+        def blocked() -> bool:
+            if b := self.detect_blockers(page):
+                report.blocker = b
+                report.notes.append(f"blocker at step {report.steps}: {b}")
+                return True
+            return False
+
         for _ in range(MAX_STEPS):
             report.steps += 1
+            if blocked():  # e.g. a challenge shown after the previous Next/Review
+                return report
             report.merge(self.fill_rounds(page, page, packet, files, human))
+            if report.blocker:
+                return report
             fields = self.read_form(page)
             unmatched = self.coverage(fields, packet, files)
             if unmatched:
@@ -162,15 +231,19 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
                 report.problems.update(problems)
                 report.notes.append(f"stopped at step {report.steps}: values differ from packet")
                 return report
-            for f in fields:
-                if f.widget == "file" and file_for(f, packet, files, self.aliases) == resume:
-                    # attached AND shown as the selected document in the dialog
-                    resume_attached = (f.current == resume.name
-                                       and resume.name in self._signature(page))
+            if any(f.widget == "file" and file_for(f, packet, files, self.aliases) == resume
+                   for f in fields):
+                if why := self.select_resume(page, human, resume.name):
+                    report.failed[RESUME_KEY] = why
+                    report.required_failed.append(RESUME_KEY)
+                    return report
+                resume_selected = True
             if self._visible(page, SUBMIT):
-                if not resume_attached:
-                    report.failed[RESUME_KEY] = ("the approved resume was never attached and "
-                                                 "selected; LinkedIn would send a saved one")
+                why = (None if resume_selected else "the approved resume was never attached "
+                       "and selected; LinkedIn would send a saved one")
+                why = why or self._review_problem(page, resume)
+                if why:
+                    report.failed[RESUME_KEY] = why
                     report.required_failed.append(RESUME_KEY)
                     return report
                 report.ready_to_submit = True
@@ -180,12 +253,16 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
                 report.failed["_navigation"] = "no Next / Review / Submit button in the dialog"
                 report.required_failed.append("_navigation")
                 return report
+            if blocked():  # right before moving on
+                return report
             before = self._signature(page)
             human.dwell()
             human.click(nxt)
             deadline = time.monotonic() + 8
             while time.monotonic() < deadline and self._signature(page) == before:
                 page.wait_for_timeout(150)
+            if blocked():  # right after moving on
+                return report
             if self._signature(page) == before:
                 errors = self.form_errors(page)
                 report.failed["_step"] = "; ".join(errors) or "dialog did not advance"

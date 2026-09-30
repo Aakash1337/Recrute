@@ -100,6 +100,27 @@ def resolve_options(value: Any, options: Sequence[str]) -> list[str] | None:
     return out
 
 
+def same_value(qtype: str, current: Any, approved: Any) -> bool:
+    """Compare a field's VALUE with the approved one. Unlike labels (see norm), values keep
+    case and every meaningful character (URL paths, handles and IDs are case-sensitive).
+    Only explicit, type-specific equivalences apply:
+      * all types: surrounding whitespace, Unicode NFC form, CRLF vs LF;
+      * email: case-insensitive;
+      * tel: formatting ignored (digits compared, national vs +country form).
+    Dates are compared by calendar day elsewhere (dates_equal)."""
+    def canon(v: Any) -> str:
+        return unicodedata.normalize("NFC", as_text(v)).replace("\r\n", "\n").strip()
+
+    a, b = canon(current), canon(approved)
+    if qtype == "tel":
+        da, db = re.sub(r"\D", "", a), re.sub(r"\D", "", b)
+        return bool(db) and (da == db or (len(db) >= 7 and len(da) >= 7
+                                          and (da.endswith(db) or db.endswith(da))))
+    if qtype == "email":
+        return a.casefold() == b.casefold()
+    return a == b
+
+
 def as_text(value: Any) -> str:
     if isinstance(value, bool):
         return "Yes" if value else "No"

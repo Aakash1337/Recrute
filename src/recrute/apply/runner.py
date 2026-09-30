@@ -110,8 +110,25 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
     report: FillReport | None = None
     labels: dict[str, str] = {}
 
-    def done(status: str, reason: str, **kw: Any) -> ApplyOutcome:
+    def safe_blockers() -> str | None:
+        try:
+            return adapter.detect_blockers(page)
+        except Exception:  # noqa: BLE001 - page gone / navigating
+            return None
+
+    def done(status: str, reason: str, *, check_blockers: bool = True,
+             **kw: Any) -> ApplyOutcome:
+        # Every exit (early returns and exception paths too) looks for CAPTCHA / checkpoint /
+        # logout first, so account-security signals are never lost behind another reason.
+        if check_blockers and status != "submitted" and "blocker" not in details:
+            if b := safe_blockers():
+                details["reason_before_blocker"] = reason
+                _mark_blocker(b)
+                status, reason = "needs_human", f"blocker: {b}"
         details["page_left_open"] = keep_open
+        # a filled form left open for the human is a pending application: it holds a slot
+        # in the daily / site / company caps until the human resolves it
+        details["handoff_reservation"] = bool(keep_open)
         try:
             details["final_url"] = page.url
         except Exception:  # noqa: BLE001
@@ -123,11 +140,14 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
         receipt.write_json("outcome.json", out.model_dump(mode="json"))
         return out
 
-    def blocked(reason: str, prefix: str = "blocker: ") -> ApplyOutcome:
+    def _mark_blocker(reason: str) -> None:
         details["blocker"] = reason
         details["blocker_kind"] = blocker_kind(reason)
         details["account_security"] = adapter.is_account_security(reason)
-        return done("needs_human", f"{prefix}{reason}")
+
+    def blocked(reason: str, prefix: str = "blocker: ") -> ApplyOutcome:
+        _mark_blocker(reason)
+        return done("needs_human", f"{prefix}{reason}", check_blockers=False)
 
     def pause(reason: str, **kw: Any) -> ApplyOutcome:
         nonlocal keep_open
@@ -171,6 +191,10 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
         unmatched += [u for u in report.unmatched if u not in unmatched]
         receipt.snapshot(page, "before_submit", adapter.form_root(page))
         receipt.write_json("fill_report.json", report.model_dump())
+        # immediately after filling: did a challenge / checkpoint appear meanwhile?
+        if blocker := report.blocker or safe_blockers():
+            keep_open = mode != "dry_run"
+            return blocked(blocker)
 
         if unmatched:
             details["unmatched_labels"] = {u: labels.get(u, u) for u in unmatched}

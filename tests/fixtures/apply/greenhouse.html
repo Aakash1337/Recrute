@@ -245,6 +245,9 @@
       sv.textContent = o;
       vc.prepend(sv);
       close();
+      if (key === 'question_1003' && params.get('captcha_mid') === '1') {  // scored mid-fill
+        document.body.insertAdjacentHTML('beforeend', '<iframe title="Main content of the hCaptcha challenge" width="400" height="580" style="position:fixed;top:40px;left:40px" src="/hcaptcha/hcaptcha.html#frame=challenge"></iframe>');
+      }
     };
     input.addEventListener('focus', open);
     input.addEventListener('input', open);
@@ -271,6 +274,12 @@
         <label class="label" for="question_1099" id="question_1099-label">What is your favorite security tool?<span aria-hidden="true">*</span></label>
         <input id="question_1099" class="input input__single-line" type="text" aria-required="true">
       </div></div></div>`;
+  }
+
+  // ?lowercase=1: the site "normalizes" the LinkedIn URL on blur (breaks case-sensitive paths)
+  if (params.get('lowercase') === '1') {
+    const li = document.getElementById('question_1001');
+    li.addEventListener('blur', () => { li.value = li.value.toLowerCase(); });
   }
 
   // ?conditional=1: ticking "Incident response" reveals a required follow-up question

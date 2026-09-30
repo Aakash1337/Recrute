@@ -561,32 +561,286 @@ def test_account_security_blocker_suspends_the_channel_across_ticks(session, pat
     assert suspension(session, "greenhouse", datetime(2026, 10, 2, 13, tzinfo=TZ)) is None
 
 
-def test_stuck_applying_attempt_is_recovered_never_retried(session, paths):
+def test_orphaned_applying_attempts_are_recovered_never_retried(session, paths):
+    """Nobody holds the lease, so any APPLYING attempt is orphaned (crash / killed worker)."""
     from recrute.apply.scheduler import STUCK_NOTE
 
     graduate(session)
-    old_app, old_job = add_app(session, 1, status=JobStatus.APPLYING)
-    new_app, new_job = add_app(session, 2, status=JobStatus.APPLYING)
-    for app_, started in ((old_app, at(11)), (new_app, at(11, 50))):
+    a1, j1 = add_app(session, 1, status=JobStatus.APPLYING)
+    a2, j2 = add_app(session, 2, status=JobStatus.APPLYING)
+    for app_, started in ((a1, at(11)), (a2, at(11, 58))):  # age doesn't matter, the lease does
         app_.attempts = 1
         app_.outcome = {"status": "in_progress", "details": {
-            "attempt_started_at": started.astimezone(UTC).isoformat(), "attempt_owner": "w",
-            "attempted_at": started.astimezone(UTC).isoformat(), "mode": "submit"}}
+            "attempt_id": f"x{app_.id}", "attempt_owner": "dead-worker", "mode": "submit",
+            "attempt_started_at": started.astimezone(UTC).isoformat(),
+            "attempted_at": started.astimezone(UTC).isoformat()}}
         session.add(app_)
     session.commit()
     runner = FakeRunner()
     res = run_due(session, page_factory=None, paths=paths, now=at(12), runner=runner)
-    assert res.recovered == [old_job.id]
-    session.refresh(old_job)
-    session.refresh(new_job)
-    session.refresh(old_app)
-    assert old_job.status == JobStatus.NEEDS_HUMAN and new_job.status == JobStatus.APPLYING
-    assert old_app.last_error == STUCK_NOTE and old_app.outcome["details"]["submit_attempted"]
-    ev = session.exec(select(StatusEvent).where(StatusEvent.job_id == old_job.id)
+    assert sorted(res.recovered) == sorted([j1.id, j2.id])
+    for app_, job_ in ((a1, j1), (a2, j2)):
+        session.refresh(app_)
+        session.refresh(job_)
+        assert job_.status == JobStatus.NEEDS_HUMAN and app_.last_error == STUCK_NOTE
+        assert app_.outcome["details"]["submit_attempted"] is True
+    ev = session.exec(select(StatusEvent).where(StatusEvent.job_id == j1.id)
                       .order_by(StatusEvent.id.desc())).first()
     assert ev.note == STUCK_NOTE
     assert runner.calls == []  # never retried
     assert day_counts(session, at(12)).total == 2  # both may have gone out: counted
+
+
+class FakeClock:
+    def __init__(self, start):
+        self.t = start
+
+    def __call__(self):
+        return self.t
+
+
+def _two_worker_lease_run(engine, session, paths, heartbeat):
+    """Worker A runs for 3 (fake) minutes with a 2-minute lease while worker B ticks."""
+    import threading
+    import time as _time
+
+    graduate(session)
+    app, job = add_app(session, 1)
+    make_due(session, app, at(12))
+    clock = FakeClock(at(12))
+    mid, go_on = threading.Event(), threading.Event()
+    seen = {}
+
+    def slow_runner(job_, packet, **kw):
+        for _ in range(6):  # the run outlives the original 2-minute lease
+            clock.t += timedelta(seconds=30)
+            _time.sleep(0.08)  # heartbeat (if any) renews with the advanced clock
+        mid.set()
+        go_on.wait(10)
+        seen["gate"] = kw["pre_submit_check"]()
+        if seen["gate"]:
+            return ApplyOutcome(status="needs_human", reason=f"not submitted: {seen['gate']}",
+                                details={"mode": "submit", "effective_mode": "submit",
+                                         "submit_attempted": False, "handoff_reservation": True})
+        return ApplyOutcome(status="submitted", reason="ok",
+                            details={"mode": "submit", "effective_mode": "submit",
+                                     "submit_attempted": True})
+
+    res = {}
+
+    def worker_a():
+        with Session(engine) as s:
+            res["a"] = run_due(s, page_factory=None, paths=paths, now=at(12), clock=clock,
+                               runner=slow_runner, owner="A", lease_ttl=timedelta(minutes=2),
+                               heartbeat=heartbeat)
+
+    t = threading.Thread(target=worker_a)
+    t.start()
+    assert mid.wait(10)
+    with Session(engine) as s:
+        res["b"] = run_due(s, page_factory=None, paths=paths, now=clock(), clock=clock,
+                           runner=slow_runner, owner="B", lease_ttl=timedelta(minutes=2),
+                           heartbeat=heartbeat)
+    go_on.set()
+    t.join(10)
+    session.refresh(job)
+    return res, seen, job
+
+
+def test_heartbeat_keeps_the_lease_through_a_long_run(engine, session, paths):
+    res, seen, job = _two_worker_lease_run(engine, session, paths, heartbeat=0.02)
+    assert "in progress" in res["b"].reason and res["b"].recovered == []  # B couldn't take over
+    assert seen["gate"] is None and res["a"].outcome.status == "submitted"
+    assert res["a"].finalized == "status_updated" and job.status == JobStatus.APPLIED
+
+
+def test_expired_lease_fences_submission_and_finalization(engine, session, paths):
+    res, seen, job = _two_worker_lease_run(engine, session, paths, heartbeat=3600)
+    assert res["b"].recovered == [job.id]  # B took over the dead lease and recovered the job
+    assert seen["gate"].startswith("scheduler lease lost")  # A may not submit any more
+    assert res["a"].finalized.startswith("status_left_unchanged")
+    assert job.status == JobStatus.NEEDS_HUMAN
+
+
+def gate_runner(before=None, status_if_ok="submitted"):
+    """Behaves like apply_job at the click: consult the gate; a reason means CP3, no submit."""
+    calls = []
+
+    def runner(job_, packet, **kw):
+        calls.append({"job_id": job_.id, "packet": packet})
+        if before:
+            before()
+        why = kw["pre_submit_check"]()
+        calls[-1]["gate"] = why
+        if why:
+            return ApplyOutcome(status="needs_human", reason=f"not submitted: {why}",
+                                details={"mode": "submit", "effective_mode": "submit",
+                                         "submit_attempted": False, "handoff_reservation": True})
+        return ApplyOutcome(status=status_if_ok, reason="ok",
+                            details={"mode": "submit", "effective_mode": "submit",
+                                     "submit_attempted": status_if_ok == "submitted"})
+
+    runner.calls = calls
+    return runner
+
+
+def _replace_packet(engine, app_id, value):
+    with Session(engine) as other:
+        o = other.get(Application, app_id)
+        o.packet = Packet(job_id=o.job_id, user_note=value).model_dump(mode="json")
+        other.add(o)
+        other.commit()
+
+
+def test_packet_replaced_before_the_claim_is_what_runs(engine, session, paths, monkeypatch):
+    import recrute.apply.scheduler as sched
+
+    graduate(session)
+    app, job = add_app(session, 1)
+    make_due(session, app, at(12))
+    real_claim = sched.claim
+
+    def racing_claim(*a, **kw):  # the packet is edited after planning, before the claim
+        _replace_packet(engine, app.id, "v2")
+        return real_claim(*a, **kw)
+
+    monkeypatch.setattr(sched, "claim", racing_claim)
+    runner = gate_runner()
+    res = run_due(session, page_factory=None, paths=paths, now=at(12), runner=runner)
+    assert res.ran and runner.calls[0]["packet"].user_note == "v2"  # not the stale v1
+    session.refresh(app)
+    assert app.outcome["details"]["packet_revision"] == sched.packet_revision(app)
+
+
+def test_packet_replaced_during_filling_blocks_the_submit(engine, session, paths):
+    graduate(session)
+    app, job = add_app(session, 1)
+    make_due(session, app, at(12))
+    runner = gate_runner(before=lambda: _replace_packet(engine, app.id, "edited mid-run"))
+    res = run_due(session, page_factory=None, paths=paths, now=at(12), runner=runner)
+    assert runner.calls[0]["gate"] == "the approved packet changed since this attempt started"
+    assert res.outcome.status == "needs_human"
+    session.refresh(job)
+    assert job.status == JobStatus.NEEDS_HUMAN
+
+
+@pytest.mark.parametrize("human_sets, outcome_status", [
+    (JobStatus.REJECTED, "needs_human"),  # rejected at CP1/CP2 while the runner was busy
+    (JobStatus.APPLIED, "submitted"),  # the human applied manually meanwhile
+])
+def test_finalization_never_overwrites_a_concurrent_status(engine, session, paths,
+                                                           human_sets, outcome_status):
+    graduate(session)
+    app, job = add_app(session, 1)
+    make_due(session, app, at(12))
+
+    def meanwhile():
+        with Session(engine) as other:
+            j = other.get(Job, job.id)
+            j.status = human_sets
+            other.add(j)
+            other.commit()
+
+    def runner(job_, packet, **kw):
+        meanwhile()
+        return ApplyOutcome(status=outcome_status, reason="done",
+                            details={"mode": "submit", "effective_mode": "submit",
+                                     "submit_attempted": outcome_status == "submitted"})
+
+    res = run_due(session, page_factory=None, paths=paths, now=at(12), runner=runner)
+    assert res.finalized.startswith("status_left_unchanged")
+    session.refresh(job)
+    session.refresh(app)
+    assert job.status == human_sets
+    assert app.outcome["status"] == outcome_status  # the outcome is still recorded
+    assert "status_left_unchanged" in app.outcome["details"]
+    events = session.exec(select(StatusEvent).where(StatusEvent.job_id == job.id)).all()
+    assert [e.status for e in events] == [JobStatus.APPLYING]  # nothing written after
+
+
+@pytest.mark.parametrize("cap", ["daily", "site", "company"])
+def test_handoff_reservation_holds_caps_until_resolved(session, paths, cap):
+    from recrute.models import Company
+
+    graduate(session)
+    co = Company(name="Acme")
+    session.add(co)
+    session.commit()
+    if cap == "daily":
+        set_setting(session, "apps_per_day", 1)
+    elif cap == "site":
+        set_setting(session, "site_caps", {"greenhouse": 1})
+    a1, j1 = add_app(session, 1, company_id=co.id if cap == "company" else None)
+    a2, j2 = add_app(session, 2, company_id=co.id if cap == "company" else None)
+
+    def cp3(job_, packet, **kw):  # submit mode, but uncovered field -> filled form left open
+        return ApplyOutcome(status="needs_human", reason="required fields not covered",
+                            details={"mode": "submit", "effective_mode": "submit",
+                                     "attempted_at": kw["now"].isoformat(),
+                                     "submit_attempted": False, "handoff_reservation": True})
+
+    res = due(session, paths, cp3, now=at(10))
+    first = res.job_id
+    other = j2.id if first == j1.id else j1.id
+    runner = FakeRunner()
+    res = run_due(session, page_factory=None, paths=paths, now=at(15), runner=runner)
+    assert not res.ran and runner.calls == []
+    if cap != "company":
+        assert res.next_run_at.date() == at(12, day=30).date()
+        assert day_counts(session, at(15)).total == 1
+    # the human resolves it by skipping the job: the reservation is released
+    with Session(session.get_bind()) as s:
+        j = s.get(Job, first)
+        j.status = JobStatus.REJECTED
+        s.add(j)
+        s.commit()
+    session.expire_all()
+    assert day_counts(session, at(15)).total == 0
+    res = due(session, paths, runner, now=at(16))
+    assert res.ran and res.job_id == other
+
+
+def test_gate_defers_when_the_window_closes_mid_run(session, paths):
+    graduate(session)
+    set_setting(session, "active_hours", [9, 22])
+    app, job = add_app(session, 1)
+    make_due(session, app, at(21, 58))
+    clock = FakeClock(at(21, 58))
+
+    def cross():
+        clock.t = at(22, 1)
+
+    runner = gate_runner(before=cross)
+    res = run_due(session, page_factory=None, paths=paths, now=at(21, 58), clock=clock,
+                  runner=runner)
+    assert runner.calls[0]["gate"] == "deferred: outside active hours"
+    assert res.outcome.status == "needs_human"
+
+
+@pytest.mark.parametrize("lower, reason", [
+    (("apps_per_day", 1), "deferred: daily application cap reached"),
+    (("site_caps", {"greenhouse": 1}), "deferred: greenhouse daily cap reached"),
+])
+def test_gate_defers_when_a_cap_is_lowered_mid_run(engine, session, paths, lower, reason):
+    graduate(session)
+    set_setting(session, "apps_per_day", 5)
+    done_today, _ = add_app(session, 1, status=JobStatus.APPLIED,
+                            submitted_at=at(9).astimezone(UTC))
+    done_today.attempts = 1
+    session.add(done_today)
+    session.commit()
+    app, job = add_app(session, 2)
+    make_due(session, app, at(12))
+
+    def lower_cap():
+        with Session(engine) as other:
+            set_setting(other, *lower)
+
+    runner = gate_runner(before=lower_cap)
+    res = run_due(session, page_factory=None, paths=paths, now=at(12), runner=runner,
+                  min_gap=timedelta(0))
+    assert runner.calls[0]["gate"] == reason
+    assert res.outcome.status == "needs_human"
 
 
 def test_company_cooldown(session, paths):

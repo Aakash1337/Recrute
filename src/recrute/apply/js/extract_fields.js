@@ -198,7 +198,9 @@
                           current: el.files && el.files.length ? el.files[0].name : null});
     } else if (el.tagName === 'SELECT') {
       const opts = [...el.options].filter(o => o.value !== '' && !o.disabled);
-      const cur = el.selectedIndex >= 0 && el.options[el.selectedIndex].value !== '' ? el.options[el.selectedIndex].text.trim() : null;
+      // multi-selects: EVERY selected non-placeholder option (saved extras must be visible)
+      const picked = [...el.options].filter(o => o.selected && o.value !== '').map(o => o.text.trim());
+      const cur = el.multiple ? (picked.length ? picked : null) : (picked[0] || null);
       Object.assign(rec, {type: el.multiple ? 'multiselect' : 'select', widget: 'select',
                           options: opts.map(o => o.text.trim()), current: cur});
     } else if (el.getAttribute('role') === 'combobox') {

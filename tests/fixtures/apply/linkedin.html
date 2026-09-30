@@ -72,8 +72,10 @@
       <div class="step" data-step="2">
         <h3 class="t-16 t-bold">Resume</h3>
         <p class="t-12">Be sure to include an updated resume</p>
-        <div class="jobs-document-upload-redesign-card__container jobs-document-upload-redesign-card__container--selected">
-          <h3 class="jobs-document-upload-redesign-card__file-name">Old_Resume.pdf</h3><p>Last used on 1/2/2026</p>
+        <div id="doc-cards">
+          <div class="jobs-document-upload-redesign-card__container jobs-document-upload-redesign-card__container--selected" role="radio" aria-checked="true" tabindex="0" data-doc="Old_Resume.pdf">
+            <h3 class="jobs-document-upload-redesign-card__file-name">Old_Resume.pdf</h3><p>Last used on 1/2/2026</p>
+          </div>
         </div>
         <div class="jobs-document-upload">
           <label class="jobs-document-upload__upload-button artdeco-button artdeco-button--secondary" for="jobs-document-upload-file-input-upload-resume">Upload resume</label>
@@ -159,7 +161,30 @@
         </div>`);
     }
     const file = modal.querySelector('#jobs-document-upload-file-input-upload-resume');
-    file.addEventListener('change', () => { modal.querySelector('#uploaded-name').textContent = file.files.length ? file.files[0].name : ''; });
+    // Uploaded documents become cards; the SELECTED card is what gets sent.
+    // ?no_autoselect=1: a new upload is listed but not selected (must be clicked);
+    // ?stuck_old=1: the old resume stays selected whatever happens.
+    const cardsBox = modal.querySelector('#doc-cards');
+    const select = card => {
+      if (params.get('stuck_old') === '1') return;
+      cardsBox.querySelectorAll('[data-doc]').forEach(c => {
+        const on = c === card;
+        c.setAttribute('aria-checked', on ? 'true' : 'false');
+        c.classList.toggle('jobs-document-upload-redesign-card__container--selected', on);
+      });
+    };
+    cardsBox.addEventListener('click', e => { const c = e.target.closest('[data-doc]'); if (c) select(c); });
+    file.addEventListener('change', () => {
+      if (!file.files.length) return;
+      const name = file.files[0].name;
+      modal.querySelector('#uploaded-name').textContent = 'Uploaded';
+      cardsBox.insertAdjacentHTML('beforeend', `
+        <div class="jobs-document-upload-redesign-card__container" role="radio" aria-checked="false" tabindex="0" data-doc="${name}">
+          <h3 class="jobs-document-upload-redesign-card__file-name">${name}</h3><p>Uploaded just now</p>
+        </div>`);
+      if (params.get('no_autoselect') !== '1') select(cardsBox.lastElementChild);
+    });
+    const selectedDoc = () => (cardsBox.querySelector('[aria-checked="true"]') || {dataset: {}}).dataset.doc || '';
     const next = modal.querySelector('[data-easy-apply-next-button]');
     const review = modal.querySelector('[data-live-test-easy-apply-review-button]');
     const submit = modal.querySelector('[data-live-test-easy-apply-submit-button]');
@@ -169,6 +194,7 @@
       next.style.display = step < 3 ? '' : 'none';
       review.style.display = step === 3 ? '' : 'none';
       submit.style.display = step === 4 ? '' : 'none';
+      if (step === 4) modal.querySelector('#review-summary').textContent = `Resume: ${selectedDoc()}`;
     };
     const validate = () => {
       const cur = modal.querySelector(`.step[data-step="${step}"]`);
@@ -184,14 +210,21 @@
       });
       return ok;
     };
-    next.addEventListener('click', () => { if (validate()) { step++; show(); } });
+    next.addEventListener('click', () => {
+      if (!validate()) return;
+      step++;
+      show();
+      if (params.get('captcha_after') === '1' && step === 2) {  // challenge after the 1st Next
+        document.body.insertAdjacentHTML('beforeend', '<iframe title="recaptcha challenge expires in two minutes" width="400" height="580" style="position:fixed;top:60px;left:60px;z-index:200" src="/recaptcha/api2/bframe?k=fixture"></iframe>');
+      }
+    });
     review.addEventListener('click', () => { if (validate()) { step = 4; show(); } });
     modal.querySelector('[data-back]').addEventListener('click', () => { if (step > 1) { step--; show(); } });
     submit.addEventListener('click', async () => {
       const data = {};
       modal.querySelectorAll('input[type=text], select').forEach(el => { data[el.id] = el.value; });
       modal.querySelectorAll('input[type=radio]:checked').forEach(el => { data[el.name] = el.value; });
-      data.resume = file.files.length ? file.files[0].name : 'Old_Resume.pdf';
+      data.resume = selectedDoc();  // the selected document, not whatever was last uploaded
       const res = await fetch('/linkedin/submit', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(data)});
       if (!res.ok) return;
       modal.remove();
