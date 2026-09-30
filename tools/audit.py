@@ -98,8 +98,14 @@ def run_audit(scope: str, model: str, effort: str, timeout: int) -> dict:
         args = [codex, "exec", "-C", str(ROOT), "--sandbox", "read-only", "--ephemeral",
                 "--color", "never", "-m", model, "-c", f'model_reasoning_effort="{effort}"',
                 "--output-schema", str(schema_file), "-o", str(out_file), "-"]
-        proc = subprocess.run(args, input=prompt, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=timeout)
+        # the app's CLI runner: its own process group (a timeout kills Codex's whole process
+        # tree, not just the Node shim) and no API-key variables (subscription only)
+        from recrute.llm.base import LLMError, run_cli
+
+        try:
+            proc = run_cli(args, prompt, ROOT, timeout)
+        except LLMError as e:
+            sys.exit(f"audit failed: {e}")
         if proc.returncode != 0 or not out_file.exists():
             sys.exit(f"audit failed (exit {proc.returncode}):\n{proc.stderr[-3000:]}")
         return json.loads(out_file.read_text(encoding="utf-8"))
@@ -128,7 +134,7 @@ def main() -> None:
     ap.add_argument("--base", default="origin/main")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh"])
-    ap.add_argument("--timeout", type=int, default=1800, help="seconds")
+    ap.add_argument("--timeout", type=int, default=3600, help="seconds")
     args = ap.parse_args()
 
     scope = build_scope(args.paths, args.changed, args.base)
