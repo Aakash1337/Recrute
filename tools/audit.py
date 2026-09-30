@@ -58,10 +58,12 @@ SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 def changed_files(base: str) -> list[str]:
     """Files changed on this branch vs `base` (merge-base), plus uncommitted/untracked ones."""
     def git(*args: str) -> list[str]:
-        out = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+        # -z: NUL-delimited, unquoted paths (handles unicode/special characters)
+        out = subprocess.run(["git", *args, "-z"], cwd=ROOT, capture_output=True)
         if out.returncode != 0:
-            sys.exit(f"git {' '.join(args)} failed: {out.stderr.strip()}")
-        return [line for line in out.stdout.splitlines() if line]
+            sys.exit(f"git {' '.join(args)} failed: {out.stderr.decode(errors='replace')}")
+        return [p for p in out.stdout.decode("utf-8", errors="surrogateescape").split("\0")
+                if p]
 
     files = git("diff", "--name-only", f"{base}...HEAD")
     files += git("diff", "--name-only", "HEAD")

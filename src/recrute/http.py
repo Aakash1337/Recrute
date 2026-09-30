@@ -7,6 +7,7 @@ and retries with backoff.
 
 import logging
 import random
+import re
 import threading
 import time
 from datetime import UTC, datetime
@@ -24,9 +25,20 @@ RETRY_STATUSES = {429, 500, 502, 503, 504}
 MAX_INLINE_WAIT = 120.0
 
 
+_SECRET_PARAM = re.compile(
+    r"([?&](?:app_key|api_key|apikey|key|token|access_token|secret|client_secret|password|"
+    r"sig|signature)=)[^&#\s]*", re.IGNORECASE)
+
+
+def redact(text: str) -> str:
+    """Strip credential-looking query parameters from URLs/messages before logging."""
+    return _SECRET_PARAM.sub(r"\1***", text)
+
+
 class HttpError(RuntimeError):
     def __init__(self, url: str, status: int | None, message: str = "",
                  retry_after: float | None = None):
+        url, message = redact(url), redact(message)
         super().__init__(f"{status or 'ERR'} {url} {message}".strip())
         self.url = url
         self.status = status
@@ -75,7 +87,7 @@ class Http:
                 resp = self.session.request(method, url, **kw)
             except Exception as e:  # curl_cffi raises its own RequestException hierarchy
                 last_exc = e
-                log.debug("http %s %s failed: %s", method, url, e)
+                log.debug("http %s %s failed: %s", method, redact(url), redact(str(e)))
             else:
                 if resp.status_code not in RETRY_STATUSES:
                     if resp.status_code >= 400:
@@ -92,7 +104,7 @@ class Http:
                 time.sleep(min(2 ** attempt + random.random(), 30))
         if isinstance(last_exc, HttpError):
             raise last_exc
-        raise HttpError(url, None, str(last_exc))
+        raise HttpError(url, None, redact(str(last_exc)))
 
     def get_json(self, url: str, **kw: Any) -> Any:
         return self.request("GET", url, **kw).json()
