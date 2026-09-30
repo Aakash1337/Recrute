@@ -187,9 +187,88 @@ class JobView:
     insights: list[str] = field(default_factory=list)
 
 
-_APPLY_URL_RX = re.compile(r'"companyApplyUrl"\s*:\s*("(?:[^"\\]|\\.)*")')
-_ONSITE_RX = re.compile(r"com\.linkedin\.voyager\.jobs\.(?:Complex|Simple)OnsiteApply")
-_OFFSITE_RX = re.compile(r"com\.linkedin\.voyager\.jobs\.OffsiteApply")
+_URN_KEYS = ("entityUrn", "dashEntityUrn", "jobPostingUrn", "*jobPosting", "jobPosting",
+             "preDashNormalizedJobPostingUrn")
+
+
+def _embedded_json(soup: BeautifulSoup) -> list[Any]:
+    """Voyager payloads LinkedIn embeds as <code> blocks (JSON, sometimes inside <!-- -->)."""
+    out = []
+    for code in soup.find_all("code"):
+        raw = "".join(str(x) for x in code.contents).strip()
+        raw = re.sub(r"^<!--|-->$", "", raw).strip()
+        if raw[:1] not in ("{", "["):
+            continue
+        try:
+            out.append(json.loads(raw))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def _record_job_id(d: dict[str, Any]) -> str | None:
+    """The job id a JSON record describes (jobPostingId or a jobPosting URN), if any."""
+    if d.get("jobPostingId") is not None:
+        return str(d["jobPostingId"])
+    for k in _URN_KEYS:
+        v = d.get(k)
+        if isinstance(v, str) and (m := re.search(r"urn:li:\w*jobposting\w*:\(?(\d+)", v, re.I)):
+            return m.group(1)
+    return None
+
+
+def _apply_info(node: Any, job_id: str) -> tuple[bool | None, str | None]:
+    """(easy_apply, companyApplyUrl) found under ``node``, not descending into records that
+    belong to a different job (e.g. "similar jobs" embedded in the same page)."""
+    easy: bool | None = None
+    url: str | None = None
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, list):
+            stack.extend(cur)
+            continue
+        if not isinstance(cur, dict):
+            continue
+        owner = _record_job_id(cur)
+        if owner is not None and owner != job_id:
+            continue
+        markers = " ".join([str(cur.get("$type", "")), *cur.keys()])
+        if re.search(r"(?:Complex|Simple)OnsiteApply", markers):
+            easy = True
+        elif "OffsiteApply" in markers and easy is None:
+            easy = False
+        if isinstance(cur.get("companyApplyUrl"), str) and cur["companyApplyUrl"]:
+            url = url or cur["companyApplyUrl"]
+        stack.extend(v for v in cur.values() if isinstance(v, dict | list))
+    if url and easy is None:
+        easy = False
+    return easy, url
+
+
+def job_apply_metadata(soup: BeautifulSoup, job_id: str) -> tuple[bool | None, str | None]:
+    """Apply method for ``job_id`` from the page's embedded records for that job only."""
+    easy: bool | None = None
+    url: str | None = None
+    for blob in _embedded_json(soup):
+        stack = [blob]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, list):
+                stack.extend(cur)
+            elif isinstance(cur, dict):
+                if _record_job_id(cur) == job_id:
+                    e, u = _apply_info(cur, job_id)
+                    easy = e if easy is None else easy
+                    url = url or u
+                else:
+                    stack.extend(v for v in cur.values() if isinstance(v, dict | list))
+    return easy, url
+
+
+_TOP_CARD_APPLY = (".jobs-apply-button--top-card button, "
+                   ".job-details-jobs-unified-top-card__container--two-pane "
+                   "button.jobs-apply-button, .jobs-unified-top-card button.jobs-apply-button")
 
 
 def parse_job_view(html: str, job_id: str) -> JobView:
@@ -225,19 +304,11 @@ def parse_job_view(html: str, job_id: str) -> JobView:
     if desc is not None:
         v.description_html = desc.decode_contents().strip() or None
 
-    # Apply method: embedded voyager JSON first, then the (never clicked) apply button.
-    if m := _APPLY_URL_RX.search(html):
-        try:
-            v.external_apply_url = json.loads(m.group(1)) or None
-        except json.JSONDecodeError:
-            v.external_apply_url = None
-    if _ONSITE_RX.search(html):
-        v.easy_apply = True
-    elif _OFFSITE_RX.search(html) or v.external_apply_url:
-        v.easy_apply = False
+    # Apply method: embedded records for *this* job id first, then the top-card apply button
+    # (read, never clicked). Page-wide matches are not trusted: the page also embeds other jobs.
+    v.easy_apply, v.external_apply_url = job_apply_metadata(soup, job_id)
     if v.easy_apply is None:
-        btn = soup.select_one(".jobs-apply-button--top-card button, button.jobs-apply-button, "
-                              ".jobs-s-apply button")
+        btn = soup.select_one(_TOP_CARD_APPLY)
         if btn is not None:
             label = f"{btn.get('aria-label') or ''} {btn.get_text(' ', strip=True)}".lower()
             v.easy_apply = "easy apply" in label

@@ -31,13 +31,14 @@ API = "https://himalayas.app/jobs/api/search"
 def parse_search(payload: dict[str, Any], us_only: bool = True) -> Iterator[RawJob]:
     for job in payload.get("jobs") or []:
         restrictions = [clean(x) for x in job.get("locationRestrictions") or [] if clean(x)]
-        if us_only and restrictions and not us_eligible(restrictions):
+        if us_only and us_eligible(restrictions) is False:
             continue
         html = job.get("description") or None
         annual = (job.get("salaryPeriod") or "annual").lower() in ("annual", "year", "yearly")
         lo = job.get("minSalary") if annual else None
         hi = job.get("maxSalary") if annual else None
-        url = job.get("guid") or job.get("applicationLink")
+        url = job.get("guid") or job.get("applicationLink")  # the Himalayas page (attribution)
+        apply_link = job.get("applicationLink") or None
         yield RawJob(
             source="himalayas",
             source_job_id=url,
@@ -54,7 +55,9 @@ def parse_search(payload: dict[str, Any], us_only: bool = True) -> Iterator[RawJ
             description_text=html_to_text(html),
             department=", ".join(job.get("parentCategories") or []) or None,
             posted_at=to_utc(job.get("pubDate")),
-            **ats_fields(html),
+            # applicationLink is the explicit apply target; only fall back to an ATS link found
+            # in the description when Himalayas gives none.
+            **(ats_fields(apply_url=apply_link) if apply_link else ats_fields(html)),
         )
 
 

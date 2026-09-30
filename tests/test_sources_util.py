@@ -59,12 +59,18 @@ def test_parse_salary_text(text, out):
 
 
 @pytest.mark.parametrize("locs,out", [
+    # explicit US (or worldwide) -> True
     (["USA"], True), (["United States"], True), ("Worldwide", True), (["Anywhere"], True),
     (["Americas, Europe, Israel"], True), (["Northern America, LATAM, Europe, APAC"], True),
-    (["USA, Canada, Argentina, Mexico, Peru"], True), (["Remote"], True),
-    (["Austin, TX"], True), (["New York"], True), (["Remote (US)"], True),
+    (["USA, Canada, Argentina, Mexico, Peru"], True), (["Austin, TX"], True),
+    (["New York"], True), (["Remote (US)"], True), (["London, UK", "Remote, US"], True),
+    # explicit foreign-only restriction -> False
     (["Europe"], False), (["France, Japan, Turkey, Vietnam, Mexico, Norway"], False),
     (["Canada"], False), (["London, UK"], False), (["Remote EMEA"], False),
+    (["Europe", "APAC"], False),
+    # ambiguous / city-only / no data -> None (callers keep these)
+    (["San Francisco"], None), (["Seattle"], None), (["Remote"], None),
+    (["Freeport Ridge Estate,"], None), (["Seattle", "Europe"], None),
     ([], None), (None, None), ([""], None),
 ])
 def test_us_eligible(locs, out):

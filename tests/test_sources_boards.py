@@ -114,6 +114,21 @@ def test_lever():
     assert jobs[1].employment_type == "internship" and jobs[1].remote == "onsite"
 
 
+def test_lever_eu_board_uses_eu_api():
+    payload = json.loads(fx("lever_postings.json").read_text(encoding="utf-8"))
+    for posting in payload:
+        posting.pop("hostedUrl")
+        posting.pop("applyUrl")
+    http = FakeHttp({"api.eu.lever.co/v0/postings/mistral": payload})
+    jobs, ctx = run("lever", http, CompanyRef("Mistral", "lever", "eu:mistral"))
+    assert http.urls() == ["https://api.eu.lever.co/v0/postings/mistral?mode=json"]
+    assert not ctx.errors and jobs
+    j = jobs[0]
+    assert j.ats_token == "eu:mistral"
+    assert j.url == f"https://jobs.eu.lever.co/mistral/{j.ats_job_id}"
+    assert j.apply_url == j.url + "/apply"
+
+
 def test_lever_error_payload():
     http = FakeHttp({"lever.co": {"ok": False, "error": "Document not found"}})
     jobs, ctx = run("lever", http, CompanyRef("X", "lever", "nope"))

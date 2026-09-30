@@ -6,9 +6,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from recrute.criteria import Criteria, Track
+from recrute.http import HttpError
 from recrute.llm.base import LLMError
 from recrute.models import Priority
-from recrute.sources import SourceContext, get_source
+from recrute.sources import SourceContext, get_source, himalayas
 from recrute.sources import hn as hnmod
 from recrute.sources.testing import FakeHttp, FakeRouter
 
@@ -234,3 +235,77 @@ def test_hn_llm_failure_is_recorded_and_skipped():
     ctx = SourceContext(http=hn_http(), criteria=Criteria(), router=FakeRouter(boom))
     assert list(get_source("hn_whoshiring").fetch(ctx)) == []
     assert any(k.startswith("hn_whoshiring:batch") for k in ctx.errors)
+
+
+# ------------------------------------------------------------------------------ audit fixes
+
+
+def _remotive_job(i: int, where: str) -> dict:
+    return {"id": i, "url": f"https://remotive.com/remote-jobs/x-{i}", "title": "SOC Analyst",
+            "company_name": "A", "job_type": "full_time", "candidate_required_location": where,
+            "publication_date": "2026-09-20T00:00:00", "salary": "", "description": "<p>x</p>"}
+
+
+def test_remotive_and_remoteok_keep_unknown_locations():
+    remotive = {"jobs": [_remotive_job(1, "Seattle"), _remotive_job(2, ""),
+                         _remotive_job(3, "Europe")]}
+    jobs = list(get_source("remotive").fetch(
+        SourceContext(http=FakeHttp({"remotive.com": remotive}), criteria=Criteria())))
+    assert [j.source_job_id for j in jobs] == ["1", "2"]
+
+    remoteok = [{"legal": "..."}] + [
+        {"id": str(i), "position": "Security Engineer", "company": "Co", "location": loc,
+         "date": "2026-09-20T00:00:00+00:00", "url": f"https://remoteok.com/remote-jobs/{i}",
+         "description": "x"}
+        for i, loc in enumerate(["San Francisco", "", "Remote", "Europe", "Canada"])]
+    src = get_source("remoteok")
+    src.tags = ()
+    jobs = list(src.fetch(SourceContext(http=FakeHttp({"remoteok.com": remoteok}),
+                                        criteria=Criteria())))
+    assert [j.source_job_id for j in jobs] == ["0", "1", "2"]
+
+
+def _adzuna_result(i: str, contract_type: str) -> dict:
+    return {"id": i, "title": "SOC Analyst", "redirect_url": f"https://www.adzuna.com/land/ad/{i}",
+            "company": {"display_name": "A"}, "location": {"display_name": "Austin, TX"},
+            "created": "2026-09-28T00:00:00Z", "contract_time": "full_time",
+            "contract_type": contract_type}
+
+
+def test_adzuna_contract_type_beats_full_time(monkeypatch):
+    monkeypatch.setenv("ADZUNA_APP_ID", "id1")
+    monkeypatch.setenv("ADZUNA_APP_KEY", "key1")
+    payload = {"results": [_adzuna_result("1", "contract"), _adzuna_result("2", "permanent")]}
+    ctx = SourceContext(http=FakeHttp({"adzuna.com": payload}), criteria=small_criteria("x"))
+    a, b = list(get_source("adzuna").fetch(ctx))
+    assert a.employment_type == "contract" and b.employment_type == "full-time"
+
+
+def test_adzuna_redacts_url_encoded_credentials(monkeypatch, caplog):
+    monkeypatch.setenv("ADZUNA_APP_ID", "my id")
+    monkeypatch.setenv("ADZUNA_APP_KEY", "k+e/y=1")
+
+    def boom(url):
+        return HttpError(url, 500, "boom")
+
+    ctx = SourceContext(http=FakeHttp({"adzuna.com": boom}), criteria=small_criteria("a"))
+    with caplog.at_level("DEBUG"):
+        assert list(get_source("adzuna").fetch(ctx)) == []
+    stored = " ".join(ctx.errors.values()) + caplog.text
+    assert ctx.errors and "k+e/y=1" not in stored and "k%2Be%2Fy%3D1" not in stored
+    assert "my+id" not in stored and "my%20id" not in stored
+
+
+def test_himalayas_application_link_is_apply_url():
+    job = dict(jfx("himalayas_search.json")["jobs"][0])
+    job["guid"] = "https://himalayas.app/companies/acme/jobs/security-engineer"
+    job["applicationLink"] = ("https://jobs.lever.co/acme/6ed76ce8-4156-4b60-b120-403538bd66cd"
+                              "/apply")
+    other = dict(job, guid="https://himalayas.app/companies/b/jobs/x",
+                 applicationLink="https://careers.b.example/apply/42")
+    j1, j2 = list(himalayas.parse_search({"jobs": [job, other]}))
+    assert j1.url == j1.source_job_id == job["guid"]
+    assert j1.apply_url == job["applicationLink"]
+    assert (j1.ats, j1.ats_token) == ("lever", "acme")
+    assert j2.url == other["guid"] and j2.apply_url == "https://careers.b.example/apply/42"
+    assert j2.ats is None
