@@ -241,6 +241,8 @@ def build_packet_for(ctx, session, job: Job, profile, bank, build_packet, user_n
     from recrute.packets import revision
 
     token = token or claim_build(session, job)
+    # the target this build is FOR: publication requires it to be unchanged
+    target = (job.apply_url, job.ats, job.ats_job_id)
     company = session.get(Company, job.company_id) if job.company_id else None
     questions = fetch_questions(job, ctx.paths, session)
     packet = build_packet(job, questions, profile=profile, bank=bank, router=ctx.router,
@@ -252,8 +254,12 @@ def build_packet_for(ctx, session, job: Job, profile, bank, build_packet, user_n
     data = packet.model_dump(mode="json")
     claimed = select(Application.id).where(Application.job_id == job.id,
                                            Application.build_token == token).exists()
+    same_target = [c.is_(None) if v is None else c == v
+                   for c, v in zip((Job.apply_url, Job.ats, Job.ats_job_id), target,
+                                   strict=True)]
     res = session.execute(update(Job).where(Job.id == job.id,
-                                            Job.status == JobStatus.SHORTLISTED, claimed)
+                                            Job.status == JobStatus.SHORTLISTED, claimed,
+                                            *same_target)
                           .values(status=status))
     if res.rowcount != 1:
         session.rollback()

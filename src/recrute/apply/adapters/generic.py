@@ -77,7 +77,8 @@ Rules:
 FORM FIELDS (id, label, type, required, options):
 {fields}
 
-APPROVED ANSWERS (id, question, value preview):
+APPROVED ANSWERS (id, question, question description, type). Their values are not shown:
+map by the QUESTION each answer was approved for.
 {answers}
 
 FILES AVAILABLE: {files}
@@ -93,12 +94,6 @@ _BEST_FORM_JS = """() => {
   });
   return best;
 }"""
-
-
-def _preview(v: Any) -> str:
-    s = dom.dumps(v) if not isinstance(v, str) else v
-    s = " ".join(s.split())
-    return s if len(s) <= 60 else s[:57] + "..."
 
 
 class GenericAdapter(BaseAdapter):
@@ -149,13 +144,19 @@ class GenericAdapter(BaseAdapter):
         if self.router is None or not fields:
             self._memo[key] = {}
             return {}
-        labels = {q.id: q.label for q in packet.questions}
+        qs = {q.id: q for q in packet.questions}
+
+        def describe(aid: str) -> list[str]:
+            # data minimisation: the question an answer was approved for, never its value
+            q = qs.get(aid)
+            return [aid, q.label if q else "", (q.description or "")[:200] if q else "",
+                    q.type if q else ""]
+
         prompt = PROMPT.format(
             fields="\n".join(json.dumps([f.id, f.label, f.type, f.required, f.options[:30]],
                                         ensure_ascii=False) for f in fields),
-            answers="\n".join(json.dumps([a.question_id, labels.get(a.question_id, ""),
-                                          _preview(a.value)], ensure_ascii=False)
-                              for a in answers.values()) or "(none)",
+            answers="\n".join(json.dumps(describe(aid), ensure_ascii=False)
+                              for aid in answers) or "(none)",
             files=", ".join(sorted(files)) or "(none)")
         try:
             out = self.router.complete("form_map", prompt, schema=FORM_MAP_SCHEMA, system=SYSTEM)

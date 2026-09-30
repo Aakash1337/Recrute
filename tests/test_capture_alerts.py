@@ -88,3 +88,27 @@ def test_linkedin_non_alert_mail_ignored():
                     sender="messages-noreply@linkedin.com", subject="You have a new message",
                     text="Hi https://www.linkedin.com/comm/jobs/view/123456789/")
     assert parse_alert(m) == []
+
+
+@pytest.mark.parametrize("sender,subject,kind", [
+    ("jobs-listings@linkedin.com", "Security Engineer: Acme and more", "linkedin"),
+    ("donotreply@indeed.com", "Jobs you might like", "indeed"),
+    ("jobs@glassdoor.com", "Security Engineer jobs near you", "glassdoor"),
+])
+def test_inbox_routing_and_parser_agree_on_alerts(sender, subject, kind):
+    m = MailMessage(message_id="<a>", date=load("linkedin_alert.eml").date, sender=sender,
+                    subject=subject, text="")
+    assert alert_kind(m) == kind and is_alert_mail(m)
+
+
+@pytest.mark.parametrize("sender,subject", [
+    ("indeedapply@indeed.com", "Indeed Application: Security Analyst"),
+    ("jobs-noreply@linkedin.com", "Your application was sent to Acme"),
+    ("jobs-noreply@linkedin.com", "Your application was viewed by Acme"),
+    ("noreply@glassdoor.com", "Interview invitation for the Data Analyst job"),
+])
+def test_application_updates_are_not_alerts(sender, subject):
+    m = MailMessage(message_id="<b>", date=load("linkedin_alert.eml").date, sender=sender,
+                    subject=subject, text="")
+    assert alert_kind(m) is None
+    assert not is_alert_mail(m)

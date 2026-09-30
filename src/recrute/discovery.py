@@ -124,15 +124,30 @@ def discover_search(ctx) -> dict:
                     import math
 
                     src.query_offset = int(state.get("query_offset", 0))
+                    src.given_up = {q for q, n in (state.get("query_failures") or {}).items()
+                                    if n >= 3}
                     nq = max(1, len(ctx.criteria.all_search_queries()))
                     cycles = math.ceil(nq / max(1, getattr(src, "max_searches", nq)))
                 # delayed feeds publish old postings late: widen the window by that delay
                 delay = getattr(src, "feed_delay", timedelta(0))
                 since = last - timedelta(hours=1) - delay if last else None
-                if rotating and last:  # each query only comes round every `cycles` runs
-                    since = now - cadence * cycles - timedelta(hours=1)
+                if rotating and last:
+                    # each query only comes round every few runs, and runs can be missed or
+                    # fail: look back to the OLDEST successful search of the queries due now
+                    qs = [q for _, q in ctx.criteria.all_search_queries()]
+                    budget = max(1, getattr(src, "max_searches", len(qs) or 1))
+                    start = src.query_offset % len(qs) if qs else 0
+                    due = (qs[start:] + qs[:start])[:budget]
+                    ok = state.get("query_ok") or {}
+                    if due and all(q in ok for q in due):
+                        since = min(datetime.fromisoformat(ok[q]) for q in due) \
+                            - timedelta(hours=1) - delay
+                    else:  # never searched (or older state): the widest rotation window
+                        since = min(last, now - cadence * cycles) - timedelta(hours=1) - delay
                 sctx = SourceContext(http=http, criteria=ctx.criteria, router=ctx.router,
                                      since=since)
+                offset_before = state.get("query_offset", 0)
+                ingested_ok = False
                 try:
                     raws = list(src.fetch(sctx))
                     if sctx.errors:
@@ -140,6 +155,7 @@ def discover_search(ctx) -> dict:
                         # advance the completion cursor, so the failed part is retried later
                         if raws:
                             out[name] = ingest(s, raws).as_dict() | {"partial": True}
+                        ingested_ok = True  # (with nothing found there is nothing to lose)
                         msg = " ".join(sctx.errors.values())
                         limited = any(code in msg for code in ("429", "999", "403"))
                         wait = 6 * 3600 if limited else 1800
@@ -147,7 +163,10 @@ def discover_search(ctx) -> dict:
                         out.setdefault(name, "failed: backing off")
                     else:
                         out[name] = ingest(s, raws).as_dict()
-                        state = {"last_ok": now.isoformat()}
+                        state = {"last_ok": now.isoformat(),
+                                 **{k: state[k] for k in ("query_ok", "query_failures")
+                                    if k in state}}
+                        ingested_ok = True
                 except HttpError as e:
                     s.rollback()
                     wait = e.retry_after or (6 * 3600 if e.status in (429, 999) else 1800)
@@ -160,7 +179,21 @@ def discover_search(ctx) -> dict:
                 if sctx.errors:
                     state["errors"] = dict(list(sctx.errors.items())[:5])
                 if rotating:
-                    state["query_offset"] = getattr(src, "next_offset", 0)
+                    if ingested_ok:  # these searches' results are stored: they're covered
+                        ok = dict(state.get("query_ok") or {})
+                        ok.update({q: now.isoformat() for q in getattr(src, "searched_ok", [])})
+                        state["query_ok"] = ok
+                        state["query_offset"] = getattr(src, "next_offset", 0)
+                        fails = dict(state.get("query_failures") or {})
+                        for q in getattr(src, "searched_ok", []):
+                            fails.pop(q, None)
+                        for key in sctx.errors:
+                            q = key.partition(":")[2]
+                            if q:
+                                fails[q] = fails.get(q, 0) + 1
+                        state["query_failures"] = fails
+                    else:  # nothing was stored: search the same queries again next time
+                        state["query_offset"] = offset_before
                 set_state(s, f"source:{name}", state)
     finally:
         http.close()

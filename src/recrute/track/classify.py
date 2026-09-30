@@ -91,6 +91,13 @@ def _domain_matches(domain: str, suffixes: Iterable[str]) -> bool:
 
 
 def is_alert_mail(msg: MailMessage) -> bool:
+    """A job-alert email (routed to job ingestion, never to application tracking)."""
+    from recrute.capture.alerts import _STATUS_SUBJECT, alert_kind
+
+    if alert_kind(msg) is not None:  # every alert the parser understands
+        return True
+    if _STATUS_SUBJECT.search(msg.subject.lower()):
+        return False  # an application update, even from an alert sender
     return msg.sender in ALERT_SENDERS or bool(
         _ALERT_SUBJECT.search(msg.subject) and _domain_matches(
             msg.sender_domain, ("linkedin.com", "indeed.com", "glassdoor.com", "ziprecruiter.com",

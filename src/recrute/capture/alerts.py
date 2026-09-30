@@ -284,10 +284,18 @@ def _dedupe(jobs: list[RawJob | None]) -> list[RawJob]:
     return out
 
 
+_STATUS_SUBJECT = re.compile(r"\b(applications?|applied|applying|interview\w*|offer|"
+                             r"assessment|candidacy|status|received|viewed|messages?)\b")
+
+
 def alert_kind(msg: MailMessage) -> str | None:
-    """"linkedin" | "indeed" | "glassdoor" | None."""
+    """"linkedin" | "indeed" | "glassdoor" | None. The ONE job-alert classifier: inbox routing
+    (track.classify.is_alert_mail) uses it too, so a parseable alert is never sent to
+    application tracking, and an application update is never mistaken for an alert."""
     d = msg.sender_domain
     subj = msg.subject.lower()
+    if _STATUS_SUBJECT.search(subj):
+        return None  # "Indeed Application: ...", "Your application was viewed", interviews
     if d.endswith("linkedin.com") and (
             msg.sender.startswith(("jobalerts-noreply", "jobs-alerts", "jobs-listings"))
             or "job alert" in subj or re.search(r"\bnew jobs?\b|\bjobs? (?:similar|for you)",

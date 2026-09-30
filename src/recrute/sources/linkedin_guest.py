@@ -215,6 +215,8 @@ class LinkedInGuestSource:
         # 10-search cap, every query still gets searched regularly, not just the first ten.
         self.query_offset = 0
         self.next_offset = 0
+        self.searched_ok: list[str] = []
+        self.given_up: set[str] = set()  # queries that failed too often to hold the rotation
 
     def _http(self) -> Http:
         if self.http_factory is not None:
@@ -262,19 +264,30 @@ class LinkedInGuestSource:
         queries = [q for _, q in ctx.criteria.all_search_queries()]
         start = self.query_offset % len(queries) if queries else 0
         rotated = queries[start:] + queries[:start]
+        # the next run resumes at the first query that did NOT succeed (a failed or blocked
+        # query is retried, never skipped); `searched_ok` feeds per-query coverage tracking
         self.next_offset = start
+        self.searched_ok = []
+        failed = False
         try:
             for q in rotated:
                 if self.stats["searches"] >= self.max_searches:
                     break
-                self.next_offset = (self.next_offset + 1) % len(queries)
                 params = {"keywords": q, "location": self.location, "f_TPR": tpr, "start": 0}
                 self.stats["searches"] += 1
                 try:
                     html = self._get(http, f"{SEARCH}?{urlencode(params)}")
                 except HttpError as e:  # e.g. 400/404 for one query: skip it
                     ctx.errors[f"linkedin_guest:{q}"] = str(e)[:300]
+                    if q in self.given_up:  # failed run after run: don't block the rotation
+                        if not failed:
+                            self.next_offset = (self.next_offset + 1) % len(queries)
+                    else:
+                        failed = True
                     continue
+                self.searched_ok.append(q)
+                if not failed:
+                    self.next_offset = (self.next_offset + 1) % len(queries)
                 for c in parse_search_cards(html):
                     cards.setdefault(c.job_id, c)
         except GuestBlocked as e:

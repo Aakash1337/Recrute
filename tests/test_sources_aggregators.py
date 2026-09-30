@@ -339,3 +339,22 @@ def test_hn_role_without_link_does_not_borrow_another_roles_posting():
     assert jobs["Data Analyst"].ats_job_id is None
     assert "111" not in (jobs["Data Analyst"].apply_url or "")
     assert jobs["Data Analyst"].source_job_id != jobs["Security Engineer"].source_job_id
+
+
+def test_hn_overlapping_titles_keep_their_own_sections_and_links():
+    from recrute.sources.hn import jobs_from_extraction, role_sections
+
+    text = ("Acme | Remote (US)\n\nSenior Security Engineer: 8+ years. "
+            "https://boards.greenhouse.io/acme/jobs/111\n\n"
+            "Security Engineer: 2+ years. https://boards.greenhouse.io/acme/jobs/222")
+    secs = role_sections(text, ["Senior Security Engineer", "Security Engineer"])
+    assert "8+" in secs["Senior Security Engineer"] and "2+" not in secs["Senior Security Engineer"]
+    assert "2+" in secs["Security Engineer"] and "8+" not in secs["Security Engineer"]
+    c = {"id": 7, "created_at_i": 1_750_000_000, "text": text.replace("\n\n", "<p>")}
+    rows = {"jobs": [
+        {"comment_id": 7, "company": "Acme", "title": "Senior Security Engineer",
+         "apply_url": None},
+        {"comment_id": 7, "company": "Acme", "title": "Security Engineer", "apply_url": None}]}
+    jobs = {j.title: j for j in jobs_from_extraction(rows, [c])}
+    assert jobs["Senior Security Engineer"].ats_job_id == "111"
+    assert jobs["Security Engineer"].ats_job_id == "222"

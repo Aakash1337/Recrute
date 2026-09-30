@@ -548,6 +548,10 @@ def test_generic_filler_maps_once_fills_and_never_submits(srv, context, paths, h
     fields_section = router.calls[0]["prompt"].split("FORM FIELDS")[1].split("APPROVED")[0]
     assert '["fullname",' in fields_section
     assert '["q",' not in fields_section  # the header search form is not the application
+    answers_section = router.calls[0]["prompt"].split("APPROVED ANSWERS")[1]
+    assert "q_email" in answers_section and "Email" in answers_section
+    for value in ("Ada Lovelace", "ada@example.com", "Robots need security."):
+        assert value not in router.calls[0]["prompt"]  # values never leave the machine
 
 
 def test_generic_filler_ends_in_pause_even_when_fully_covered(srv, context, paths, human,

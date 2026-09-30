@@ -233,3 +233,70 @@ def test_guarded_page_stops_after_concurrent_suspension(engine):
     with pytest.raises(discovery._GuardStop):
         page.goto("https://www.linkedin.com/jobs/search?2")
     assert visits == ["https://www.linkedin.com/jobs/search?1"]
+
+
+def test_rotating_source_looks_back_to_oldest_coverage(engine, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.settings import get_state, set_setting, set_state
+
+    queries = [q for _, q in Criteria().all_search_queries()]
+    seen = {}
+
+    class Rotating:
+        cadence = timedelta(hours=2)
+        max_searches = 3
+
+        def __init__(self):
+            self.query_offset = self.next_offset = 0
+            self.searched_ok, self.given_up = [], set()
+
+        def fetch(self, sctx):
+            seen["since"] = sctx.since
+            due = (queries[self.query_offset:] + queries[:self.query_offset])[:3]
+            self.searched_ok = due
+            self.next_offset = (self.query_offset + 3) % len(queries)
+            return iter(())
+
+    with Session(engine) as s:
+        set_setting(s, "sources_enabled", {k: False for k in discovery.SEARCH_SOURCES}
+                    | {"linkedin_guest": True})
+        week_ago = datetime.now(UTC) - timedelta(days=7)
+        set_state(s, "source:linkedin_guest", {"last_ok": week_ago.isoformat()})
+    monkeypatch.setattr(discovery, "get_source", lambda name: Rotating())
+    monkeypatch.setattr(discovery, "Http", lambda **kw: FakeHttp({}))
+    discovery.discover_search(_ctx(engine))
+    assert seen["since"] <= week_ago  # a week of downtime: the whole gap is searched
+    with Session(engine) as s:
+        st = get_state(s, "source:linkedin_guest")
+        assert set(st["query_ok"]) == set(queries[:3]) and st["query_offset"] == 3
+
+
+def test_guest_failed_query_is_retried_then_given_up():
+    from recrute.sources.base import SourceContext
+    from recrute.sources.linkedin_guest import LinkedInGuestSource
+
+    crit = Criteria()
+    queries = [q for _, q in crit.all_search_queries()]
+    bad = queries[1]
+
+    def search(url):
+        from urllib.parse import parse_qs, urlparse
+
+        if parse_qs(urlparse(url).query)["keywords"][0] == bad:
+            return 400
+        return ""
+
+    def run(given_up=()):
+        src = LinkedInGuestSource(http_factory=lambda: FakeHttp({"seeMoreJobPostings": search}),
+                                  min_interval=0, max_searches=3)
+        src.given_up = set(given_up)
+        sctx = SourceContext(http=FakeHttp({}), criteria=crit)
+        list(src.fetch(sctx))
+        return src, sctx
+
+    src, sctx = run()
+    assert src.next_offset == 1  # resumes at the failed query
+    assert bad not in src.searched_ok and f"linkedin_guest:{bad}" in sctx.errors
+    src, _ = run(given_up={bad})
+    assert src.next_offset == 3  # after repeated failures it no longer holds the rotation

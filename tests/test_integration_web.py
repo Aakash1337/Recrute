@@ -657,3 +657,40 @@ def test_rate_limited_builds_keep_the_job_waiting(engine, monkeypatch, paths):
         assert s.get(Job, job_id).status == JobStatus.SHORTLISTED
         app = s.exec(select(Application)).one()
         assert not (app.outcome or {}).get("packet_failures") and app.build_token == ""
+
+
+@pytest.mark.parametrize("void_claim", [True, False])
+def test_retarget_during_build_drops_the_stale_packet(engine, monkeypatch, paths, void_claim):
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from recrute import tasks
+    from recrute.models import Job, JobStatus
+    from recrute.pipeline.ingest import _retarget_unsent_application
+    from recrute.schemas import Packet
+
+    monkeypatch.setattr("recrute.applying.fetch_questions", lambda job, p, s=None: [])
+    ctx = SimpleNamespace(paths=paths, router=None)
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://www.linkedin.com/jobs/view/1",
+                  canonical_url="li1", status=JobStatus.SHORTLISTED)
+        s.add(job)
+        s.commit()
+        job_id = job.id
+
+    def build(job, questions, **kw):
+        with Session(engine) as other:  # ingest moves the target to the company's ATS
+            j = other.get(Job, job_id)
+            j.apply_url = "https://boards.greenhouse.io/acme/jobs/9"
+            j.ats, j.ats_job_id = "greenhouse", "9"
+            if void_claim:
+                _retarget_unsent_application(other, j)
+            other.add(j)
+            other.commit()
+        return Packet(job_id=job_id, generated_at=datetime.now(UTC))
+
+    with Session(engine) as s:
+        with pytest.raises(tasks.StaleBuild):
+            tasks.build_packet_for(ctx, s, s.get(Job, job_id), None, None, build)
+    with Session(engine) as s:
+        assert s.get(Job, job_id).status == JobStatus.SHORTLISTED

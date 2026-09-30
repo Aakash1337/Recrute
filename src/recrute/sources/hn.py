@@ -217,8 +217,22 @@ def role_sections(text: str, titles: list[str]) -> dict[str, str]:
 
 def _split_roles(text: str, titles: list[str]) -> tuple[str, dict[str, str]]:
     """(shared header, {title: that role's own section}) for a multi-role comment."""
-    low = text.lower()
-    found = sorted((p, t) for t in titles if (p := low.find(t.lower())) >= 0)
+    # every whole-word occurrence of every title; where titles overlap ("Senior Security
+    # Engineer" contains "Security Engineer") the longest one owns the text
+    def occurrences(t: str) -> list[re.Match[str]]:
+        whole = list(re.finditer(r"(?<!\w)" + re.escape(t) + r"(?!\w)", text, re.I))
+        return whole or list(re.finditer(re.escape(t), text, re.I))
+
+    cands = sorted((m.start(), -len(t), m.end(), t) for t in dict.fromkeys(titles) if t
+                   for m in occurrences(t))
+    taken: list[tuple[int, int]] = []
+    first: dict[str, int] = {}
+    for pos, _, end, t in cands:
+        if any(pos < e and s < end for s, e in taken):
+            continue
+        taken.append((pos, end))
+        first.setdefault(t, pos)
+    found = sorted((p, t) for t, p in first.items())
     header_end = found[0][0] if found else len(text)
     own: dict[str, str] = {}
     for i, (pos, t) in enumerate(found):

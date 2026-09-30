@@ -166,6 +166,14 @@ def _retarget_unsent_application(session: Session, job: Job) -> None:
 
     from recrute.models import Application
 
+    if job.status == JobStatus.SHORTLISTED:
+        # a build in progress fetched the OLD form's questions: void its claim so it can't
+        # publish (the next packets run rebuilds for the new target)
+        session.execute(update(Application).where(Application.job_id == job.id,
+                                                  col(Application.submitted_at).is_(None))
+                        .values(build_token="")
+                        .execution_options(synchronize_session=False))
+        return
     if job.status not in (JobStatus.PACKET_READY, JobStatus.APPROVED):
         return
     job.status = JobStatus.SHORTLISTED
@@ -222,7 +230,8 @@ def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
         if (_prefer(raw) and job.ats != raw.ats) or same_posting:
             existing = session.exec(select(Job).where(Job.canonical_url == canon)).first()
             if existing is None or existing.id == job.id:
-                target_changed = job.apply_url != target
+                target_changed = ((job.apply_url, job.ats, job.ats_job_id)
+                                  != (target, raw.ats, raw.ats_job_id))
                 job.apply_url, job.canonical_url = target, canon
                 job.ats, job.ats_job_id = raw.ats, raw.ats_job_id
                 if target_changed:
