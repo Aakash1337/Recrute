@@ -210,7 +210,7 @@ class LinkedInGuestSource:
         self.location = location
         self.seen_ids = seen_ids if seen_ids is not None else set()
         self.http_factory = http_factory
-        self.stats = {"searches": 0, "details": 0, "blocked": None}
+        self.stats: dict[str, Any] = {"searches": 0, "details": 0, "blocked": None}  # last run
 
     def _http(self) -> Http:
         if self.http_factory is not None:
@@ -242,6 +242,8 @@ class LinkedInGuestSource:
         return text
 
     def _all(self, ctx: SourceContext) -> Iterator[RawJob]:
+        # Caps are per run: reset the counters every fetch (seen_ids persists across runs).
+        self.stats = {"searches": 0, "details": 0, "blocked": None}
         http = self._http()
         own = self.http_factory is None
         try:

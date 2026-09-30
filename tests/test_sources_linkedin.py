@@ -171,6 +171,25 @@ def test_guest_skips_details_for_seen_ids_and_since_sets_tpr():
     assert parse_qs(urlsplit(http.urls()[0]).query)["f_TPR"] == ["r3600"]  # clamped minimum
 
 
+def test_guest_reused_instance_resets_caps_but_keeps_seen_ids():
+    counter = Counter()
+    http = FakeHttp({"seeMoreJobPostings": counter.search,
+                     "/jobPosting/": read("linkedin_guest_detail.html")})
+    src = guest(http, max_searches=2, max_details=5)
+    first = list(src.fetch(SourceContext(http=FakeHttp(), criteria=many_queries())))
+    assert src.stats["searches"] == 2 and src.stats["details"] == 5 and len(first) == 20
+    n_calls = len(http.calls)
+    second = list(src.fetch(SourceContext(http=FakeHttp(), criteria=many_queries())))
+    second_urls = http.urls()[n_calls:]
+    assert len([u for u in second_urls if "seeMoreJobPostings" in u]) == 2
+    assert len([u for u in second_urls if "/jobPosting/" in u]) == 5
+    assert src.stats["searches"] == 2 and src.stats["details"] == 5 and len(second) == 20
+    assert len(src.seen_ids) == 10  # detail-fetched ids from both runs are remembered
+    detailed_first = {u.rsplit("/", 1)[1] for u in http.urls()[:n_calls] if "/jobPosting/" in u}
+    detailed_second = {u.rsplit("/", 1)[1] for u in second_urls if "/jobPosting/" in u}
+    assert not detailed_first & detailed_second
+
+
 def test_guest_check_page_ignores_jd_text():
     html = read("linkedin_guest_detail.html").replace("threat modeling", "CAPTCHA unusual activity")
     lg.check_page("https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/1", html)  # no raise
@@ -383,3 +402,50 @@ def test_session_query_rotation_differs_by_day():
     b = make_session(FakePage({}), now=lambda: datetime(2026, 9, 30, 10))._queries(ctx())
     assert sorted(a) == sorted(q for _, q in c.all_search_queries())
     assert a[0] != b[0]
+
+
+MULTI_JOB_CODE = """<code style="display: none" id="bpr-guid-9">{"included": [
+ {"entityUrn": "urn:li:fs_normalized_jobPosting:4100000001",
+  "applyMethod": {"$type": "com.linkedin.voyager.jobs.OffsiteApply",
+                  "companyApplyUrl": "https://boards.greenhouse.io/acmesecurity/jobs/7012345"}},
+ {"entityUrn": "urn:li:fs_normalized_jobPosting:4100000002",
+  "applyMethod": {"$type": "com.linkedin.voyager.jobs.ComplexOnsiteApply"}},
+ {"entityUrn": "urn:li:fs_normalized_jobPosting:4100000009",
+  "applyMethod": {"$type": "com.linkedin.voyager.jobs.OffsiteApply",
+                  "companyApplyUrl": "https://jobs.lever.co/other/x"}},
+ {"jobPostingId": 4100000005, "title": "similar job",
+  "applyMethod": {"com.linkedin.voyager.dash.jobs.OffsiteApply": {
+      "companyApplyUrl": "https://jobs.ashbyhq.com/five/8fb1615c-34bf-47c4-a1d1-b7b2f836bbd3"}}}
+]}</code>"""
+
+
+def _page_with_many_jobs(button_label: str) -> str:
+    html = read("linkedin_session_view_external.html")
+    html = re.sub(r"<code.*?</code>", lambda m: MULTI_JOB_CODE, html, flags=re.S)
+    return html.replace('aria-label="Apply to Security Engineer, Detection &amp; Response on '
+                        'company website"', f'aria-label="{button_label}"')
+
+
+def test_session_apply_metadata_is_scoped_to_requested_job():
+    html = _page_with_many_jobs("Apply on company website")
+    one = ls.parse_job_view(html, "4100000001")
+    assert one.easy_apply is False
+    assert one.external_apply_url == "https://boards.greenhouse.io/acmesecurity/jobs/7012345"
+    two = ls.parse_job_view(html, "4100000002")
+    assert two.easy_apply is True and two.external_apply_url is None
+    five = ls.parse_job_view(html, "4100000005")  # dash-style record keyed by type name
+    assert five.easy_apply is False and "ashbyhq" in five.external_apply_url
+    # no record for this id: never borrow another job's URL; fall back to the top-card button
+    none = ls.parse_job_view(html, "4100000007")
+    assert none.external_apply_url is None and none.easy_apply is False
+    easy_btn = ls.parse_job_view(_page_with_many_jobs("Easy Apply to X"), "4100000007")
+    assert easy_btn.easy_apply is True and easy_btn.external_apply_url is None
+
+
+def test_session_button_fallback_ignores_buttons_outside_top_card():
+    html = re.sub(r"<code.*?</code>", "", read("linkedin_session_view_external.html"), flags=re.S)
+    html = re.sub(r'<div class="jobs-apply-button--top-card">.*?</div>', "", html, flags=re.S)
+    assert "Apply</span>" not in html  # the top card has no apply button now
+    html = html.replace("</main>", '<aside class="similar"><button class="jobs-apply-button" '
+                        'aria-label="Easy Apply to other job">Easy Apply</button></aside></main>')
+    assert ls.parse_job_view(html, "4100000001").easy_apply is None

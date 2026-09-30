@@ -192,28 +192,52 @@ _US_STATES = {
     "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming", "DC": "District of Columbia",
 }
 _US_WORDS = re.compile(
-    r"\b(united states|u\.s\.a?\.?|usa|us|america|americas|north america|anywhere|worldwide|"
-    r"global|world ?wide|northern america|us[- ]only|us timezones?|est|pst|mst|edt|pdt)\b|"
+    r"\b(united states|u\.s\.a?\.?|usa|us|america|americas|north america|northern america|"
+    r"anywhere|worldwide|world ?wide|global|us[- ]only|us timezones?|est|pst|mst|edt|pdt)\b|"
     r"\b(" + "|".join(re.escape(n.lower()) for n in _US_STATES.values()) + r")\b",
     re.I,
 )
 _US_STATE_ABBR = re.compile(r",\s*(" + "|".join(_US_STATES) + r")\b")
+# Explicit non-US countries/regions. A location naming only these is a foreign-only restriction.
+_FOREIGN = re.compile(
+    r"\b(canada|mexico|brazil|brasil|argentina|chile|colombia|peru|latam|latin america|"
+    r"south america|uk|u\.k\.|united kingdom|great britain|england|scotland|wales|ireland|"
+    r"europe|european union|eu|emea|cet|cest|germany|deutschland|france|spain|portugal|italy|"
+    r"netherlands|belgium|switzerland|austria|poland|czechia|czech republic|romania|ukraine|"
+    r"sweden|norway|denmark|finland|estonia|lithuania|latvia|greece|turkey|israel|uae|"
+    r"united arab emirates|saudi arabia|egypt|africa|nigeria|kenya|south africa|india|"
+    r"pakistan|bangladesh|sri lanka|apac|asia|china|hong kong|taiwan|japan|korea|singapore|"
+    r"malaysia|indonesia|philippines|vietnam|thailand|australia|new zealand|anz)\b",
+    re.I,
+)
+
+
+def _loc_us(loc: str) -> bool | None:
+    if _US_WORDS.search(loc) or _US_STATE_ABBR.search(loc):
+        return True
+    if _FOREIGN.search(loc):
+        return False
+    return None  # city-only ("Seattle"), bare "Remote", or unrecognized
 
 
 def us_eligible(locations: list[str] | str | None) -> bool | None:
-    """True if a location restriction admits US-based candidates, False if it clearly doesn't,
-    None when there's no data (callers should keep unknowns)."""
+    """Does a location restriction admit US-based candidates?
+
+    True  -- some location explicitly names the US (country, state, "Americas", "Worldwide"...).
+    False -- every location is an explicit foreign-only restriction ("Europe", "Remote EMEA").
+    None  -- no data or ambiguous (city-only "San Francisco", bare "Remote"). Callers must keep
+             unknowns; the pipeline's location filter decides later.
+    """
     if isinstance(locations, str):
         locations = [locations]
-    locs = [loc.strip() for loc in (locations or []) if loc and loc.strip()]
-    if not locs:
+    verdicts = [_loc_us(loc.strip()) for loc in (locations or []) if loc and loc.strip()]
+    if not verdicts:
         return None
-    for loc in locs:
-        if _US_WORDS.search(loc) or _US_STATE_ABBR.search(loc):
-            return True
-        if loc.lower() in {"remote", "remote only", "fully remote", "100% remote"}:
-            return True  # remote with no stated restriction
-    return False
+    if any(v is True for v in verdicts):
+        return True
+    if all(v is False for v in verdicts):
+        return False
+    return None
 
 
 # --------------------------------------------------------------------------- keywords

@@ -10,6 +10,8 @@ there, and the ATS job id when present. Used for:
 
 Token formats per ATS:
   greenhouse, lever, ashby, workable, smartrecruiters, jobvite, recruitee: board slug
+  lever (EU):  ``eu:{slug}`` for boards on the EU instance (jobs.eu.lever.co / api.eu.lever.co);
+               see ``lever_host_parts``
   workday:   ``{tenant}/{wdN}/{site}``   (all three are needed for the /wday/cxs/ JSON API)
   icims:     the subdomain before .icims.com (e.g. ``careers-acme``)
   bamboohr:  the subdomain before .bamboohr.com
@@ -45,7 +47,8 @@ class AtsRef:
             case "greenhouse" if t:
                 return f"https://job-boards.greenhouse.io/{t}/jobs/{j}"
             case "lever" if t:
-                return f"https://jobs.lever.co/{t}/{j}"
+                region, slug = lever_host_parts(t)
+                return f"https://jobs.{region}lever.co/{slug}/{j}"
             case "ashby" if t:
                 return f"https://jobs.ashbyhq.com/{t}/{j}"
             case "workable":
@@ -73,7 +76,8 @@ class AtsRef:
             return None
         return {
             "greenhouse": f"https://boards-api.greenhouse.io/v1/boards/{t}/jobs",
-            "lever": f"https://api.lever.co/v0/postings/{t}?mode=json",
+            "lever": "https://api.{}lever.co/v0/postings/{}?mode=json".format(
+                *lever_host_parts(t)),
             "ashby": f"https://api.ashbyhq.com/posting-api/job-board/{t}",
             "workable": f"https://apply.workable.com/api/v1/widget/accounts/{t}",
             "smartrecruiters": f"https://api.smartrecruiters.com/v1/companies/{t}/postings",
@@ -98,6 +102,15 @@ def _workday_url(host: str, segs: list[str]) -> str | None:
     if segs and re.fullmatch(r"[a-z]{2}-[A-Z]{2}", segs[0]):  # drop locale prefix
         segs = segs[1:]
     return f"https://{host}/" + "/".join(segs)
+
+
+def lever_host_parts(token: str) -> tuple[str, str]:
+    """Lever token -> (host region prefix, slug): "acme" -> ("", "acme"),
+    "eu:acme" -> ("eu.", "acme"). Hosts are then jobs.{prefix}lever.co / api.{prefix}lever.co."""
+    region, sep, slug = token.partition(":")
+    if sep and region.lower() == "eu" and slug:
+        return "eu.", slug
+    return "", token
 
 
 def _on(host: str, domain: str) -> bool:
@@ -159,12 +172,19 @@ def parse_ats_url(url: str | None) -> AtsRef | None:
 
     # ---- Lever ---------------------------------------------------------------------------
     if _on(host, "lever.co"):
-        if host.startswith("api."):  # /v0/postings/{t}[/{id}]
+        # jobs.lever.co / api.lever.co (global) vs jobs.eu.lever.co / api.eu.lever.co (EU)
+        lm = re.fullmatch(r"(jobs|api)\.(?:(eu)\.)?lever\.co", host)
+        if not lm:
+            return None
+        prefix = f"{lm.group(2)}:" if lm.group(2) else ""
+        if lm.group(1) == "api":  # /v0/postings/{t}[/{id}]
             m = re.match(rf"^/v0/postings/({_SEG})(?:/({_UUID}))?", path, re.I)
-            return AtsRef("lever", _tok(m.group(1)), m.group(2)) if m else None
-        if host.startswith("jobs.") and segs:
+            if not m or not (tok := _tok(m.group(1))):
+                return None
+            return AtsRef("lever", prefix + tok, m.group(2) and m.group(2).lower())
+        if segs and (tok := _tok(segs[0])):
             job = segs[1] if len(segs) > 1 and re.fullmatch(_UUID, segs[1], re.I) else None
-            return AtsRef("lever", _tok(segs[0]), job and job.lower())
+            return AtsRef("lever", prefix + tok, job and job.lower())
         return None
 
     # ---- Ashby ---------------------------------------------------------------------------

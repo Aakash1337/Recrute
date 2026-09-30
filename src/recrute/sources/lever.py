@@ -1,6 +1,8 @@
 """Lever public postings API (per company).
 
 GET https://api.lever.co/v0/postings/{token}?mode=json -> list of postings (all of them).
+EU-hosted boards use the token convention ``eu:{slug}`` and are fetched from
+https://api.eu.lever.co/v0/postings/{slug}?mode=json (postings live on jobs.eu.lever.co).
 apply_url = hostedUrl + "/apply"; categories.commitment -> employment_type;
 workplaceType -> remote.
 """
@@ -12,6 +14,7 @@ from typing import Any
 from urllib.parse import quote
 
 from recrute.schemas import RawJob
+from recrute.sources.ats_url import lever_host_parts
 from recrute.sources.base import CompanyRef, SourceContext
 from recrute.sources.boards import BoardSource
 from recrute.sources.util import (
@@ -23,7 +26,7 @@ from recrute.sources.util import (
     to_utc,
 )
 
-API = "https://api.lever.co/v0/postings/{token}?mode=json"
+API = "https://api.{region}lever.co/v0/postings/{slug}?mode=json"
 
 
 def _salary(p: dict[str, Any]) -> tuple[int | None, int | None, str | None]:
@@ -54,7 +57,9 @@ def parse_postings(payload: list[dict[str, Any]], token: str,
         locations = [clean(x) for x in cats.get("allLocations") or [] if clean(x)]
         if not locations and clean(cats.get("location")):
             locations = [clean(cats["location"])]
-        hosted = (p.get("hostedUrl") or f"https://jobs.lever.co/{quote(token)}/{p['id']}")
+        region, slug = lever_host_parts(token)
+        hosted = (p.get("hostedUrl")
+                  or f"https://jobs.{region}lever.co/{quote(slug)}/{p['id']}")
         hosted = hosted.rstrip("/")
         html = _html(p)
         lo, hi, cur = _salary(p)
@@ -65,7 +70,7 @@ def parse_postings(payload: list[dict[str, Any]], token: str,
             url=hosted,
             apply_url=p.get("applyUrl") or hosted + "/apply",
             title=clean(p.get("text")) or "",
-            company=company or token,
+            company=company or lever_host_parts(token)[1],
             ats="lever",
             ats_token=token,
             ats_job_id=p["id"],
@@ -87,7 +92,8 @@ class LeverSource(BoardSource):
     name = "lever"
 
     def fetch_board(self, ctx: SourceContext, company: CompanyRef) -> Any:
-        return ctx.http.get_json(API.format(token=quote(company.ats_token)))
+        region, slug = lever_host_parts(company.ats_token)
+        return ctx.http.get_json(API.format(region=region, slug=quote(slug)))
 
     def parse_board(self, payload: Any, company: CompanyRef,
                     ctx: SourceContext | None = None) -> Iterator[RawJob]:

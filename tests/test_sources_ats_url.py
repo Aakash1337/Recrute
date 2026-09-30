@@ -28,7 +28,8 @@ U2 = "8fb1615c-34bf-47c4-a1d1-b7b2f836bbd3"
     (f"https://jobs.lever.co/palantir/{U1.upper()}", "lever", "palantir", U1),
     ("https://jobs.lever.co/palantir", "lever", "palantir", None),
     ("https://jobs.lever.co/palantir?team=Security", "lever", "palantir", None),
-    (f"https://jobs.eu.lever.co/mistral/{U1}", "lever", "mistral", U1),
+    (f"https://jobs.eu.lever.co/mistral/{U1}", "lever", "eu:mistral", U1),
+    ("https://api.eu.lever.co/v0/postings/mistral?mode=json", "lever", "eu:mistral", None),
     ("https://api.lever.co/v0/postings/palantir?mode=json", "lever", "palantir", None),
     # Ashby
     (f"https://jobs.ashbyhq.com/openai/{U2}", "ashby", "openai", U2),
@@ -156,3 +157,14 @@ def test_find_ats_link_plain_text_and_board_fallback():
         "https://boards.greenhouse.io/acme", AtsRef("greenhouse", "acme", None))
     assert find_ats_link("email jobs@example.com or visit https://example.com") is None
     assert find_ats_link(None) is None
+
+
+def test_lever_eu_region_round_trips():
+    ref = parse_ats_url(f"https://jobs.eu.lever.co/mistral/{U1}/apply?lever-source=x")
+    assert ref == AtsRef("lever", "eu:mistral", U1)
+    assert ref.canonical_url == f"https://jobs.eu.lever.co/mistral/{U1}"
+    assert ref.board_url == "https://api.eu.lever.co/v0/postings/mistral?mode=json"
+    glob = parse_ats_url(f"https://jobs.lever.co/mistral/{U1}")
+    assert glob.token == "mistral" and glob.canonical_url == f"https://jobs.lever.co/mistral/{U1}"
+    assert glob.board_url == "https://api.lever.co/v0/postings/mistral?mode=json"
+    assert parse_ats_url("https://jobs.xx.lever.co/acme") is None

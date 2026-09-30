@@ -13,7 +13,7 @@ import os
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, quote_plus, urlencode
 
 from recrute.http import HttpError
 from recrute.schemas import RawJob
@@ -40,8 +40,12 @@ def parse_results(payload: dict[str, Any]) -> Iterator[RawJob]:
         lo = None if predicted else r.get("salary_min")
         hi = None if predicted else r.get("salary_max")
         desc = clean(r.get("description"))
-        etype = r.get("contract_time") or (
-            "contract" if r.get("contract_type") == "contract" else r.get("contract_type"))
+        # contract_type="contract" wins over contract_time="full_time": a full-time *contract*
+        # is still a contract and must not pass a full-time-only filter.
+        if (r.get("contract_type") or "").lower() == "contract":
+            etype = "contract"
+        else:
+            etype = r.get("contract_time") or r.get("contract_type")
         yield RawJob(
             source="adzuna",
             source_job_id=str(r["id"]),
@@ -83,6 +87,14 @@ class AdzunaSource:
             return iter(())
         return limited(ctx, self._all(ctx))
 
+    def _redact(self, text: str) -> str:
+        """Strip credentials (raw and URL-encoded) from anything we store or log."""
+        for secret in (self.app_key, self.app_id):
+            if secret:
+                for form in {secret, quote_plus(secret), quote(secret, safe="")}:
+                    text = text.replace(form, "***")
+        return text
+
     def _all(self, ctx: SourceContext) -> Iterator[RawJob]:
         seen: set[str] = set()
         days = None
@@ -100,7 +112,7 @@ class AdzunaSource:
                 try:
                     payload = ctx.http.get_json(url)
                 except HttpError as e:
-                    ctx.errors[f"adzuna:{q}"] = str(e).replace(self.app_key, "***")[:500]
+                    ctx.errors[f"adzuna:{q}"] = self._redact(str(e))[:500]
                     if e.status in (401, 403):
                         return
                     break
