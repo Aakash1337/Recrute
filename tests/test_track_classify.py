@@ -409,3 +409,25 @@ def test_interleaved_mark_ghosted_loses_to_reply(engine, db):
         assert s.get(Job, db["soc"]).status == JobStatus.INTERVIEWING
         assert not s.exec(select(StatusEvent).where(
             StatusEvent.status == JobStatus.GHOSTED)).all()
+
+
+def test_confirmed_email_records_manual_submission(engine):
+    from datetime import UTC, datetime
+
+    from recrute.models import Application, EmailEvent, Job, JobStatus
+    from recrute.track.classify import confirm_event
+    from recrute.track.reminders import application_states
+
+    with Session(engine) as s:
+        job = Job(title="SOC Analyst", apply_url="u", canonical_url="u",
+                  status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.flush()
+        ev = EmailEvent(message_id="<m1>", job_id=job.id, kind="confirmation",
+                        received_at=datetime(2026, 9, 20, tzinfo=UTC), subject="Thanks")
+        s.add(ev)
+        s.commit()
+        assert confirm_event(s, ev.id)
+        app = s.exec(select(Application).where(Application.job_id == job.id)).one()
+        assert app.submitted_at is not None
+        assert any(st.job_id == job.id for st in application_states(s))

@@ -583,3 +583,24 @@ def test_mixed_locations_keep_ambiguous_us_option():
 def test_standalone_plus_is_not_a_preference():
     assert years_required("Minimum 6 years of experience plus knowledge of Python.") == 6
     assert years_required("3 years of experience with Splunk is a plus.") is None
+
+
+def test_unsnooze_never_erases_a_fresh_snooze(engine):
+    from datetime import timedelta
+
+    from recrute.models import utcnow
+    from recrute.review import unsnooze_due
+
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        job = s.exec(select(Job)).one()
+        job.snoozed_until = utcnow() + timedelta(days=7)  # snoozed again just now
+        s.add(job)
+        s.commit()
+        assert unsnooze_due(s) == 0
+        s.refresh(job)
+        assert job.snoozed_until is not None
+        job.snoozed_until = utcnow() - timedelta(minutes=1)
+        s.add(job)
+        s.commit()
+        assert unsnooze_due(s) == 1

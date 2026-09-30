@@ -209,7 +209,13 @@ def extract_fields(root: Page | Frame, *, scope: str | None = None,
     seen: dict[str, int] = {}
     for i, r in enumerate(raw):
         if not r.get("visible") and not include_hidden and r.get("widget") != "hidden_value":
-            continue
+            # hidden but CHECKED/selected named controls are still submitted by the form: keep
+            # them as verification-only fields (their value must be an approved answer)
+            if (r.get("widget") in ("radio", "checkbox", "checkbox_group", "yesno")
+                    and r.get("named") and r.get("current") not in (None, "", [])):
+                r = {**r, "widget": "hidden_value"}
+            else:
+                continue
         key = r.get("key") or f"field_{i}"
         if key in seen:
             seen[key] += 1

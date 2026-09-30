@@ -126,10 +126,12 @@ CLEARANCE = [
     "Candidates must be eligible for a security clearance.",
     "Clearance: Secret",
     "Current DoD Secret clearance is required to start.",
-    "Must hold a Public Trust or be able to obtain one.",
     "Requires a TS/SCI with CI polygraph.",
 ]
 NOT_CLEARANCE = [
+    # Public Trust is a background investigation, not a security clearance
+    "Must hold a Public Trust or be able to obtain one.",
+    "Candidates must pass a Public Trust background investigation.",
     "Security clearance preferred.",
     "Active Secret clearance is a plus.",
     "A security clearance is nice to have but not required.",

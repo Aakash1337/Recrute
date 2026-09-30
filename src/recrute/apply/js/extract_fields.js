@@ -151,7 +151,7 @@
   // radio/checkbox groups
   const groups = new Map();
   for (const el of scope.querySelectorAll('input[type="radio"], input[type="checkbox"]')) {
-    if (used.has(el) || el.getAttribute('aria-hidden') === 'true') continue;
+    if (used.has(el)) continue;  // aria-hidden ones too: checked ones are still submitted
     const gk = ckey(el) || el.getAttribute('name') || el.id;
     if (!gk) continue;
     if (!groups.has(gk)) groups.set(gk, []);
@@ -174,7 +174,9 @@
         required: reqOf(els[0], lab) || (fs && fs.getAttribute('aria-required') === 'true'),
         selector: sel(els[0]), options: own && c ? [own] : [], option_selectors: own && c ? [sel(els[0])] : [],
         current: els[0].checked ? 'true' : null, trigger: '', max_length: null,
-        visible: visible(els[0]) || [...(els[0].labels || [])].some(visible)};
+        named: !!els[0].name,
+        visible: els[0].getAttribute('aria-hidden') !== 'true' &&
+                 (visible(els[0]) || [...(els[0].labels || [])].some(visible))};
       push(single);
       continue;
     }
@@ -186,7 +188,9 @@
           widget: isRadio ? 'radio' : 'checkbox_group', required: !!req,
           selector: fs && fs.id ? sel(fs) : sel(els[0]), options: els.map(optText),
           option_selectors: els.map(sel), current: isRadio ? (checked[0] || null) : (checked.length ? checked : null),
-          visible: els.some(visible) || els.some(e => e.labels && e.labels[0] && visible(e.labels[0])),
+          named: els.some(e => !!e.name),
+          visible: els.some(e => e.getAttribute('aria-hidden') !== 'true') &&
+                   (els.some(visible) || els.some(e => e.labels && e.labels[0] && visible(e.labels[0]))),
           trigger: '', max_length: null});
   }
 

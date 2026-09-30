@@ -120,9 +120,14 @@ class SmartRecruitersSource(BoardSource):
                 raise ValueError("malformed smartrecruiters board response")
             content = data["content"]
             postings += content
-            if len(content) < PAGE or len(postings) >= (data.get("totalFound") or 0):
+            total = data.get("totalFound")
+            if len(content) < PAGE:
+                complete = True  # a short page is the last one
+                break
+            if isinstance(total, int) and total > 0 and len(postings) >= total:
                 complete = True
                 break
+            # a full page with no/zero/invalid total: keep paging (completion unproven)
         if not complete:
             ctx.incomplete.add(f"smartrecruiters:{company.ats_token}")
         return {"content": postings}

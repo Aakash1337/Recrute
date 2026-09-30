@@ -163,7 +163,6 @@ _CLEARANCE = re.compile(
     r"interim)\s+(?:security\s+)?clearances?\b"
     r"|\bts\s*/\s*sci\b|\btop[- ]secret\s*/\s*sci\b"
     r"|\b(?:full[- ]scope|ci|counter[- ]?intelligence|lifestyle)\s+poly(?:graph)?\b"
-    r"|\bpublic[- ]trust\b"
     r"|\bclearance\s*(?:level)?\s*[:\-–]\s*(?:secret|top secret|ts|required|active)"
     r"|\b(?:obtain|maintain|hold|possess|eligib\w+\s+(?:for|to\s+obtain))\s+" + _w(3) +
     r"clearances?\b",
@@ -283,7 +282,7 @@ def _clearance_clause(s: str) -> bool:
         # Bare adjectives ("active clearance") need some requirement wording in the sentence;
         # named levels (Secret, TS/SCI, polygraph) stand on their own as listed requirements.
         return bool(_REQUIRED.search(s)) or bool(re.search(
-            r"secret|ts\s*/\s*sci|poly|public[- ]trust|dod|doe|q clearance", s, re.I))
+            r"secret|ts\s*/\s*sci|poly|dod|doe|q clearance", s, re.I))
     return False
 
 

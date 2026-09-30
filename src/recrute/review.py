@@ -89,13 +89,12 @@ def decide(session: Session, job_id: int, action: str, reason: str | None = None
 
 
 def unsnooze_due(session: Session) -> int:
-    """Snoozed jobs are just hidden until snoozed_until; clear the marker once due."""
-    now = utcnow()
-    n = 0
-    for job in session.exec(select(Job).where(col(Job.snoozed_until).is_not(None))).all():
-        if _aware(job.snoozed_until) <= now:
-            job.snoozed_until = None
-            session.add(job)
-            n += 1
+    """Clear expired snooze markers with one conditional update (only rows whose marker is
+    STILL expired at write time), so a fresh snooze set meanwhile is never erased."""
+    res = session.execute(
+        update(Job).where(col(Job.snoozed_until).is_not(None),
+                          col(Job.snoozed_until) <= utcnow())
+        .values(snoozed_until=None).execution_options(synchronize_session=False))
     session.commit()
-    return n
+    session.expire_all()
+    return res.rowcount or 0

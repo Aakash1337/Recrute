@@ -474,9 +474,44 @@ def transition_status(session: Session, job: Job, target: JobStatus,
     return True
 
 
-def advance_status(session: Session, job: Job, target: JobStatus, note: str) -> bool:
+_POST_SUBMISSION = {JobStatus.ACKNOWLEDGED, JobStatus.INTERVIEWING, JobStatus.OFFER,
+                    JobStatus.DECLINED, JobStatus.APPLIED}
+
+
+def ensure_submitted(session: Session, job_id: int, when) -> None:
+    """An employer email proves the application went out: make sure the Application records a
+    submission (so reminders and daily-cap accounting see it). Existing timestamps are kept;
+    otherwise recorded attempt evidence, else the email's time, is used."""
+    from datetime import datetime
+
+    from recrute.models import Application, utcnow
+
+    app = session.exec(select(Application).where(Application.job_id == job_id)).first()
+    if app is not None and app.submitted_at is not None:
+        return
+    details = ((app.outcome or {}).get("details") or {}) if app is not None else {}
+    stamp = None
+    for key in ("attempted_at", "attempt_started_at"):
+        if details.get(key):
+            try:
+                stamp = datetime.fromisoformat(details[key])
+                break
+            except ValueError:
+                pass
+    stamp = stamp or when or utcnow()
+    if app is None:
+        app = Application(job_id=job_id, channel="manual")
+    app.submitted_at = stamp
+    session.add(app)
+
+
+def advance_status(session: Session, job: Job, target: JobStatus, note: str,
+                   when=None) -> bool:
     """Forward-only transition (see can_advance), atomic against concurrent updates."""
-    return transition_status(session, job, target, allowed_predecessors(target), note)
+    changed = transition_status(session, job, target, allowed_predecessors(target), note)
+    if changed and target in _POST_SUBMISSION:
+        ensure_submitted(session, job.id, when)
+    return changed
 
 
 def known_message_ids(session: Session, message_ids: Iterable[str]) -> set[str]:
@@ -527,7 +562,8 @@ def apply_events(session: Session,
             job = session.get(Job, job_id)
             if target is not None and job is not None:
                 changed = advance_status(session, job, target,
-                                         note=f"email ({cls.kind}): {msg.subject[:200]}")
+                                         note=f"email ({cls.kind}): {msg.subject[:200]}",
+                                         when=msg.date)
         session.add(ev)
         out.append(AppliedEvent(ev, changed))
     session.commit()
@@ -555,7 +591,8 @@ def confirm_event(session: Session, event_id: int, job_id: int | None = None, *,
         job = session.get(Job, ev.job_id)
         if job is not None:
             changed = advance_status(session, job, target,
-                                     note=f"email ({ev.kind}, confirmed): {ev.subject[:200]}")
+                                     note=f"email ({ev.kind}, confirmed): {ev.subject[:200]}",
+                                     when=ev.received_at)
     session.commit()
     return changed
 

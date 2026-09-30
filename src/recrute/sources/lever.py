@@ -99,4 +99,6 @@ class LeverSource(BoardSource):
                     ctx: SourceContext | None = None) -> Iterator[RawJob]:
         if isinstance(payload, dict):  # {"ok": false, "error": "Document not found"}
             raise ValueError(payload.get("error") or "unexpected Lever payload")
+        if not isinstance(payload, list):  # null/false/""/0: a failed poll, not an empty board
+            raise ValueError("malformed Lever board response")
         return parse_postings(payload, company.ats_token, company.name)

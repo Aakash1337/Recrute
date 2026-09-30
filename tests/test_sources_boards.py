@@ -267,3 +267,43 @@ def test_malformed_smartrecruiters_page_is_an_error():
         CompanyRef(name="Acme", ats="smartrecruiters", ats_token="acme")])
     assert list(SmartRecruitersSource().fetch(ctx)) == []
     assert "smartrecruiters:acme" in ctx.errors
+
+
+@pytest.mark.parametrize("payload", [None, False, 0, ""])
+def test_malformed_lever_payload_is_an_error(payload):
+    from recrute.criteria import Criteria
+    from recrute.sources.base import CompanyRef, SourceContext
+    from recrute.sources.lever import LeverSource
+
+    class Http:
+        def get_json(self, url):
+            return payload
+
+    ctx = SourceContext(http=Http(), criteria=Criteria(),
+                        companies=[CompanyRef(name="Acme", ats="lever", ats_token="acme")])
+    assert list(LeverSource().fetch(ctx)) == []
+    assert "lever:acme" in ctx.errors
+
+
+@pytest.mark.parametrize("total", [None, 0, "x"])
+def test_smartrecruiters_full_page_without_total_keeps_paging(total):
+    from recrute.criteria import Criteria
+    from recrute.sources.base import CompanyRef, SourceContext
+    from recrute.sources.smartrecruiters import PAGE, SmartRecruitersSource
+
+    pages = []
+
+    class Http:
+        def get_json(self, url):
+            pages.append(url)
+            n = PAGE if len(pages) == 1 else 3
+            body = {"content": [{"id": f"{len(pages)}-{i}", "name": "Clerk"} for i in range(n)]}
+            if total != "missing":
+                body["totalFound"] = total
+            return body
+
+    ctx = SourceContext(http=Http(), criteria=Criteria())
+    company = CompanyRef(name="Acme", ats="smartrecruiters", ats_token="acme")
+    payload = SmartRecruitersSource().fetch_board(ctx, company)
+    assert len(pages) == 2 and len(payload["content"]) == PAGE + 3
+    assert not ctx.incomplete

@@ -932,3 +932,24 @@ def test_hidden_populated_controls_are_verified(context):
     problems = verify_fields(list(fields.values()), packet, {})
     assert "salary" in problems and "src" in problems and "n" not in problems
     page.close()
+
+
+@pytest.mark.browser
+def test_hidden_checked_controls_are_verified(context):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <fieldset style="display:none"><legend>Willing to take a pay cut?</legend>
+        <label><input type="radio" name="paycut" value="yes" checked>Yes</label>
+        <label><input type="radio" name="paycut" value="no">No</label></fieldset>
+      <label><input type="checkbox" name="marketing" aria-hidden="true" checked>
+        Send me marketing emails</label>
+    </form>""")
+    fields = dom.extract_fields(page)
+    hidden = {f.id: f for f in fields if f.widget == "hidden_value"}
+    assert "paycut" in hidden and "marketing" in hidden
+    problems = verify_fields(fields, Packet(job_id=1), {})
+    assert "paycut" in problems and "marketing" in problems
+    page.close()
