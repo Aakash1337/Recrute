@@ -81,10 +81,19 @@ def _find_existing(session: Session, raw: RawJob, canon: str, fkey: str) -> Job 
     if src:
         return session.get(Job, src.job_id)
     if raw.ats and raw.ats_job_id:
-        job = session.exec(select(Job).where(Job.ats == raw.ats,
-                                             Job.ats_job_id == raw.ats_job_id)).first()
-        if job:
-            return job
+        # Requisition ids are only unique within one tenant (company board).
+        candidates = session.exec(
+            select(Job, Company).join(Company, Company.id == Job.company_id, isouter=True)
+            .where(Job.ats == raw.ats, Job.ats_job_id == raw.ats_job_id)).all()
+        norm = normalize_company(raw.company)
+        for job, company in candidates:
+            if company is None:
+                continue
+            if raw.ats_token and company.ats_token:
+                if company.ats_token == raw.ats_token:
+                    return job
+            elif normalize_company(company.name) == norm:
+                return job
     since = utcnow() - FUZZY_WINDOW
     for job in session.exec(select(Job).where(Job.fuzzy_key == fkey)).all():
         # Two postings on the same ATS with different requisition ids are distinct openings.
@@ -100,6 +109,12 @@ def _find_existing(session: Session, raw: RawJob, canon: str, fkey: str) -> Job 
 
 # Statuses whose derived data (filters/score) is recomputed when the posting's content changes.
 RESCORABLE = {JobStatus.DISCOVERED, JobStatus.FILTERED_OUT}
+
+
+def _decision_inputs(job: Job) -> tuple:
+    """Everything the rule filters and LLM triage look at."""
+    return (job.title, job.description_hash, tuple(job.locations or ()), job.remote,
+            job.employment_type, job.salary_min, job.salary_max)
 
 
 def _prefer(raw: RawJob) -> bool:
@@ -156,10 +171,10 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
                 if existing is None or existing.id == job.id:
                     job.apply_url, job.canonical_url = target, canon
                     job.ats, job.ats_job_id = raw.ats, raw.ats_job_id
+            before = _decision_inputs(job)
             authoritative = known is not None and (raw.ats == job.ats or not job.ats)
             if authoritative:
                 # Re-poll of the same source: its current data replaces what we had.
-                changed = bool(desc) and content_hash(desc) != job.description_hash
                 if desc:
                     job.description_md, job.description_hash = desc, content_hash(desc)
                 job.title = raw.title.strip() or job.title
@@ -169,10 +184,6 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
                         setattr(job, attr, getattr(raw, attr))
                 if raw.locations:
                     job.locations = raw.locations
-                if changed and job.status in RESCORABLE:
-                    job.status = JobStatus.DISCOVERED
-                    job.priority = job.score = job.filter_reason = None
-                    job.years_required = None
             else:
                 # A different source for the same job: only fill gaps.
                 if len(desc) > len(job.description_md):
@@ -183,6 +194,15 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
                         setattr(job, attr, getattr(raw, attr))
                 if not job.locations and raw.locations:
                     job.locations = raw.locations
+            if _decision_inputs(job) != before:
+                company = session.get(Company, job.company_id) if job.company_id else None
+                job.fuzzy_key = fuzzy_key(company.name if company else raw.company, job.title,
+                                          job.locations)
+                if job.status in RESCORABLE:
+                    # Inputs to the rules/triage changed: decide again from scratch.
+                    job.status = JobStatus.DISCOVERED
+                    job.priority = job.score = job.filter_reason = None
+                    job.years_required = None
             session.add(job)
         src = session.exec(select(JobSource).where(JobSource.source == raw.source,
                                                    JobSource.url == raw.url)).first()

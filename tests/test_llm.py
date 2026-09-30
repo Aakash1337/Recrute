@@ -160,7 +160,8 @@ def test_cli_stderr_content_not_leaked(paths):
     stderr = "user\nMy name is Jane Doe, phone 555-0100\ncodex\nsome answer\nERROR: boom"
     with pytest.raises(LLMError) as e:
         codex(paths).parse(1, "", stderr, LLMRequest("x"), 5)
-    assert "Jane" not in str(e.value) and "ERROR: boom" in str(e.value)
+    assert "Jane" not in str(e.value) and "boom" not in str(e.value)
+    assert "cli failure" in str(e.value)
 
 
 def test_launch_failure_is_llm_error(tmp_path):
@@ -245,3 +246,41 @@ def test_claude_args_isolated(paths, monkeypatch):
     args = claude(paths).build_args(LLMRequest("x"))
     assert "--strict-mcp-config" in args
     assert args[args.index("--setting-sources") + 1] == ""
+
+
+@pytest.mark.parametrize("tail", ["429 Too many requests", "ERROR: quota exceeded",
+                                  "You've hit your usage limit. Try again at 5pm."])
+def test_rate_limit_phrases_detected(paths, tail):
+    with pytest.raises(RateLimitedError):
+        codex(paths).parse(1, "", "user\nprompt text\n" + tail, LLMRequest("x"), 5)
+
+
+def test_echoed_profile_with_keywords_not_leaked(paths):
+    stderr = "user\nWorked at Unlimited Example; login failed once\ncodex\n...\nexit"
+    with pytest.raises(LLMError) as e:
+        codex(paths).parse(1, "", stderr, LLMRequest("x"), 5)
+    assert "Unlimited" not in str(e.value)
+
+
+def test_negative_auth_is_rechecked(paths, monkeypatch):
+    import recrute.llm.codex_cli as mod
+
+    p = codex(paths)
+    states = iter(["Not logged in", "Logged in using ChatGPT"])
+    monkeypatch.setattr(p, "auth_status", lambda: next(states))
+    monkeypatch.setattr(mod, "AUTH_RETRY", 0.0)
+    with pytest.raises(LLMError):
+        p.ensure_subscription()
+    p.ensure_subscription()  # login happened since: recovers
+
+
+def test_router_validator_rejects_and_does_not_cache(session_factory):
+    router, prov = make_router(session_factory, [{"n": 1}, {"n": 5}], [{"n": 2}])
+
+    def must_be_big(out):
+        if out["n"] < 2:
+            raise ValueError("too small")
+
+    assert router.complete("t", "p", validate=must_be_big) == {"n": 2}  # claude rejected
+    # the rejected claude answer was not cached; valid codex answer is reused
+    assert router.complete("t", "p", validate=must_be_big) == {"n": 2}

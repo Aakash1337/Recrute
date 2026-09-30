@@ -10,7 +10,8 @@
   <div class="list" id="list">
     {% for job, company in rows %}
     <div class="row{{ ' sel' if loop.first }}" id="row-{{ job.id }}" data-id="{{ job.id }}"
-         hx-get="/jobs/{{ job.id }}" hx-target="#detail" hx-trigger="click{{ ', load' if loop.first }}">
+         hx-get="/jobs/{{ job.id }}" hx-target="#detail" hx-sync="#list:replace"
+         hx-trigger="click{{ ', load' if loop.first }}">
       <div class="t">{{ job.title }}</div>
       <div>{% include "_job_row_meta.html" %}</div>
     </div>
@@ -38,13 +39,20 @@
     const r = e.target.closest('.row[data-id]');
     if (r) { rows().forEach(x => x.classList.remove('sel')); r.classList.add('sel'); }
   });
+  // Actions always target the job rendered in the detail pane, and only when that is also the
+  // selected row (while a different row's details are still loading, actions are ignored).
+  let busy = false;
   function decide(action, reason) {
-    const el = sel(); if (!el) return;
+    const pane = document.getElementById('job-pane');
+    const el = sel();
+    if (busy || !pane || !el || pane.dataset.jobId !== el.dataset.id) return;
+    busy = true;
     const next = el.nextElementSibling || el.previousElementSibling;
     const body = new URLSearchParams({action});
     if (reason) body.set('reason', reason);
-    htmx.ajax('POST', '/jobs/' + el.dataset.id + '/decide', {target: '#detail', values: Object.fromEntries(body)})
-      .then(() => { el.remove(); if (next && next.dataset.id) select(next); });
+    htmx.ajax('POST', '/jobs/' + pane.dataset.jobId + '/decide', {target: '#detail', values: Object.fromEntries(body)})
+      .then(() => { el.remove(); if (next && next.dataset.id) select(next); })
+      .finally(() => { busy = false; });
   }
   window.recruteDecide = decide;
   document.addEventListener('keydown', e => {

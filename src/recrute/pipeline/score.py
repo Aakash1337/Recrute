@@ -121,6 +121,18 @@ def build_prompt(profile_summary: str, criteria: Criteria, batch: list[tuple[Job
     return "\n".join(parts)
 
 
+def check_results(ids: set[int]):
+    """Validator: exactly one result per requested job id (rejects partial/foreign answers so
+    they are never cached as successes)."""
+    def validate(out: dict) -> None:
+        got = [r.get("job_id") for r in out.get("results", [])]
+        if len(got) != len(set(got)):
+            raise ValueError("duplicate job ids")
+        if set(got) != ids:
+            raise ValueError(f"expected {len(ids)} results, got {len(set(got) & ids)} matching")
+    return validate
+
+
 def pending_jobs(session: Session, limit: int) -> list[tuple[Job, str]]:
     rows = session.exec(
         select(Job, Company.name).join(Company, Company.id == Job.company_id, isouter=True)
@@ -147,7 +159,12 @@ def apply_result(session: Session, job: Job, result: dict, criteria: Criteria,
         job.salary_max = result["salary_max"]
     threshold = criteria.min_score.get(job.priority, 101) if job.priority else 101
     reason = None
-    if result["seniority"] == "senior":
+    yrs = job.years_required
+    if yrs is not None and yrs > criteria.max_years_required:
+        reason = f"requires {yrs}+ years"
+    elif criteria.salary_floor and job.salary_max and job.salary_max < criteria.salary_floor:
+        reason = "salary below floor"
+    elif result["seniority"] == "senior":
         reason = "LLM: senior-level role"
     elif not result["us_eligible_location"]:
         reason = "LLM: location not US-eligible"
@@ -173,17 +190,27 @@ def score_pending(session: Session, router: LLMRouter, criteria: Criteria, paths
     summary = load_profile_summary(paths)
     for i in range(0, len(jobs), BATCH_SIZE):
         batch = jobs[i: i + BATCH_SIZE]
+        prompt = build_prompt(summary, criteria, batch)
+        snapshot = {job.id: job.description_hash for job, _ in batch}
+        session.commit()  # end the read transaction before the (slow) LLM call
         try:
-            out = router.complete("triage", build_prompt(summary, criteria, batch),
-                                  schema=TRIAGE_SCHEMA, system=SYSTEM)
+            out = router.complete("triage", prompt, schema=TRIAGE_SCHEMA, system=SYSTEM,
+                                  validate=check_results(set(snapshot)))
         except LLMError as e:
             log.warning("triage batch failed: %s", e)
             stats.failed_batches += 1
             continue
-        by_id = {job.id: job for job, _ in batch}
-        for result in out.get("results", []):
-            job = by_id.pop(result.get("job_id"), None)
-            if job is not None:
-                apply_result(session, job, result, criteria, None, stats)
+        for result in out["results"]:
+            job = session.get(Job, result["job_id"])
+            if job is None:
+                continue
+            session.refresh(job)
+            # The job may have changed while the LLM was thinking (user decision, re-poll,
+            # closure): only apply the score to exactly the state that was scored.
+            if (job.status != JobStatus.DISCOVERED or job.score is not None
+                    or job.closed_at is not None
+                    or job.description_hash != snapshot[job.id]):
+                continue
+            apply_result(session, job, result, criteria, None, stats)
         session.commit()
     return stats

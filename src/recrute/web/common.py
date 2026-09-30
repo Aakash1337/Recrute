@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi.templating import Jinja2Templates
 from markdown_it import MarkdownIt
 from markupsafe import Markup
-from sqlmodel import Session, col, func, select
+from sqlmodel import Session, func, select
 
 from recrute.models import Job, JobStatus
 
@@ -53,9 +53,10 @@ def nav_counts(session: Session) -> dict[str, int]:
     def count(*conds) -> int:
         return session.exec(select(func.count()).select_from(Job).where(*conds)).one()
 
+    from recrute.review import queue_conditions
+
     return {
-        "queue": count(Job.status == JobStatus.DISCOVERED, col(Job.score).is_not(None),
-                       col(Job.closed_at).is_(None)),
+        "queue": count(*queue_conditions()),
         "packets": count(Job.status == JobStatus.PACKET_READY),
         "needs_human": count(Job.status == JobStatus.NEEDS_HUMAN),
     }

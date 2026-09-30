@@ -113,14 +113,37 @@ def is_us_location(locations: list[str], remote: str | None) -> bool | None:
     return None
 
 
+PREFERRED_RE = re.compile(r"prefer|nice[- ]to[- ]have|bonus|a plus|\bplus\b|ideal(ly)?|"
+                          r"desired|desirable|advantage", re.IGNORECASE)
+PREFERRED_HEADER = re.compile(r"^\W*(preferred|nice[- ]to[- ]have|bonus|desired|pluses)",
+                              re.IGNORECASE)
+REQUIRED_HEADER = re.compile(r"^\W*(required|requirements|minimum|basic|must[- ]have|"
+                             r"qualifications|what you)", re.IGNORECASE)
+
+
 def years_required(description: str) -> int | None:
-    """Largest minimum-years requirement stated in the description (None if not stated)."""
-    lows = []
-    for m in YEARS_RE.finditer(description):
-        low = int(m.group(1))
-        if 0 < low <= 20:
-            lows.append(low)
-    return max(lows) if lows else None
+    """Minimum years the posting REQUIRES (None if not stated).
+
+    Preferred/nice-to-have lines and sections are ignored. Alternatives within one line
+    ("5 years with a BS or 3 years with an MS") count as their smallest value. Across separate
+    required lines the largest value wins."""
+    per_line: list[int] = []
+    in_preferred = False
+    for line in re.split(r"[\n;]|(?<=\.)\s", description):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if PREFERRED_HEADER.match(stripped):
+            in_preferred = True
+        elif REQUIRED_HEADER.match(stripped) or stripped.startswith("#"):
+            in_preferred = False
+        if in_preferred or PREFERRED_RE.search(stripped):
+            continue
+        lows = [int(m.group(1)) for m in YEARS_RE.finditer(stripped)
+                if 0 < int(m.group(1)) <= 20]
+        if lows:
+            per_line.append(min(lows))
+    return max(per_line) if per_line else None
 
 
 def default_eligibility_fn() -> Callable[[str], set[str]]:
@@ -150,11 +173,13 @@ def apply_hard_filters(job: Job, company_name: str, criteria: Criteria,
     etype = normalize_employment_type(job.employment_type)
     if etype and criteria.employment_types and etype not in criteria.employment_types:
         return drop(f"employment type: {etype}")
+    if not criteria.allow_remote and job.remote == "remote":
+        return drop("remote jobs disabled")
     if criteria.country.upper() == "US":
         us = is_us_location(job.locations or [], job.remote)
         if us is False:
             return drop("location outside the US")
-    if criteria.locations and job.remote != "remote":
+    if criteria.locations and not (criteria.allow_remote and job.remote == "remote"):
         joined = " ".join(job.locations or []).lower()
         if joined and not any(loc.lower() in joined for loc in criteria.locations):
             return drop("location not in your list")

@@ -31,6 +31,9 @@ DISABLED_FEATURES = (
 )
 
 
+AUTH_RETRY = 60.0
+
+
 class CodexCLI:
     name = "codex"
 
@@ -38,7 +41,8 @@ class CodexCLI:
         self.cfg = cfg
         self.workdir = workdir
         self.timeout = timeout
-        self._auth_ok: bool | None = None
+        self._auth_ok = False
+        self._auth_checked_at = 0.0  # negative results are rechecked after AUTH_RETRY s
 
     def available(self) -> bool:
         try:
@@ -57,8 +61,9 @@ class CodexCLI:
             return ""
 
     def ensure_subscription(self) -> None:
-        if self._auth_ok is None:
+        if not self._auth_ok and time.monotonic() - self._auth_checked_at > AUTH_RETRY:
             self._auth_ok = "chatgpt" in self.auth_status().lower()
+            self._auth_checked_at = time.monotonic()
         if not self._auth_ok:
             raise ProviderUnavailableError(
                 "codex: not logged in with a ChatGPT subscription (run `codex login`)")
@@ -108,7 +113,7 @@ class CodexCLI:
     def parse(self, returncode: int, last: str, stderr: str, req: LLMRequest,
               duration_ms: int) -> LLMResult:
         if returncode != 0 or not last.strip():
-            raise_for_failure(self.name, stderr or f"exit code {returncode}")
+            raise_for_failure(self.name, stderr, returncode)
         if req.schema is not None:
             output = parse_structured(self.name, last, req.schema)
         else:

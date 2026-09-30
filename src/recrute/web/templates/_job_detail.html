@@ -1,3 +1,4 @@
+<div id="job-pane" data-job-id="{{ job.id }}">
 <h3 style="margin-top:0">{{ job.title }}</h3>
 <div>{% include "_job_row_meta.html" %}</div>
 <p>
@@ -6,7 +7,7 @@
 </p>
 {% if job.status.value in ('discovered', 'snoozed') %}
 <p>
-  <button class="primary" onclick="recruteDecide && recruteDecide('approve')">Approve <kbd>a</kbd></button>
+  <button class="primary" onclick="recruteDecide('approve')">Approve <kbd>a</kbd></button>
   <select id="reject-reason" onchange="if (this.value) recruteDecide('reject', this.value)">
     <option value="">Reject… <kbd>r</kbd></option>
     {% for r in reasons %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
@@ -33,3 +34,4 @@
 <ul>{% for src in sources %}<li><a href="{{ src.url | safe_url }}" target="_blank" rel="noopener noreferrer">{{ src.source }}</a> <span class="muted">{{ src.seen_at | ago }}</span></li>{% endfor %}</ul>
 <h2>History</h2>
 <ul class="muted">{% for e in events %}<li>{{ e.created_at | ago }}: {{ e.status.value }}{% if e.note %}, {{ e.note }}{% endif %}</li>{% endfor %}</ul>
+</div>

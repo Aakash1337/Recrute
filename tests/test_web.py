@@ -117,3 +117,29 @@ def test_settings_page_and_dict_update(client):
 
 def test_analytics_page(client):
     assert "Suggested criteria changes" in client.get("/analytics").text
+
+
+def test_concurrent_decisions_one_wins(client):
+    from recrute.db import get_engine
+    from recrute.review import ReviewError, decide
+
+    job_id = seed_job(title="race")
+    with Session(get_engine()) as a, Session(get_engine()) as b:
+        a.get(__import__("recrute.models", fromlist=["Job"]).Job, job_id)
+        decide(b, job_id, "reject", "other")
+        with pytest.raises(ReviewError):
+            decide(a, job_id, "approve")
+
+
+def test_snoozed_jobs_do_not_consume_queue_limit(client):
+    from datetime import timedelta
+
+    from recrute.db import get_engine
+    from recrute.models import utcnow
+    from recrute.review import queue
+
+    for i in range(3):
+        seed_job(title=f"snoozed{i}", score=99, snoozed_until=utcnow() + timedelta(days=3))
+    visible = seed_job(title="visible", score=10)
+    with Session(get_engine()) as s:
+        assert [j.id for j, _ in queue(s, limit=1)] == [visible]

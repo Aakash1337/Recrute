@@ -123,23 +123,30 @@ def run_cli(args: list[str], stdin: str, cwd: Path, timeout: int) -> CliResult:
     return CliResult(proc.returncode, stdout, stderr)
 
 
-_DIAG_LINE = re.compile(r"error|failed|denied|unauthori[sz]ed|not logged in|login|expired|"
-                        r"invalid|timeout|limit", re.IGNORECASE)
+_AUTH_RE = re.compile(r"not logged in|unauthori[sz]ed|\b401\b|login required|expired token|"
+                      r"please (log|sign) in", re.IGNORECASE)
 
 
-def _diagnostic(message: str) -> str:
-    """CLI stderr echoes the prompt and model output (personal data), so keep only short lines
-    that look like error diagnostics."""
-    lines = [ln.strip() for ln in message.splitlines() if _DIAG_LINE.search(ln)]
-    lines = [ln for ln in lines if len(ln) <= 240][-3:]
-    return re.sub(r"\s+", " ", " | ".join(lines))[:300] or "no diagnostic"
+def classify_failure(message: str) -> str:
+    """Canned category for a CLI failure. CLI output echoes the prompt and model answer
+    (personal data), so no text from it is ever copied; only the tail lines are inspected, where
+    the CLI prints its own error, to avoid classifying echoed prompt content."""
+    tail = "\n".join([ln for ln in message.strip().splitlines() if ln.strip()][-5:])
+    if _LIMIT_RE.search(tail):
+        return "usage limit"
+    if _AUTH_RE.search(tail):
+        return "authentication"
+    if re.search(r"timed? ?out", tail, re.IGNORECASE):
+        return "timeout"
+    return "cli failure"
 
 
-def raise_for_failure(provider: str, message: str) -> NoReturn:
-    diag = _diagnostic(message)
-    if _LIMIT_RE.search(diag):
-        raise RateLimitedError(f"{provider}: usage limit ({diag})")
-    raise LLMError(f"{provider}: CLI error ({diag})")
+def raise_for_failure(provider: str, message: str, returncode: int | None = None) -> NoReturn:
+    kind = classify_failure(message)
+    suffix = f", exit {returncode}" if returncode is not None else ""
+    if kind == "usage limit":
+        raise RateLimitedError(f"{provider}: usage limit{suffix}")
+    raise LLMError(f"{provider}: {kind}{suffix}")
 
 
 def parse_structured(provider: str, text: str, schema: dict[str, Any]) -> Any:

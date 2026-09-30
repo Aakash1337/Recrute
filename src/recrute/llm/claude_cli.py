@@ -32,6 +32,9 @@ DEFAULT_SYSTEM = (
 )
 
 
+AUTH_RETRY = 60.0
+
+
 class ClaudeCLI:
     name = "claude"
 
@@ -39,7 +42,8 @@ class ClaudeCLI:
         self.cfg = cfg
         self.workdir = workdir
         self.timeout = timeout
-        self._auth_ok: bool | None = None
+        self._auth_ok = False
+        self._auth_checked_at = 0.0  # negative results are rechecked after AUTH_RETRY s
 
     def available(self) -> bool:
         try:
@@ -60,9 +64,10 @@ class ClaudeCLI:
             return {}
 
     def ensure_subscription(self) -> None:
-        if self._auth_ok is None:
+        if not self._auth_ok and time.monotonic() - self._auth_checked_at > AUTH_RETRY:
             st = self.auth_status()
             self._auth_ok = bool(st.get("loggedIn")) and st.get("authMethod") == "claude.ai"
+            self._auth_checked_at = time.monotonic()
         if not self._auth_ok:
             raise ProviderUnavailableError(
                 "claude: not logged in with a Claude subscription (run `claude auth login`)")
@@ -99,14 +104,14 @@ class ClaudeCLI:
         try:
             envelope = json.loads(stdout)
         except json.JSONDecodeError:
-            raise_for_failure(self.name, stderr or f"exit code {returncode}")
+            raise_for_failure(self.name, stderr, returncode)
         if not isinstance(envelope, dict):
             raise LLMError(f"{self.name}: unexpected output envelope type "
                            f"{type(envelope).__name__}")
         if returncode != 0 or envelope.get("is_error") or envelope.get("subtype") != "success":
             result = envelope.get("result")
-            raise_for_failure(self.name, (result if isinstance(result, str) else "") + "\n" +
-                              stderr + f"\nexit code {returncode}")
+            raise_for_failure(self.name, stderr + "\n" + (result if isinstance(result, str)
+                                                          else ""), returncode)
         if req.schema is not None:
             output = envelope.get("structured_output")
             if output is None:

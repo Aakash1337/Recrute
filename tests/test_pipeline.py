@@ -261,3 +261,102 @@ def test_reopened_job_returns_to_review(engine):
         ingest(s, [raw()])
         s.refresh(job)
         assert job.status == JobStatus.DISCOVERED and job.closed_at is None
+
+
+# --- audit round 2 regressions -------------------------------------------------------------
+
+def test_years_required_ignores_preferred():
+    assert years_required("Required: 2 years of experience. Preferred: 8 years of "
+                          "experience.") == 2
+    assert years_required("Minimum qualifications\n- 3 years of experience\nPreferred "
+                          "qualifications\n- 10 years of experience in security") == 3
+    assert years_required("5 years of experience with a BS or 3 years of experience with an MS"
+                          ) == 3
+
+
+def test_allow_remote_false_drops_remote():
+    r = apply_hard_filters(_job(remote="remote"), "Acme", Criteria(allow_remote=False), NO_ELIG)
+    assert not r.keep and "remote" in r.reason
+
+
+def test_ats_ids_scoped_by_tenant(engine):
+    with Session(engine) as s:
+        ingest(s, [raw(source="workday", ats="workday", ats_token="alpha", ats_job_id="R123",
+                       company="Alpha", url="https://alpha.wd1.myworkdayjobs.com/x/R123")])
+        ingest(s, [raw(source="workday", ats="workday", ats_token="beta", ats_job_id="R123",
+                       company="Beta", url="https://beta.wd1.myworkdayjobs.com/x/R123")])
+        assert len(s.exec(select(Job)).all()) == 2
+
+
+def test_title_or_location_change_invalidates(engine):
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        filter_new(s, Criteria(), NO_ELIG)
+        job = s.exec(select(Job)).one()
+        job.score = 80
+        s.add(job)
+        s.commit()
+        ingest(s, [raw(title="Senior Security Analyst", locations=["Berlin, Germany"])])
+        s.refresh(job)
+        assert job.score is None and job.priority is None
+        filter_new(s, Criteria(), NO_ELIG)
+        s.refresh(job)
+        assert job.status == JobStatus.FILTERED_OUT
+
+
+def _router(provider, session_factory):
+    cfg = Config.model_validate({"llm": {"routing": {"triage": ["codex"]}}})
+    return LLMRouter(cfg, {"codex": provider, "claude": provider}, session_factory)
+
+
+def test_llm_extracted_limits_enforced(engine, session_factory, paths):
+    class Extracting(TriageProvider):
+        def complete(self, req):
+            res = super().complete(req)
+            for r in res.output["results"]:
+                r.update(score=90, years_required=8)
+            return res
+
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        filter_new(s, Criteria(), NO_ELIG)
+        score_pending(s, _router(Extracting({}), session_factory), Criteria(), paths)
+        job = s.exec(select(Job)).one()
+        assert job.status == JobStatus.FILTERED_OUT and "8+" in job.filter_reason
+
+
+def test_incomplete_triage_not_cached(engine, session_factory, paths):
+    class Empty(TriageProvider):
+        def complete(self, req):
+            self.calls += 1
+            return LLMResult("codex", {"results": []}, "", 1)
+
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        filter_new(s, Criteria(), NO_ELIG)
+        prov = Empty({})
+        router = _router(prov, session_factory)
+        st = score_pending(s, router, Criteria(), paths)
+        assert st.failed_batches == 1 and st.scored == 0
+        score_pending(s, router, Criteria(), paths)
+        assert prov.calls >= 2  # retried, not served from cache
+
+
+def test_score_skips_jobs_changed_during_llm_call(engine, session_factory, paths):
+    from recrute.review import decide
+
+    class Racing(TriageProvider):
+        def complete(self, req):
+            with Session(engine) as other:  # user rejects the job mid-triage
+                job = other.exec(select(Job)).one()
+                job.score = None
+                decide(other, job.id, "reject", "other")
+            return super().complete(req)
+
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        filter_new(s, Criteria(), NO_ELIG)
+        score_pending(s, _router(Racing({}), session_factory), Criteria(), paths)
+        job = s.exec(select(Job)).one()
+        s.refresh(job)
+        assert job.status == JobStatus.REJECTED

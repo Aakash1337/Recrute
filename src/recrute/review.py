@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 
+from sqlalchemy import or_, update
 from sqlmodel import Session, col, select
 
 from recrute.models import Company, Decision, Job, JobScore, JobStatus, StatusEvent, utcnow
@@ -15,16 +16,22 @@ class ReviewError(ValueError):
     pass
 
 
-def queue(session: Session, limit: int = 300) -> list[tuple[Job, Company | None]]:
+def queue_conditions() -> list:
+    """SQL conditions for 'awaiting CP1 review' (shared with the nav badge count)."""
     now = utcnow()
+    return [Job.status == JobStatus.DISCOVERED, col(Job.score).is_not(None),
+            col(Job.closed_at).is_(None),
+            or_(col(Job.snoozed_until).is_(None), col(Job.snoozed_until) <= now)]
+
+
+def queue(session: Session, limit: int = 300) -> list[tuple[Job, Company | None]]:
     rows = session.exec(
         select(Job, Company).join(Company, Company.id == Job.company_id, isouter=True)
-        .where(Job.status == JobStatus.DISCOVERED, col(Job.score).is_not(None),
-               col(Job.closed_at).is_(None))
+        .where(*queue_conditions())
         .order_by(Job.priority, col(Job.score).desc(), col(Job.first_seen).desc())
         .limit(limit)
     ).all()
-    return [(j, c) for j, c in rows if j.snoozed_until is None or _aware(j.snoozed_until) <= now]
+    return list(rows)
 
 
 def _aware(dt):
@@ -38,28 +45,39 @@ def latest_score(session: Session, job_id: int) -> JobScore | None:
                         .order_by(col(JobScore.id).desc())).first()
 
 
+ACTIONS = {
+    "approve": JobStatus.SHORTLISTED,  # the worker then builds its application packet (CP2)
+    "reject": JobStatus.REJECTED,
+    "snooze": JobStatus.DISCOVERED,
+    "manual": JobStatus.NEEDS_HUMAN,  # you'll apply yourself; tracked like the rest
+}
+
+
 def decide(session: Session, job_id: int, action: str, reason: str | None = None) -> Job:
-    job = session.get(Job, job_id)
-    if job is None:
-        raise ReviewError("job not found")
-    if job.status not in (JobStatus.DISCOVERED, JobStatus.SNOOZED):
-        raise ReviewError(f"job is {job.status.value}, not awaiting review")
-    if action == "approve":
-        job.status = JobStatus.SHORTLISTED  # the worker builds its application packet (CP2)
-    elif action == "reject":
-        job.status = JobStatus.REJECTED
-    elif action == "snooze":
-        job.status = JobStatus.DISCOVERED
-        job.snoozed_until = utcnow() + timedelta(days=SNOOZE_DAYS)
-    elif action == "manual":
-        job.status = JobStatus.NEEDS_HUMAN  # you'll apply yourself; tracked like the rest
-    else:
+    if action not in ACTIONS:
         raise ReviewError(f"unknown action {action!r}")
-    session.add(Decision(job_id=job.id, checkpoint="CP1", action=action, reason=reason))
-    session.add(StatusEvent(job_id=job.id, status=job.status,
+    values: dict = {"status": ACTIONS[action]}
+    if action == "snooze":
+        values["snoozed_until"] = utcnow() + timedelta(days=SNOOZE_DAYS)
+    # Conditional update: only succeeds if the job is still awaiting review, so two concurrent
+    # decisions can't both win.
+    result = session.execute(
+        update(Job).where(Job.id == job_id,
+                          col(Job.status).in_([JobStatus.DISCOVERED, JobStatus.SNOOZED]))
+        .values(**values)
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        job = session.get(Job, job_id)
+        if job is None:
+            raise ReviewError("job not found")
+        raise ReviewError(f"job is {job.status.value}, not awaiting review")
+    session.add(Decision(job_id=job_id, checkpoint="CP1", action=action, reason=reason))
+    session.add(StatusEvent(job_id=job_id, status=ACTIONS[action],
                             note=f"CP1 {action}" + (f": {reason}" if reason else "")))
-    session.add(job)
     session.commit()
+    job = session.get(Job, job_id)
+    session.refresh(job)
     return job
 
 

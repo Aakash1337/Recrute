@@ -59,6 +59,8 @@ def changed_files(base: str) -> list[str]:
     """Files changed on this branch vs `base` (merge-base), plus uncommitted/untracked ones."""
     def git(*args: str) -> list[str]:
         out = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+        if out.returncode != 0:
+            sys.exit(f"git {' '.join(args)} failed: {out.stderr.strip()}")
         return [line for line in out.stdout.splitlines() if line]
 
     files = git("diff", "--name-only", f"{base}...HEAD")
