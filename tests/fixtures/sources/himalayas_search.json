@@ -1,0 +1,225 @@
+{
+ "comments": "21/08/2026: Cursor pagination is now available and is the preferred way to page through the feed. Pass the nextCursor value from each response back as ?cursor=. It is faster than offset and will never return the same job twice. The offset parameter is deprecated and will be removed in a future release. 13/03/2026: The API has been updated to include the companySlug field in the response.",
+ "updatedAt": 1790646962,
+ "offset": 0,
+ "limit": 20,
+ "totalCount": 1934,
+ "jobs": [
+  {
+   "title": "Technical Customer Support Engineer",
+   "excerpt": "What are we looking for? We’re hiring a Technical Support Engineer to help our top customers solve the hardest technical problems in apps built on Hercules.",
+   "companyName": "Hercules",
+   "companySlug": "hercules",
+   "companyLogo": "https://cdn-images.himalayas.app/81ovmiakwl5klgtlhp7aexgxr4qh",
+   "employmentType": "Full Time",
+   "minSalary": 80000,
+   "maxSalary": 150000,
+   "salaryPeriod": "annual",
+   "seniority": [
+    "Entry-level",
+    "Mid-level"
+   ],
+   "currency": "USD",
+   "locationRestrictions": [
+    "United States"
+   ],
+   "timezoneRestrictions": [
+    -10,
+    -9,
+    -8
+   ],
+   "categories": [
+    "Technical-Customer-Service-Engineer",
+    "Technical-Support-Engineer",
+    "Customer-Support-Engineer",
+    "Customer-Technical-Support-Representative",
+    "Technical-Customer-Support-Associate",
+    "Customer-Service-Engineer",
+    "Technical-Support-Technician",
+    "Support-Engineer",
+    "Customer-Support"
+   ],
+   "parentCategories": [
+    "Developer",
+    "Customer Service"
+   ],
+   "description": "<h3>What are we looking for?</h3><p>We’re hiring a <strong>Technical Support Engineer</strong> to help our top customers solve the hardest technical problems in apps built on <a href=\"https://himalayas.app/companies/hercules\">Hercules</a>. You will handle complex debugging, provide architecture guidance, and unblock high-value users fast.</p><h3>You should be:</h3><ul>\n<li><p><strong>Strong technically:</strong> you can reason about full-stack systems and debug unfamiliar code quickly.</p>",
+   "pubDate": 1790646962,
+   "expiryDate": 1795830962,
+   "applicationLink": "https://himalayas.app/companies/hercules/jobs/technical-customer-support-engineer-8191167354",
+   "guid": "https://himalayas.app/companies/hercules/jobs/technical-customer-support-engineer-8191167354"
+  },
+  {
+   "title": "Electrical Engineer",
+   "excerpt": "Position Summary: At Kingscott, we know our People are our biggest asset and we strive to always have the best of intentions, approach situations with empathy, build relationships, work as a team, and create an inclusive work environment where you can always be your best self and do your best work.",
+   "companyName": "Kingscott Associates",
+   "companySlug": "kingscott-associates",
+   "companyLogo": "https://cdn-images.himalayas.app/cp84bf63m6ktlve2ycufcvyeoiqz",
+   "employmentType": "Full Time",
+   "minSalary": null,
+   "maxSalary": null,
+   "salaryPeriod": "annual",
+   "seniority": [
+    "Mid-level"
+   ],
+   "currency": null,
+   "locationRestrictions": [
+    "United States"
+   ],
+   "timezoneRestrictions": [
+    -10,
+    -9,
+    -8
+   ],
+   "categories": [
+    "Electrical-Engineer",
+    "Power-Systems-Engineer",
+    "Lighting-Engineer",
+    "Building-Electrical-Design",
+    "Architectural-Engineer",
+    "Electrical-Engineering",
+    "Electrical-Design-Engineer",
+    "Electrical-Engineering-Designer",
+    "Electrical-Professional-Engineer",
+    "Electrical-Engineering-Specialist",
+    "Electrical-Project-Engineer",
+    "Hardware-Engineer"
+   ],
+   "parentCategories": [
+    "Hardware Engineer"
+   ],
+   "description": "<p>Position Summary: At Kingscott, we know our People are our biggest asset and we strive to always have the best of intentions, approach situations with empathy, build relationships, work as a team, and create an inclusive work environment where you can always be your best self and do your best work. We are seeking a motivated Electrical Engineer with 5+ years of experience to join our growing Architectural and Engineering Design firm. This individual will support the design and development of ",
+   "pubDate": 1790564864,
+   "expiryDate": 1795748863,
+   "applicationLink": "https://himalayas.app/companies/kingscott-associates/jobs/electrical-engineer",
+   "guid": "https://himalayas.app/companies/kingscott-associates/jobs/electrical-engineer"
+  },
+  {
+   "title": "Cybersecurity Founding Engineer (100 % remote) (m/f/d)",
+   "excerpt": "EWOR is launching cutting-edge new initiatives, and we are looking for exceptional operators and builders to join our new department.",
+   "companyName": "EWOR GmbH",
+   "companySlug": "ewor-gmbh",
+   "companyLogo": "https://cdn-images.himalayas.app/mzfjnameg78wsqgnqdccysf7eg22",
+   "employmentType": "Full Time",
+   "minSalary": null,
+   "maxSalary": null,
+   "salaryPeriod": "annual",
+   "seniority": [
+    "Senior"
+   ],
+   "currency": null,
+   "locationRestrictions": [],
+   "timezoneRestrictions": [
+    -11,
+    -10,
+    -9.5
+   ],
+   "categories": [
+    "Cybersecurity-Engineer",
+    "Security-Engineer",
+    "Founding-Engineer",
+    "Lead-Cybersecurity-Engineer",
+    "Principal-Cybersecurity-Engineer",
+    "Senior-Cybersecurity-Engineer",
+    "Cybersecurity-Software-Engineer"
+   ],
+   "parentCategories": [
+    "Developer"
+   ],
+   "description": "<p>EWOR is launching cutting-edge new initiatives, and we are looking for exceptional operators and builders to join our new department.</p><p>We are backed and led by serial entrepreneurs, including Paul Müller (founder of Adjust, €1.2B exit) and Petter Made (founder of SumUp, €8B), who have built high-impact technology and category-defining ventures from the ground up.</p>",
+   "pubDate": 1790564386,
+   "expiryDate": 1795748386,
+   "applicationLink": "https://himalayas.app/companies/ewor-gmbh/jobs/cybersecurity-founding-engineer-100-remote-m-f-d-863372163",
+   "guid": "https://himalayas.app/companies/ewor-gmbh/jobs/cybersecurity-founding-engineer-100-remote-m-f-d-863372163"
+  },
+  {
+   "title": "Arquiteto Especialista IAM — Microsoft Identity Manager",
+   "excerpt": "Estamos a contratar: Arquiteto Especialista IAM — Microsoft Identity Manager Localização: Remoto Regime: 100% remoto Estamos à procura de um Arquiteto Especialista IAM com experiência sólida em consultoria tecnológica e projetos de Identity & Access Management, com forte conhecimento de Microsoft Identity Manager (MIM).",
+   "companyName": "Elevus",
+   "companySlug": "elevus",
+   "companyLogo": "https://cdn-images.himalayas.app/1w6xz3bvkviypnry7xtbx8uiwtno",
+   "employmentType": "Full Time",
+   "minSalary": null,
+   "maxSalary": null,
+   "salaryPeriod": "annual",
+   "seniority": [
+    "Senior"
+   ],
+   "currency": null,
+   "locationRestrictions": [
+    "United States"
+   ],
+   "timezoneRestrictions": [
+    -10,
+    -9,
+    -8
+   ],
+   "categories": [
+    "IAM-Architect",
+    "Identity-And-Access-Management-Specialist",
+    "Security-Architect",
+    "IT-Architect",
+    "Solutions-Architect",
+    "Identity-Management-Architect",
+    "Identity-And-Access-Management-Architect",
+    "Arquitetura-IAM",
+    "Azure-AD-Architect",
+    "Microsoft-Identity-Engineer",
+    "Identity-Architect",
+    "Senior-Identity-and-Access-Management-Architect",
+    "IAM-Solutions-Architect"
+   ],
+   "parentCategories": [
+    "Developer"
+   ],
+   "description": "<p><strong>Estamos a contratar: Arquiteto Especialista IAM — Microsoft Identity Manager</strong></p><p><strong>Localização:</strong> Remoto<br><strong>Regime:</strong> 100% remoto</p><p>Estamos à procura de um <strong>Arquiteto Especialista IAM</strong> com experiência sólida em consultoria tecnológica e projetos de <strong>Identity &amp; Access Management</strong>, com forte conhecimento de <strong>Microsoft Identity Manager (MIM)</strong>.</p>",
+   "pubDate": 1790561926,
+   "expiryDate": 1795745925,
+   "applicationLink": "https://himalayas.app/companies/elevus/jobs/arquiteto-especialista-iam-microsoft-identity-manager",
+   "guid": "https://himalayas.app/companies/elevus/jobs/arquiteto-especialista-iam-microsoft-identity-manager"
+  },
+  {
+   "title": "Sr Software Engineer - Python",
+   "excerpt": "About Reserv Reserv is an insurtech creating and incubating cutting-edge AI and automation technology to bring efficiency and simplicity to claims.",
+   "companyName": "Reserv",
+   "companySlug": "reserv",
+   "companyLogo": "https://cdn-images.himalayas.app/bv8vn6puw123i30pgt4i29ajovvx",
+   "employmentType": "Full Time",
+   "minSalary": null,
+   "maxSalary": null,
+   "salaryPeriod": "annual",
+   "seniority": [
+    "Senior"
+   ],
+   "currency": null,
+   "locationRestrictions": [
+    "United States"
+   ],
+   "timezoneRestrictions": [
+    -10,
+    -9,
+    -8
+   ],
+   "categories": [
+    "Software-Engineer",
+    "Python-Developer",
+    "Backend-Engineer",
+    "Senior-Python-Software-Engineer",
+    "Senior-Python-Engineer",
+    "Lead-Software-Engineer-Python",
+    "Python-Software-Engineer",
+    "Senior-Python-Software-Engineering-Team",
+    "Senior-Python-Backend-Developer",
+    "Senior-Backend-Python-Developer"
+   ],
+   "parentCategories": [
+    "Developer"
+   ],
+   "description": "<div>\n<p><b><strong>About <a href=\"https://himalayas.app/companies/reserv\">Reserv</a></strong></b></p>",
+   "pubDate": 1790560636,
+   "expiryDate": 1795744636,
+   "applicationLink": "https://himalayas.app/companies/reserv/jobs/sr-software-engineer-python",
+   "guid": "https://himalayas.app/companies/reserv/jobs/sr-software-engineer-python"
+  }
+ ]
+}

@@ -1,0 +1,44 @@
+{
+ "hits": [
+  {
+   "title": "Ask HN: Who is hiring? (September 2026)",
+   "objectID": "49522897",
+   "created_at": "2026-09-01T15:01:17Z",
+   "created_at_i": 1788274877,
+   "author": "whoishiring",
+   "num_comments": 396
+  },
+  {
+   "title": "Ask HN: Who wants to be hired? (September 2026)",
+   "objectID": "49522896",
+   "created_at": "2026-09-01T15:01:17Z",
+   "created_at_i": 1788274877,
+   "author": "whoishiring",
+   "num_comments": 574
+  },
+  {
+   "title": "Ask HN: Who is hiring? (August 2026)",
+   "objectID": "49156683",
+   "created_at": "2026-08-03T15:00:54Z",
+   "created_at_i": 1785769254,
+   "author": "whoishiring",
+   "num_comments": 378
+  },
+  {
+   "title": "Ask HN: Who wants to be hired? (August 2026)",
+   "objectID": "49156682",
+   "created_at": "2026-08-03T15:00:54Z",
+   "created_at_i": 1785769254,
+   "author": "whoishiring",
+   "num_comments": 564
+  },
+  {
+   "title": "Ask HN: Who is hiring? (July 2026)",
+   "objectID": "48747976",
+   "created_at": "2026-07-01T15:01:21Z",
+   "created_at_i": 1782918081,
+   "author": "whoishiring",
+   "num_comments": 420
+  }
+ ]
+}
