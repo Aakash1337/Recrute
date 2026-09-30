@@ -126,3 +126,11 @@ def test_snoozed_jobs_do_not_consume_queue_limit(client):
     visible = seed_job(title="visible", score=10)
     with Session(get_engine()) as s:
         assert [j.id for j, _ in queue(s, limit=1)] == [visible]
+
+
+@pytest.mark.parametrize("path", ["/", "/packets", "/queue", "/live", "/login"])
+def test_ui_pages_cannot_be_framed(client, path):
+    r = client.get(path, headers={"Sec-Fetch-Dest": "iframe",
+                                  "Referer": "https://evil.example/"})
+    assert r.headers["X-Frame-Options"] == "DENY"
+    assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]

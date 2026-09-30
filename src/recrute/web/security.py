@@ -85,4 +85,17 @@ class AccessMiddleware(BaseHTTPMiddleware):
                 return PlainTextResponse("cross-origin request blocked", status_code=403)
             if path != "/login" and request.headers.get("hx-request") != "true":
                 return PlainTextResponse("missing HX-Request header", status_code=403)
-        return await call_next(request)
+        response = await call_next(request)
+        return no_framing(response)
+
+
+def no_framing(response):
+    """No page of this UI may be shown inside another site's frame (clickjacking: a disguised
+    "Approve" button would still send a genuine same-origin request)."""
+    response.headers["X-Frame-Options"] = "DENY"
+    csp = response.headers.get("Content-Security-Policy")
+    if csp is None:
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+    elif "frame-ancestors" not in csp:
+        response.headers["Content-Security-Policy"] = f"{csp}; frame-ancestors 'none'"
+    return response

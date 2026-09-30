@@ -47,6 +47,10 @@ def norm(s: str) -> str:
     return s.rstrip(" .:?!").strip()
 
 
+_ACK_OPTION = re.compile(r"acknowledg|agree|confirm|consent|accept|understand|certif|attest|"
+                         r"i have read|^yes\b")
+_NEG_OPTION = re.compile(r"\b(no|not|don'?t|decline|disagree|never|none)\b")
+_DIAL_SUFFIX = re.compile(r"\s*\(?\+\d{1,4}\)?")
 _TRUE = {"yes", "true", "y"}
 _FALSE = {"no", "false", "n"}
 
@@ -57,9 +61,10 @@ def resolve_option(value: Any, options: Sequence[str]) -> str | None:
     Allowed matches (anything else returns None, i.e. "don't guess"):
       * exact match after normalization;
       * booleans onto a Yes/No (True/False) option, or True onto the only option of a
-        single-option acknowledgement;
-      * the unique option that starts with the value and continues with no letters
-        (e.g. "United States" -> "United States +1").
+        single-option acknowledgement ("I agree", "Acknowledge/Confirm");
+      * a country name onto the unique option that is that country plus its dialing code
+        ("United States" -> "United States +1" / "United States (+1)").
+    Nothing looser: "1" never becomes "10+", True never becomes a lone "No".
     """
     if not options:
         return None
@@ -68,7 +73,8 @@ def resolve_option(value: Any, options: Sequence[str]) -> str | None:
         hits = [o for o in options if norm(o) in want]
         if len(hits) == 1:
             return hits[0]
-        if value and len(options) == 1:
+        if value and len(options) == 1 and _ACK_OPTION.search(norm(options[0])) \
+                and not _NEG_OPTION.search(norm(options[0])):
             return options[0]
         return None
     if value is None:
@@ -80,7 +86,8 @@ def resolve_option(value: Any, options: Sequence[str]) -> str | None:
     if exact:
         return exact[0]
     loose = [o for o in options
-             if norm(o).startswith(v) and not re.search(r"[^\W\d_]", norm(o)[len(v):])]
+             if re.search(r"[^\W\d_]", v) and norm(o).startswith(v)
+             and _DIAL_SUFFIX.fullmatch(norm(o)[len(v):])]
     if len(loose) == 1:
         return loose[0]
     return None

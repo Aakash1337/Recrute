@@ -440,3 +440,21 @@ def test_generic_mapping_respects_live_descriptions():
     same = live.model_copy(update={"description": "in the United States"})
     assert g.map_fields([same], packet, {}) == {"auth": ("answer", "q")}
     assert len(calls) == 2  # the changed description was a new mapping, not a memo hit
+
+
+def test_option_fallbacks_never_change_an_answer():
+    from recrute.apply.base import LiveField, verify_fields
+    from recrute.apply.dom import resolve_option
+
+    assert resolve_option("1", ["10+", "20+"]) is None
+    assert resolve_option(True, ["No"]) is None
+    assert resolve_option(True, ["I do not agree"]) is None
+    assert resolve_option(True, ["Acknowledge/Confirm"]) == "Acknowledge/Confirm"
+    assert resolve_option("United States", ["United States (+1)", "Canada (+1)"]) \
+        == "United States (+1)"
+    assert resolve_option("United States", ["United States +1"]) == "United States +1"
+    years = LiveField(id="y", label="Years of Python", type="select", widget="select",
+                      required=True, options=["10+", "20+"], current=None)
+    assert "y" in coverage_check([years], packet(a("y", "1")))
+    shown = years.model_copy(update={"current": "10+"})
+    assert "y" in verify_fields([shown], packet(a("y", "1")), {})
