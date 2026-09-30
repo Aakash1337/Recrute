@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Save to Recrute",
+  "version": "0.1.0",
+  "description": "Save the job page you are viewing to your local Recrute server.",
+  "minimum_chrome_version": "110",
+  "permissions": ["activeTab", "scripting", "storage", "contextMenus"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Save to Recrute"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  }
+}

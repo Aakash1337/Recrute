@@ -1,0 +1,27 @@
+Return-Path: <no-reply@us.greenhouse-mail.io>
+From: =?UTF-8?Q?Acme_Security_Hiring_Team?= <no-reply@us.greenhouse-mail.io>
+To: candidate@example.test
+Subject: =?UTF-8?B?VGhhbmsgeW91IGZvciBhcHBseWluZyB0byBBY21lIFNlY3VyaXR5IOKAkyBTT0MgQW5hbHlzdA==?=
+Date: Tue, 01 Sep 2026 14:03:12 -0400
+Message-ID: <conf-001@us.greenhouse-mail.io>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+Hi Alex,
+
+Thank you for applying to the SOC Analyst role at Acme Security. We=E2=80=99ve =
+received your application and our team will review it shortly.
+
+Best,
+Acme Security Recruiting
+--b1
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+<html><body><p>Hi Alex,</p><p>Thank you for applying to the <b>SOC Analyst</b> r=
+ole at Acme Security.</p></body></html>
+--b1--
