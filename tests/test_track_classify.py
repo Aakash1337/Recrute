@@ -452,7 +452,19 @@ def test_secrets_are_redacted_from_relevant_mail():
     classify_messages(router, [msg("1", "no-reply@greenhouse.io", "Application received", body)])
     prompt = router.calls[0][1]
     assert "CANARY" not in prompt and "12345678" not in prompt and "aBcDeFgHiJ" not in prompt
-    assert "Security Engineer" in prompt and "https://acme.greenhouse.io/status?" in prompt
+    assert "Security Engineer" in prompt and "[link to acme.greenhouse.io]" in prompt
+
+
+@pytest.mark.parametrize("link", ["https://assess.example/invite/Ab12Cd34Ef56Gh78",
+                                  "https://user:CANARYPW@status.example/app/Xy12",
+                                  "http://tests.example/t/CANARYshort"])
+def test_links_never_reach_the_llm_beyond_their_host(link):
+    router = FakeRouter(lambda p: {"results": []})
+    classify_messages(router, [msg("1", "no-reply@greenhouse.io", "Complete your assessment",
+                                   f"Start here: {link} Good luck!")])
+    prompt = router.calls[0][1]
+    assert "CANARY" not in prompt and "Ab12Cd34" not in prompt and "Xy12" not in prompt
+    assert "[link to " in prompt and "Good luck!" in prompt
 
 
 def test_old_email_does_not_update_a_newer_application(engine, db):

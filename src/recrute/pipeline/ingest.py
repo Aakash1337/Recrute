@@ -176,9 +176,20 @@ def _retarget_unsent_application(session: Session, job: Job) -> None:
                         .values(build_token="")
                         .execution_options(synchronize_session=False))
         return
-    if job.status not in (JobStatus.PACKET_READY, JobStatus.APPROVED):
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    # conditional on the CURRENT row: a decision made meanwhile (you marked it applied or
+    # skipped it) is never overwritten, and a sent application is never reopened
+    unsent = ~select(Application.id).where(Application.job_id == job.id,
+                                           col(Application.submitted_at).is_not(None)).exists()
+    res = session.execute(
+        update(Job).where(Job.id == job.id,
+                          col(Job.status).in_([JobStatus.PACKET_READY, JobStatus.APPROVED]),
+                          unsent)
+        .values(status=JobStatus.SHORTLISTED).execution_options(synchronize_session=False))
+    if res.rowcount != 1:
         return
-    job.status = JobStatus.SHORTLISTED
+    set_committed_value(job, "status", JobStatus.SHORTLISTED)
     session.execute(update(Application).where(Application.job_id == job.id,
                                               col(Application.submitted_at).is_(None))
                     .values(approved_at=None, scheduled_for=None, build_token="")

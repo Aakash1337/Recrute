@@ -16,19 +16,26 @@ class FakePage:
 
         class Mouse:
             def click(self, x, y):
+                page._typing = False
                 page.calls.append(("click", x, y))
 
             def wheel(self, dx, dy):
                 page.calls.append(("wheel", dy))
 
         class Keyboard:
-            def type(self, text, delay=0):
-                page.calls.append(("type", text))
+            def type(self, text, delay=0):  # (replay types char by char: merge them)
+                if page.calls and page.calls[-1][0] == "type" and page._typing:
+                    page.calls[-1] = ("type", page.calls[-1][1] + text)
+                else:
+                    page.calls.append(("type", text))
+                page._typing = True
 
             def press(self, key):
+                page._typing = False
                 page.calls.append(("press", key))
 
         self.mouse, self.keyboard = Mouse(), Keyboard()
+        self._typing = False
 
     def screenshot(self, **kw):
         return b"\xff\xd8jpg"
@@ -292,3 +299,24 @@ def test_same_url_reload_is_a_new_target(paths):
     assert live.apply_inputs(paths, page) is False and page.calls == []
     live.clear(paths)
 
+
+
+def test_navigation_during_typing_discards_the_rest(paths, monkeypatch):
+    from recrute import live
+
+    monkeypatch.setattr(live, "TYPE_DELAY", 0)
+    live.start_session(paths)
+    page = fresh_frame(paths, FakePage("https://login.example"))
+    typed = []
+
+    def type_char(text, delay=0):
+        typed.append(text)
+        if text == "\n":
+            page.url = "https://next.example"  # Enter submitted the form
+
+    page.keyboard.type = type_char
+    live.enqueue(paths, ev(page, type="type", text="user\nCANARY"))
+    live.enqueue(paths, ev(page, type="type", text="more"))
+    assert live.apply_inputs(paths, page) is False
+    assert "".join(typed) == "user\n"  # nothing after the navigation
+    live.clear(paths)

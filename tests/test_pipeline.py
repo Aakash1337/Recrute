@@ -748,3 +748,28 @@ def test_rule_result_dropped_when_location_changes_during_evaluation(engine, mon
         filter_new(s, Criteria())
         j = s.get(Job, job_id)
         assert (j.status == JobStatus.FILTERED_OUT) == (after == ["Toronto, ON"])
+
+
+@pytest.mark.parametrize("decision", ["mark_applied", "skip"])
+def test_retarget_never_overwrites_a_concurrent_decision(engine, decision):
+    from recrute import packets
+    from recrute.models import Application
+    from recrute.pipeline.ingest import _retarget_unsent_application
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://www.linkedin.com/jobs/view/1",
+                  canonical_url="li1", status=JobStatus.PACKET_READY)
+        s.add(job)
+        s.flush()
+        s.add(Application(job_id=job.id, channel="linkedin_easy_apply", packet={"a": 1}))
+        s.commit()
+        job_id = job.id
+    with Session(engine) as a:
+        job = a.get(Job, job_id)  # ingestion looked the job up...
+        with Session(engine) as b:  # ...then you decided in the UI
+            getattr(packets, decision)(b, job_id)
+        _retarget_unsent_application(a, job)
+        a.commit()
+    with Session(engine) as s:
+        expected = JobStatus.APPLIED if decision == "mark_applied" else JobStatus.REJECTED
+        assert s.get(Job, job_id).status == expected

@@ -440,3 +440,19 @@ def test_preferred_section_clearance_is_optional(text, flagged):
     from recrute.badges.sponsorship import eligibility_flags
 
     assert ("clearance_required" in eligibility_flags(text)) is flagged
+
+
+@pytest.mark.parametrize("text,flag", [
+    ("Our customers require an active Secret clearance.", None),
+    ("Our clients must be U.S. citizens.", None),
+    ("Our customers require an active Secret clearance, and candidates must hold one too.",
+     "clearance_required"),
+    ("Candidates must be U.S. citizens to support our government clients.",
+     "citizenship_required"),
+    ("Active Secret clearance required to work with our customers.", "clearance_required"),
+])
+def test_customer_restrictions_are_not_applicant_requirements(text, flag):
+    from recrute.badges.sponsorship import eligibility_flags
+
+    flags = eligibility_flags(text)
+    assert (flag in flags) if flag else not flags

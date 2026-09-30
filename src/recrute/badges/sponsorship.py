@@ -337,7 +337,7 @@ def _citizenship_required(s: str) -> bool:
 
 
 def _citizenship_clause(s: str) -> bool:
-    if not _US_CITIZEN.search(s) or _BOILERPLATE.search(s):
+    if not _US_CITIZEN.search(s) or _BOILERPLATE.search(s) or _about_third_parties(s):
         return False
     if _CITIZEN_ALTERNATIVE.search(s) or _all_mentions_negated(s, _US_CITIZEN):
         return False
@@ -360,12 +360,26 @@ def _itar_required(s: str) -> bool:
 _THIRD_PARTY = re.compile(r"\b(?:customers?|clients?|users?|partners?|agencies|missions?|"
                           r"we (?:build|serve|support|protect|sell|provide|work with)|our "
                           r"(?:products?|platform|software|solutions?|services?))\b", re.I)
-_APPLICANT_WORDS = re.compile(r"\b(?:applicants?|candidates?|you|your|hires?|employees?|"
-                              r"must|required|requires?|eligib\w*|ability to|able to)\b", re.I)
+# who the restriction is about: the applicant...
+_APPLICANT_SUBJECT = re.compile(r"\b(?:applicants?|candidates?|you|your|hires?|employees?|"
+                                r"(?:this|the) (?:role|position|job|successful)|individuals?)\b",
+                                re.I)
+# ...or the company's customers ("Our customers require an active Secret clearance")
+_THIRD_PARTY_SUBJECT = re.compile(
+    r"\b(?:customers?|clients?|users?|partners?|agencies|end users?)\s+(?:\w+\s+){0,2}?"
+    r"(?:require[sd]?|must|need|needs|are required|hold|have|include|consist)\b", re.I)
+_REQUIREMENT_WORDS = re.compile(r"\b(?:must|required|requires?|eligib\w*|ability to|"
+                                r"able to)\b", re.I)
 
 
 def _about_third_parties(s: str) -> bool:
-    return bool(_THIRD_PARTY.search(s)) and not _APPLICANT_WORDS.search(s)
+    """A statement about the company's customers/products, not a rule for the applicant. The
+    SUBJECT decides, not the verb: "Our clients must be U.S. citizens" describes clients."""
+    if _APPLICANT_SUBJECT.search(s):
+        return False
+    if _THIRD_PARTY_SUBJECT.search(s):
+        return True
+    return bool(_THIRD_PARTY.search(s)) and not _REQUIREMENT_WORDS.search(s)
 
 
 def _itar_clause(s: str) -> bool:

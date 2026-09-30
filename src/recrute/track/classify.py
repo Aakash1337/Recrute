@@ -120,17 +120,20 @@ def is_auth_mail(msg: MailMessage) -> bool:
     return bool(_AUTH_MAIL.search(msg.subject) or _AUTH_MAIL.search(msg.text[:2000]))
 
 
-# credential-bearing parts of an otherwise relevant email, removed before any LLM call
-_URL_SECRETS = re.compile(r"(https?://[^\s?#<>\"')]+)[?#][^\s<>\"')]*")
+# credential-bearing parts of an otherwise relevant email, removed before any LLM call.
+# Whole links go: invitation / status links carry tokens in the PATH too, short or long;
+# only the site's host name is kept (enough to tell an ATS or an assessment site).
+_URL = re.compile(r"\b(?:https?|ftp)://(?:[^\s/@<>\"')]*@)?([^\s/:?#<>\"')]+)[^\s<>\"')]*",
+                  re.I)
 _CODE_NEAR = re.compile(r"(?i)\b(code|pin|otp|passcode|token)\b(\W{0,5})([A-Z0-9-]{4,12})\b")
 _LONG_TOKEN = re.compile(r"\b[A-Za-z0-9_\-]{24,}\b")
 _BARE_CODE = re.compile(r"(?<![\d\-+(])\b\d{6,8}\b(?![\d\-)])")
 
 
 def redact_secrets(text: str) -> str:
-    """Links lose their query strings (reset/sign-in tokens), codes and token-like strings are
-    masked. What classification needs (who, which role, what happened) stays."""
-    text = _URL_SECRETS.sub(r"\1?[redacted]", text)
+    """Links are reduced to their host name, codes and token-like strings are masked. What
+    classification needs (who, which role, what happened) stays."""
+    text = _URL.sub(r"[link to \1]", text)
     text = _CODE_NEAR.sub(r"\1\2[redacted]", text)
     text = _LONG_TOKEN.sub("[redacted]", text)
     return _BARE_CODE.sub("[redacted]", text)

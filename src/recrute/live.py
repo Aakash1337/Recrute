@@ -26,6 +26,7 @@ from recrute.paths import Paths
 ALLOWED_KEYS = {"Enter", "Tab", "Backspace", "Escape", "ArrowDown", "ArrowUp", "ArrowLeft",
                 "ArrowRight", "Space", "Delete", "Home", "End", "PageDown", "PageUp"}
 
+TYPE_DELAY = 0.04  # seconds between replayed characters
 CLICK_SETTLE = 0.3  # seconds after a replayed click before the next event is checked
 MAX_INPUT_AGE = 15.0  # seconds an input event may wait before it's replayed
 FRESH_SECONDS = 10.0  # a screenshot older than this is not shown / acted on
@@ -209,7 +210,10 @@ def apply_inputs(paths: Paths, page) -> bool:
         if queue is not None:
             queue.clear()
     done = False
+    moved = False
     for ev in events:
+        if moved:
+            break
         if time.time() - float(ev.get("at") or 0) > MAX_INPUT_AGE:
             continue  # queued too long ago (the page may have changed since): dropped
         if done or not session or ev.get("session") != session:
@@ -223,7 +227,15 @@ def apply_inputs(paths: Paths, page) -> bool:
                 page.mouse.click(ev["x"], ev["y"])
                 time.sleep(CLICK_SETTLE)  # let a navigation the click starts register
             elif ev.get("type") == "type":
-                page.keyboard.type(ev["text"], delay=40)
+                # one character at a time, re-checking the page before each: if it navigates
+                # mid-word (Enter in the text, an auto-submitting field), the rest of the text
+                # is discarded rather than typed into a page you haven't seen
+                for ch in ev["text"]:
+                    if page_target(page) != ev.get("target"):
+                        moved = True
+                        break
+                    page.keyboard.type(ch)
+                    time.sleep(TYPE_DELAY)
             elif ev.get("type") == "key":
                 page.keyboard.press(ev["key"])
             elif ev.get("type") == "scroll":
