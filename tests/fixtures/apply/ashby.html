@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<!-- Local fixture modelled on jobs.ashbyhq.com/<org>/<id>/application (studied read-only,
+     Sept 2026): React-rendered (here: rendered by script after a short delay), each question in
+     div.ashby-application-form-field-entry[data-field-path], required titles carry a
+     "_required_" class, yes/no questions are button pairs (+ hidden checkbox), location is an
+     autocomplete combobox, MultiValueSelect is a checkbox fieldset, EEOC is a radio group, the
+     resume input is visually hidden behind "Upload File", plus an "autofill from resume" drop
+     zone at the top (must NOT be used) and an invisible reCAPTCHA badge. The submit shows an
+     in-page thank-you (no URL change). ?extra=1 adds a required question. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Security Analyst @ Acme</title>
+<style>
+  body { font-family: sans-serif; max-width: 760px; margin: 0 auto; padding: 24px; }
+  .ashby-application-form-field-entry { margin: 18px 0; }
+  .ashby-application-form-question-title { display: block; font-weight: 600; margin-bottom: 6px; }
+  ._required_f7cvd_91::after { content: " *"; color: #b00; }
+  input[type=text], input[type=email], input[type=tel], textarea { width: 100%; padding: 8px; box-sizing: border-box; }
+  .sr-file { border: 0; clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; white-space: nowrap; }
+  .ashby-application-form-input-yesno button { padding: 6px 18px; }
+  .ashby-application-form-input-yesno button[aria-pressed=true] { background: #333; color: #fff; }
+  ._input_1svni_78 { display: none; }
+  ._inputContainer_d7ago_28 { position: relative; }
+  ._listbox { position: absolute; left: 0; right: 0; background: #fff; border: 1px solid #999; z-index: 5; }
+  ._listbox [role=option] { padding: 6px; cursor: pointer; }
+  .ashby-application-form-input-radio-group-option-radio { opacity: 0; position: absolute; }
+  ._error_ { color: #b00; }
+  .grecaptcha-badge { width: 256px; height: 60px; position: fixed; bottom: 14px; right: -186px; }
+</style>
+</head>
+<body>
+<h1>Security Analyst</h1>
+<div id="form" role="tabpanel" aria-labelledby="job-application-form" tabindex="0"><p>Loading…</p></div>
+<div class="grecaptcha-badge" data-style="bottomright">
+  <iframe title="reCAPTCHA" width="256" height="60" role="presentation"
+          src="/recaptcha/api2/anchor?ar=1&amp;k=fixture&amp;size=invisible"></iframe>
+</div>
+
+<script>
+(function () {
+  const params = new URLSearchParams(location.search);
+  const F = '1af7f7a4-d5b6-4a8a-aa83-92e3db306675';
+  const entry = (path, title, required, inner, desc) => `
+    <div class="_fieldEntry_1e3gg_28 ashby-application-form-field-entry" data-field-entry-id="${F}_${path}" data-field-path="${path}">
+      <label class="_heading_f7cvd_52 ${required ? '_required_f7cvd_91' : ''} _label_1e3gg_42 ashby-application-form-question-title" for="${path}">${title}</label>
+      ${desc ? `<div class="ashby-application-form-question-description"><p>${desc}</p></div>` : ''}
+      ${inner}
+    </div>`;
+  const html = `
+  <div class="_jobPostingForm_5yu8i_402 ashby-application-form-container">
+    <div class="ashby-application-form-autofill-input-root">
+      <p>Autofill from resume</p>
+      <input type="file" class="sr-file" accept="application/pdf,.pdf">
+      <button type="button" class="_button_zyh3g_28">Upload file</button>
+    </div>
+    <div class="_section_5yu8i_86 ashby-application-form-section-container">
+      ${entry('_systemfield_name', 'Legal Name', true, '<div><input class="ashby-application-form-input-text" id="_systemfield_name" name="_systemfield_name" placeholder="Type here..." required type="text" value=""></div>', 'Please enter your legal name.')}
+      ${entry('_systemfield_email', 'Email', true, '<div><input class="ashby-application-form-input-text" id="_systemfield_email" name="_systemfield_email" placeholder="hello@example.com..." required type="email" value=""></div>')}
+      ${entry('_systemfield_resume', 'Resume', true, `
+        <div class="_container_10xk4_70 ashby-application-form-input-file" role="presentation">
+          <input class="sr-file" id="_systemfield_resume" required tabindex="-1" type="file" accept="application/pdf,.pdf,.docx">
+          <div class="ashby-application-form-input-file-dropzone">
+            <button type="button" class="_button_zyh3g_28 ashby-application-form-input-file-dropzone-upload"><span><span>Upload File</span></span></button>
+            <p class="ashby-application-form-input-file-dropzone-instructions">or drag and drop here</p>
+            <p class="_filename"></p>
+          </div>
+        </div>`)}
+      ${entry('20f8883c-d278-427c-9465-dc614f612e1f', 'Phone Number', true, '<div><input class="ashby-application-form-input-text" id="20f8883c-d278-427c-9465-dc614f612e1f" name="20f8883c-d278-427c-9465-dc614f612e1f" placeholder="1-415-555-1234..." required type="tel" value=""></div>')}
+      ${entry('_systemfield_location', 'Where are you currently located?', true, `
+        <div class="_inputContainer_d7ago_28">
+          <input aria-autocomplete="list" aria-expanded="false" aria-haspopup="listbox" class="_input_d7ago_28 ashby-application-form-input-autocomplete" placeholder="Start typing..." role="combobox" value="">
+          <button type="button" class="_toggleButton_d7ago_32" tabindex="-1">▾</button>
+        </div>`)}
+      ${entry('bed95633-1b6e-4cd0-9eaf-c5a9f75ac35d', 'Are you authorized to work in the country where the job is located?', true, `
+        <div class="_container_1svni_28 _yesno_1e3gg_148 ashby-application-form-input-yesno">
+          <button type="button" aria-pressed="false" class="_option_1svni_32 ashby-application-form-input-yesno-option" data-option="yes">Yes</button>
+          <button type="button" aria-pressed="false" class="_option_1svni_32 ashby-application-form-input-yesno-option" data-option="no">No</button>
+          <input class="_input_1svni_78" name="bed95633-1b6e-4cd0-9eaf-c5a9f75ac35d" tabindex="-1" type="checkbox">
+        </div>`)}
+      ${entry('3f4e05d4-dd62-48ef-96ca-d9f293ae18d4', 'When can you start a new role?', false, `
+        <div class="react-datepicker-wrapper"><div class="react-datepicker__input-container">
+          <input class="_input_gc9ve_28 ashby-application-form-input-date" placeholder="Pick date..." type="text" value="">
+        </div></div>`)}
+      ${entry('f189fed2-624b-41a1-a76f-0c67a2611d1a', 'Additional Information', false, '<textarea class="ashby-application-form-input-textarea" id="f189fed2-624b-41a1-a76f-0c67a2611d1a" name="f189fed2-624b-41a1-a76f-0c67a2611d1a" placeholder="Type here..."></textarea>')}
+      <div data-field-entry-id="${F}_7fe82de7-a1d7-4d8a-95a5-e5cc9adc84ea" data-field-path="7fe82de7-a1d7-4d8a-95a5-e5cc9adc84ea">
+        <fieldset class="_fieldEntry_1e3gg_28 ashby-application-form-input-checkbox-group">
+          <label class="_heading_f7cvd_52 _required_f7cvd_91 ashby-application-form-question-title" for="7fe82de7-a1d7-4d8a-95a5-e5cc9adc84ea">I certify that the information I have provided is true and complete.</label>
+          <div class="ashby-application-form-input-checkbox-group-option">
+            <input type="checkbox" id="${F}_7fe82de7-labeled-checkbox-0" name="I confirm I have read the above.">
+            <label for="${F}_7fe82de7-labeled-checkbox-0">I confirm I have read the above.</label>
+          </div>
+        </fieldset>
+      </div>
+      <div id="extra-slot"></div>
+    </div>
+    <div class="_section_5yu8i_86 ashby-application-form-section-container">
+      <h3>U.S. Equal Employment Opportunity Survey</h3>
+      <div data-field-entry-id="28c6b904_gender" data-field-path="_systemfield_eeoc_gender">
+        <fieldset class="_container_1258i_28 _fieldEntry_1e3gg_28 ashby-application-form-input-radio-group">
+          <label class="_heading_f7cvd_52 ashby-application-form-question-title" for="_systemfield_eeoc_gender">Gender</label>
+          ${['Male', 'Female', 'Decline to self-identify'].map((o, i) => `
+            <div class="ashby-application-form-input-radio-group-option">
+              <span><input class="ashby-application-form-input-radio-group-option-radio" id="28c6b904__systemfield_eeoc_gender-labeled-radio-${i}" name="28c6b904__systemfield_eeoc_gender" type="radio"></span>
+              <label class="ashby-application-form-input-radio-group-option-label" for="28c6b904__systemfield_eeoc_gender-labeled-radio-${i}">${o}</label>
+            </div>`).join('')}
+        </fieldset>
+      </div>
+    </div>
+    <p id="submit-error" class="_error_"></p>
+  </div>
+  <button type="button" class="_button_zyh3g_28 _primary_zyh3g_97 _submitButton_5yu8i_411 ashby-application-form-submit-button">Submit Application</button>`;
+
+  const LOCATIONS = ['San Francisco, California, United States', 'San Jose, California, United States', 'New York, New York, United States'];
+
+  setTimeout(() => {
+    const root = document.getElementById('form');
+    root.innerHTML = html;
+    if (params.get('extra') === '1') {
+      document.getElementById('extra-slot').innerHTML = entry('e0e0e0e0-0000-4000-8000-000000000009', 'What is your favorite security tool?', true,
+        '<div><input class="ashby-application-form-input-text" id="e0e0e0e0-0000-4000-8000-000000000009" name="e0e0e0e0-0000-4000-8000-000000000009" type="text" required></div>');
+    }
+    // yes/no
+    root.querySelectorAll('.ashby-application-form-input-yesno').forEach(yn => {
+      yn.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+        yn.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', 'false'));
+        b.setAttribute('aria-pressed', 'true');
+        yn.querySelector('input').checked = b.dataset.option === 'yes';
+      }));
+    });
+    // resume upload
+    const resume = document.getElementById('_systemfield_resume');
+    root.querySelector('.ashby-application-form-input-file-dropzone-upload').addEventListener('click', () => resume.click());
+    resume.addEventListener('change', () => { root.querySelector('._filename').textContent = resume.files.length ? resume.files[0].name : ''; });
+    // location autocomplete
+    const loc = root.querySelector('.ashby-application-form-input-autocomplete');
+    let lb = null;
+    const closeLb = () => { if (lb) { lb.remove(); lb = null; } };
+    loc.addEventListener('input', () => {
+      closeLb();
+      const q = loc.value.trim().toLowerCase();
+      if (q.length < 2) return;
+      lb = document.createElement('div');
+      lb.className = '_listbox';
+      lb.setAttribute('role', 'listbox');
+      LOCATIONS.filter(l => l.toLowerCase().includes(q)).forEach((l, i) => {
+        const o = document.createElement('div');
+        o.setAttribute('role', 'option');
+        o.id = `loc-option-${i}`;
+        o.textContent = l;
+        o.addEventListener('mousedown', e => { e.preventDefault(); loc.value = l; loc.dataset.chosen = l; closeLb(); });
+        lb.appendChild(o);
+      });
+      loc.parentElement.appendChild(lb);
+    });
+    loc.addEventListener('blur', () => setTimeout(closeLb, 150));
+    // submit
+    root.querySelector('.ashby-application-form-submit-button').addEventListener('click', async () => {
+      const missing = [];
+      root.querySelectorAll('input[required][type=text], input[required][type=email], input[required][type=tel]').forEach(i => { if (!i.value) missing.push(i.id); });
+      if (!resume.files.length) missing.push('resume');
+      if (!loc.dataset.chosen) missing.push('location');
+      if (!root.querySelector('.ashby-application-form-input-yesno button[aria-pressed=true]')) missing.push('yesno');
+      if (!root.querySelector('.ashby-application-form-input-checkbox-group input:checked')) missing.push('certify');
+      if (missing.length) { document.getElementById('submit-error').textContent = 'Missing entry for required field: ' + missing.join(', '); return; }
+      const fd = new FormData();
+      root.querySelectorAll('[data-field-path]').forEach(e => {
+        const p = e.dataset.fieldPath;
+        const t = e.querySelector('input:not([type]), input[type=text], input[type=email], input[type=tel], textarea');
+        if (t) fd.append(p, t.value);
+        const pressed = e.querySelector('button[aria-pressed=true]');
+        if (pressed) fd.append(p, pressed.textContent.trim());
+        e.querySelectorAll('input[type=checkbox]:checked, input[type=radio]:checked').forEach(c => { if (!c.closest('.ashby-application-form-input-yesno')) fd.append(p, c.labels[0].textContent.trim()); });
+      });
+      fd.append('_systemfield_resume', resume.files[0], resume.files[0].name);
+      const res = await fetch(location.pathname.replace(/\/application$/, '') + '/submit', {method: 'POST', body: fd});
+      if (!res.ok) { document.getElementById('submit-error').textContent = 'Something went wrong.'; return; }
+      root.innerHTML = `<div class="ashby-application-form-success-container"><h2>Thank you for applying</h2>
+        <p>Your application was successfully submitted. We'll be in touch if there's a fit.</p></div>`;
+    });
+  }, 300);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+{
+  "data": {
+    "jobPosting": {
+      "id": "8fb1615c-0000-47c4-a1d1-b7b2f836bbd3",
+      "title": "Security Analyst",
+      "applicationForm": {
+        "id": "1af7f7a4-d5b6-4a8a-aa83-92e3db306675",
+        "sections": [
+          {
+            "title": null,
+            "fieldEntries": [
+              {"id": "e1", "isRequired": true, "descriptionHtml": "<p>Please enter your legal name.</p>", "field": {"id": "f1", "path": "_systemfield_name", "title": "Legal Name", "type": "String", "isNullable": false}},
+              {"id": "e2", "isRequired": true, "descriptionHtml": null, "field": {"id": "f2", "path": "_systemfield_email", "title": "Email", "type": "Email"}},
+              {"id": "e3", "isRequired": true, "descriptionHtml": null, "field": {"id": "f3", "path": "_systemfield_resume", "title": "Resume", "type": "File"}},
+              {"id": "e4", "isRequired": true, "descriptionHtml": null, "field": {"id": "f4", "path": "20f8883c-d278-427c-9465-dc614f612e1f", "title": "Phone Number", "type": "Phone"}},
+              {"id": "e5", "isRequired": true, "descriptionHtml": null, "field": {"id": "f5", "path": "_systemfield_location", "title": "Where are you currently located?", "type": "Location", "locationTypes": ["City"]}},
+              {"id": "e6", "isRequired": true, "descriptionHtml": null, "field": {"id": "f6", "path": "bed95633-1b6e-4cd0-9eaf-c5a9f75ac35d", "title": "Are you authorized to work in the country where the job is located?", "type": "Boolean"}},
+              {"id": "e7", "isRequired": false, "descriptionHtml": null, "field": {"id": "f7", "path": "3f4e05d4-dd62-48ef-96ca-d9f293ae18d4", "title": "When can you start a new role?", "type": "Date"}},
+              {"id": "e8", "isRequired": false, "descriptionHtml": null, "field": {"id": "f8", "path": "f189fed2-624b-41a1-a76f-0c67a2611d1a", "title": "Additional Information", "type": "LongText"}},
+              {"id": "e9", "isRequired": true, "descriptionHtml": null, "field": {"id": "f9", "path": "7fe82de7-a1d7-4d8a-95a5-e5cc9adc84ea", "title": "I certify that the information I have provided is true and complete.", "type": "MultiValueSelect", "selectableValues": [{"label": "I confirm I have read the above.", "value": "I confirm I have read the above."}]}},
+              {"id": "e10", "isRequired": false, "descriptionHtml": null, "field": {"id": "f10", "path": "_systemfield_unknown", "title": "Rate yourself", "type": "Score"}}
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

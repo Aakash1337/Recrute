@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<!-- An ATS that requires an account per company (Workday/iCIMS style): sign-in wall. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Acme Careers - Sign In</title></head>
+<body>
+  <h1>Security Analyst</h1>
+  <h2>Sign in to apply</h2>
+  <form id="signin" action="/login/session" method="post">
+    <label for="username">Email Address</label><input id="username" name="username" type="email">
+    <label for="password">Password</label><input id="password" name="password" type="password">
+    <button type="submit">Sign In</button>
+  </form>
+  <p>Don't have an account? <a href="/login/create">Create Account</a></p>
+</body>
+</html>

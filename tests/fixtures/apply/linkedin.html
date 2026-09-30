@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<!-- Local fixture modelled on LinkedIn's Easy Apply flow (public knowledge of the markup; the
+     real site was NOT loaded): button.jobs-apply-button opens div.jobs-easy-apply-modal
+     [role=dialog]; steps Contact info -> Resume -> Additional Questions -> Review; footer
+     buttons aria-labelled "Continue to next step" / "Review your application" /
+     "Submit application"; inline errors .artdeco-inline-feedback--error; after submit a
+     dialog "Your application was sent to Acme!". Contact fields are prefilled from the
+     profile. Flags: ?extra=1 adds an unknown required question on step 3; ?external=1 turns
+     the button into an external "Apply"; ?checkpoint=1 shows a security verification. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Security Analyst | Acme | LinkedIn</title>
+<style>
+  body { font-family: sans-serif; margin: 0; padding: 24px; }
+  .jobs-easy-apply-modal { position: fixed; top: 40px; left: 50%; transform: translateX(-50%); width: 640px; max-height: 85vh; overflow: auto; background: #fff; border: 1px solid #999; padding: 16px; z-index: 100; }
+  .fb-dash-form-element { margin: 14px 0; }
+  .fb-dash-form-element label, legend { display: block; font-weight: 600; margin-bottom: 4px; }
+  .artdeco-text-input--input, select { width: 100%; padding: 8px; box-sizing: border-box; }
+  .artdeco-inline-feedback--error { color: #b00; }
+  .step { display: none; }
+  .step.active { display: block; }
+  .jobs-document-upload__input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  footer { display: flex; justify-content: space-between; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="jobs-unified-top-card">
+  <h1 class="t-24">Security Analyst</h1>
+  <div class="job-details-jobs-unified-top-card__company-name">Acme</div>
+  <div class="jobs-apply-button--top-card">
+    <button id="jobs-apply-button-id" class="jobs-apply-button artdeco-button artdeco-button--primary" aria-label="Easy Apply to Security Analyst at Acme" type="button"><span class="artdeco-button__text">Easy Apply</span></button>
+  </div>
+</div>
+<div class="jobs-description"><h2>About the job</h2><p>Help us run vulnerability assessment and detection engineering.</p></div>
+
+<div id="modal-root"></div>
+
+<template id="modal-tpl">
+<div data-test-modal="" role="dialog" aria-labelledby="jobs-apply-header" class="artdeco-modal jobs-easy-apply-modal">
+  <div class="artdeco-modal__header"><h2 id="jobs-apply-header">Apply to Acme</h2><progress max="100" value="0"></progress></div>
+  <div class="jobs-easy-apply-content">
+    <form>
+      <div class="step active" data-step="1">
+        <h3 class="t-16 t-bold">Contact info</h3>
+        <div class="fb-dash-form-element" data-test-form-element>
+          <label for="single-line-text-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-111-firstName">First name</label>
+          <input class="artdeco-text-input--input" id="single-line-text-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-111-firstName" type="text" required value="Ada">
+        </div>
+        <div class="fb-dash-form-element" data-test-form-element>
+          <label for="single-line-text-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-112-lastName">Last name</label>
+          <input class="artdeco-text-input--input" id="single-line-text-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-112-lastName" type="text" required value="Lovelace">
+        </div>
+        <div class="fb-dash-form-element" data-test-form-element>
+          <label for="text-entity-list-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-113-multipleChoice">Email address</label>
+          <select id="text-entity-list-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-113-multipleChoice" required data-test-text-entity-list-form-select>
+            <option value="">Select an option</option><option value="ada@example.com" selected>ada@example.com</option>
+          </select>
+        </div>
+        <div class="fb-dash-form-element" data-test-form-element>
+          <label for="text-entity-list-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-114-phoneNumber-country">Phone country code</label>
+          <select id="text-entity-list-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-114-phoneNumber-country" required>
+            <option value="">Select an option</option><option value="us" selected>United States (+1)</option><option value="ca">Canada (+1)</option>
+          </select>
+        </div>
+        <div class="fb-dash-form-element" data-test-form-element>
+          <label for="single-line-text-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-115-phoneNumber-nationalNumber">Mobile phone number</label>
+          <input class="artdeco-text-input--input" id="single-line-text-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-115-phoneNumber-nationalNumber" type="text" required value="">
+        </div>
+      </div>
+
+      <div class="step" data-step="2">
+        <h3 class="t-16 t-bold">Resume</h3>
+        <p class="t-12">Be sure to include an updated resume</p>
+        <div class="jobs-document-upload-redesign-card__container jobs-document-upload-redesign-card__container--selected">
+          <h3 class="jobs-document-upload-redesign-card__file-name">Old_Resume.pdf</h3><p>Last used on 1/2/2026</p>
+        </div>
+        <div class="jobs-document-upload">
+          <label class="jobs-document-upload__upload-button artdeco-button artdeco-button--secondary" for="jobs-document-upload-file-input-upload-resume">Upload resume</label>
+          <input id="jobs-document-upload-file-input-upload-resume" class="jobs-document-upload__input" type="file" accept=".pdf,.doc,.docx" name="file">
+          <p class="jobs-document-upload__format-text">DOC, DOCX, PDF (2 MB)</p>
+          <p id="uploaded-name"></p>
+        </div>
+      </div>
+
+      <div class="step" data-step="3">
+        <h3 class="t-16 t-bold">Additional Questions</h3>
+        <div class="fb-dash-form-element" data-test-form-element>
+          <label for="single-line-text-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-201-numeric">How many years of work experience do you have with Python?</label>
+          <input class="artdeco-text-input--input" id="single-line-text-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-201-numeric" type="text" required value="">
+        </div>
+        <fieldset class="fb-dash-form-element" data-test-form-builder-radio-button-form-component="true" id="radio-button-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-202-multipleChoice">
+          <legend><span data-test-form-builder-radio-button-form-component__title>Are you legally authorized to work in the United States?</span><span class="fb-dash-form-element__label-title--is-required"> Required</span></legend>
+          <div data-test-text-selectable-option="0"><input id="urn-li-202-Yes" type="radio" name="urn-li-202" value="Yes" required data-test-text-selectable-option__input="Yes"><label for="urn-li-202-Yes" data-test-text-selectable-option__label="Yes">Yes</label></div>
+          <div data-test-text-selectable-option="1"><input id="urn-li-202-No" type="radio" name="urn-li-202" value="No" required data-test-text-selectable-option__input="No"><label for="urn-li-202-No" data-test-text-selectable-option__label="No">No</label></div>
+        </fieldset>
+        <div class="fb-dash-form-element" data-test-form-element>
+          <label for="text-entity-list-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-203-multipleChoice">Will you now or in the future require sponsorship for employment visa status?</label>
+          <select id="text-entity-list-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-203-multipleChoice" required>
+            <option value="">Select an option</option><option>Yes</option><option>No</option>
+          </select>
+        </div>
+        <div id="extra-slot"></div>
+      </div>
+
+      <div class="step" data-step="4">
+        <h3 class="t-16 t-bold">Review your application</h3>
+        <p>The employer will also receive a copy of your profile.</p>
+        <div id="review-summary"></div>
+        <div class="job-details-easy-apply-footer__section">
+          <input type="checkbox" id="follow-company-checkbox" checked>
+          <label for="follow-company-checkbox">Follow Acme to stay up to date with their page.</label>
+        </div>
+      </div>
+    </form>
+  </div>
+  <footer>
+    <button type="button" aria-label="Back to previous step" class="artdeco-button artdeco-button--secondary" data-back>Back</button>
+    <span>
+      <button type="button" aria-label="Continue to next step" class="artdeco-button artdeco-button--primary" data-easy-apply-next-button>Next</button>
+      <button type="button" aria-label="Review your application" class="artdeco-button artdeco-button--primary" data-live-test-easy-apply-review-button style="display:none">Review</button>
+      <button type="button" aria-label="Submit application" class="artdeco-button artdeco-button--primary" data-live-test-easy-apply-submit-button style="display:none">Submit application</button>
+    </span>
+  </footer>
+</div>
+</template>
+
+<script>
+(function () {
+  const params = new URLSearchParams(location.search);
+  const openBtn = document.querySelector('.jobs-apply-button');
+  if (params.get('external') === '1') {
+    openBtn.setAttribute('aria-label', 'Apply to Security Analyst on company website');
+    openBtn.querySelector('span').textContent = 'Apply';
+  }
+  if (params.get('checkpoint') === '1') {
+    document.body.insertAdjacentHTML('afterbegin', '<div class="checkpoint"><h2>Let\'s do a quick security check</h2></div>');
+  }
+  let step = 1;
+  openBtn.addEventListener('click', () => {
+    if (params.get('external') === '1') return;
+    document.getElementById('modal-root').appendChild(document.getElementById('modal-tpl').content.cloneNode(true));
+    const modal = document.querySelector('.jobs-easy-apply-modal');
+    if (params.get('extra') === '1') {
+      modal.querySelector('#extra-slot').innerHTML = `
+        <div class="fb-dash-form-element" data-test-form-element>
+          <label for="single-line-text-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-299-text">Describe a time you handled a security incident.</label>
+          <input class="artdeco-text-input--input" id="single-line-text-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-299-text" type="text" required value="">
+        </div>`;
+    }
+    const file = modal.querySelector('#jobs-document-upload-file-input-upload-resume');
+    file.addEventListener('change', () => { modal.querySelector('#uploaded-name').textContent = file.files.length ? file.files[0].name : ''; });
+    const next = modal.querySelector('[data-easy-apply-next-button]');
+    const review = modal.querySelector('[data-live-test-easy-apply-review-button]');
+    const submit = modal.querySelector('[data-live-test-easy-apply-submit-button]');
+    const show = () => {
+      modal.querySelectorAll('.step').forEach(s => s.classList.toggle('active', +s.dataset.step === step));
+      modal.querySelector('progress').value = (step - 1) * 33;
+      next.style.display = step < 3 ? '' : 'none';
+      review.style.display = step === 3 ? '' : 'none';
+      submit.style.display = step === 4 ? '' : 'none';
+    };
+    const validate = () => {
+      const cur = modal.querySelector(`.step[data-step="${step}"]`);
+      cur.querySelectorAll('.artdeco-inline-feedback--error').forEach(n => n.remove());
+      let ok = true;
+      cur.querySelectorAll('[required]').forEach(el => {
+        const bad = el.type === 'radio' ? !cur.querySelector(`input[name="${el.name}"]:checked`) : !el.value;
+        if (bad && !el.dataset.flagged) {
+          ok = false;
+          const box = el.closest('.fb-dash-form-element');
+          if (!box.querySelector('.artdeco-inline-feedback--error')) box.insertAdjacentHTML('beforeend', '<div class="artdeco-inline-feedback artdeco-inline-feedback--error" role="alert">Please enter a valid answer</div>');
+        }
+      });
+      return ok;
+    };
+    next.addEventListener('click', () => { if (validate()) { step++; show(); } });
+    review.addEventListener('click', () => { if (validate()) { step = 4; show(); } });
+    modal.querySelector('[data-back]').addEventListener('click', () => { if (step > 1) { step--; show(); } });
+    submit.addEventListener('click', async () => {
+      const data = {};
+      modal.querySelectorAll('input[type=text], select').forEach(el => { data[el.id] = el.value; });
+      modal.querySelectorAll('input[type=radio]:checked').forEach(el => { data[el.name] = el.value; });
+      data.resume = file.files.length ? file.files[0].name : 'Old_Resume.pdf';
+      const res = await fetch('/linkedin/submit', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(data)});
+      if (!res.ok) return;
+      modal.remove();
+      document.getElementById('modal-root').innerHTML = '<div role="dialog" class="artdeco-modal"><h2 id="post-apply-modal">Application sent</h2><p>Your application was sent to Acme!</p></div>';
+    });
+    show();
+  });
+})();
+</script>
+</body>
+</html>
