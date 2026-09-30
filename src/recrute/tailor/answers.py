@@ -533,18 +533,21 @@ def _full_question(q: FormQuestion) -> str:
 _NEGATED_Q = re.compile(r"\b(not|n't|never|unable|without)\b", re.IGNORECASE)
 
 
+_PLAIN_WORK_AUTH = re.compile(
+    r"(are you |is the candidate )?(currently )?(legally )?(authori[sz]ed|eligible|permitted)"
+    r" to (work|be employed)( lawfully)? (in|for employment in|within) (the )?"
+    r"(u\.?s\.?a?|united states( of america)?)"
+    r"( (at this time|currently|today))?", re.IGNORECASE)
+
+
 def work_auth_answer(label: str, wa: WorkAuthorization) -> bool | None:
-    """Only the plain question "Are you (legally) authorized to work in the US?" is answered
-    from the bank. Negated forms, or authorization qualified by sponsorship ("... without
-    sponsorship", "... for any employer"), are left for you: a wrong legal answer is worse than
-    an unanswered one. The label is read raw (qualifiers in parentheses count)."""
-    raw = label.lower()
-    if _NEGATED_Q.search(raw) or re.search(r"sponsor|visa|any employer|h-?1b|opt\b|cpt\b", raw):
-        return None
-    # The bank only knows US authorization: the question must explicitly be about the US.
-    if not re.search(r"\b(u\.?s\.?a?|united states|america)\b", raw) or re.search(
-            r"country (of|in which|where)|countries|canada|kingdom|\buk\b|europe|\beu\b|"
-            r"india|mexico|australia|germany", raw):
+    """Only a plain, unqualified *current* US work-authorization question is answered from
+    the bank ("Are you legally authorized to work in the United States?"). Anything else
+    (indefinitely, permanently, without sponsorship, for any employer, other countries,
+    negations, descriptions adding conditions) is left for you: a wrong legal answer is worse
+    than an unanswered one."""
+    t = " ".join(label.lower().replace("*", " ").split()).rstrip(" ?.:")
+    if not _PLAIN_WORK_AUTH.fullmatch(t):
         return None
     if wa.authorized_to_work_in_us is None:
         return None

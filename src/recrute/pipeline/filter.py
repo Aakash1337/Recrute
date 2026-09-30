@@ -89,6 +89,40 @@ def classify_priority(title: str, description: str, criteria: Criteria) -> Prior
     return None
 
 
+_EXPLICIT_TYPE = re.compile(
+    r"\b(?:this is an?|this is a|the (?:position|role|job) is(?: an?)?|(?:it's|it is) an?)\s+"
+    r"(?P<a>part[- ]time|contract(?:-only)?|temporary|internship|intern)\b"
+    r"|\b(?P<b>part[- ]time|contract(?:-only)?|temporary|fixed[- ]term)\s+"
+    r"(?:position|role|job|opportunity|engagement|assignment|contract)\b"
+    r"|\b(?P<c>\d{1,2})\s*(?:-|to)?\s*\d{0,2}\s*hours?\s*(?:per|a|/)\s*week\b",
+    re.IGNORECASE)
+_NEGATION_BEFORE = re.compile(r"\b(not|no|never|isn't|is not)\s+(?:an?\s+)?$", re.IGNORECASE)
+
+
+def employment_from_description(description: str) -> str | None:
+    """Explicit employment restriction stated in the text, when the source gave no structured
+    type: "This is a part-time position", "contract role", "20 hours per week". Negated
+    mentions ("not a contract role") and full-time postings are ignored."""
+    for m in _EXPLICIT_TYPE.finditer(description or ""):
+        if _NEGATION_BEFORE.search(description[max(0, m.start() - 20):m.start()]):
+            continue
+        if m.group("c"):
+            if int(m.group("c")) < 30:
+                return "part-time"
+            continue
+        word = (m.group("a") or m.group("b") or "").lower()
+        if "part" in word:
+            return "part-time"
+        if "intern" in word:
+            return "internship"
+        # "contract to hire" / conversion language is not contract-only
+        tail = description[m.end():m.end() + 40].lower()
+        if "to hire" in tail or "to perm" in tail or "conversion" in tail:
+            continue
+        return "contract"
+    return None
+
+
 def normalize_employment_type(value: str | None) -> str | None:
     if not value:
         return None
@@ -175,7 +209,7 @@ def apply_hard_filters(job: Job, company_name: str, criteria: Criteria,
     if any(company_name.strip().lower() == c.strip().lower()
            for c in criteria.exclude_companies):
         return drop("company excluded")
-    etype = normalize_employment_type(job.employment_type)
+    etype = normalize_employment_type(job.employment_type) or employment_from_description(desc)
     if etype and criteria.employment_types and etype not in criteria.employment_types:
         return drop(f"employment type: {etype}")
     if not criteria.allow_remote and job.remote == "remote":

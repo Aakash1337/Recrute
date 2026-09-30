@@ -119,3 +119,13 @@ def test_ats_fields():
     assert ats_fields("no links", apply_url="https://acme.com/apply") == {
         "apply_url": "https://acme.com/apply"}
     assert ats_fields("no links") == {}
+
+
+def test_explicit_apply_url_is_never_replaced():
+    from recrute.sources.util import ats_fields
+
+    text = ('Security Engineer: https://boards.greenhouse.io/acme/jobs/111 ; '
+            'Data Engineer: https://acme.example/careers/data-eng')
+    out = ats_fields(text, apply_url="https://acme.example/careers/data-eng")
+    assert out == {"apply_url": "https://acme.example/careers/data-eng"}
+    assert ats_fields(text)["ats"] == "greenhouse"  # only inferred when nothing explicit

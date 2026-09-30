@@ -194,7 +194,10 @@
   for (const el of scope.querySelectorAll('input, textarea, select')) {
     if (used.has(el)) continue;
     const t = (el.getAttribute('type') || el.type || '').toLowerCase();
-    if (['hidden', 'submit', 'button', 'reset', 'image', 'radio', 'checkbox', 'search'].includes(t)) continue;
+    if (['hidden', 'submit', 'button', 'reset', 'image', 'radio', 'checkbox'].includes(t)) continue;
+    // search inputs ARE form fields (typeahead questions); only a widget's own auxiliary
+    // filter box or the site's header/nav search is skipped
+    if (t === 'search' && el.closest('[role="listbox"], [role="menu"], header, nav')) continue;
     if (el.getAttribute('aria-hidden') === 'true' || el.disabled) continue;
     const isFile = t === 'file';
     // file inputs are usually visually hidden; judge them by their wrapper / label instead

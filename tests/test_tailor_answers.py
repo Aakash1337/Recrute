@@ -544,3 +544,15 @@ def test_answer_keys_keep_symbols_apart():
     assert answer_key("Salary >= 100k?") != answer_key("Salary <= 100k?")
     assert answer_key("Expérience en sécurité") != answer_key("Experience en securite")
     assert answer_key("Why security?") == "why_security"  # plain labels stay readable
+
+
+@pytest.mark.parametrize("label", [
+    "Are you legally authorized to work in the United States indefinitely?",
+    "Are you permanently authorized to work in the US?",
+    "Are you authorized to work in the United States on an unrestricted basis?",
+])
+def test_qualified_authorization_left_for_user(label):
+    from recrute.tailor.answers import WorkAuthorization, work_auth_answer
+
+    wa = WorkAuthorization(authorized_to_work_in_us=True, requires_sponsorship_future=True)
+    assert work_auth_answer(label, wa) is None

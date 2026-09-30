@@ -203,6 +203,19 @@ _EXPORT_REQ = re.compile(r"\b(?:must|required|requires?|requirement|subject to|o
                          r"condition|necessary|mandatory)\b", re.I)
 
 
+_APPLICANT_RESTRICTION = re.compile(
+    r"\b(?:applicants?|candidates?|you|employees?|hires?)\s+(?:must|will need to|need to|are "
+    r"required to|shall)\b"
+    r"|\b(?:position|role|job|work)\s+(?:requires|is subject to|will require|involves access)\b"
+    r"|\baccess to (?:export[- ]controlled|itar[- ]controlled|controlled|technical data|"
+    r"defense articles)\b"
+    r"|\b(?:must|required to) (?:be|qualify|meet|obtain)\b|\beligib\w+ (?:to|for) (?:access|"
+    r"receive|export)\b|\brestricted to\b|\bonly (?:u\.?s\.?|us) (?:persons?|citizens?)\b"
+    r"|\bsubject to (?:u\.?s\.? )?(?:export|itar|ear) (?:controls? )?(?:restrictions|"
+    r"requirements|licens\w+)\b",
+    re.I)
+
+
 def _clauses(sentence: str) -> list[str]:
     return [c for c in _CLAUSE_SPLIT.split(sentence) if c and c.strip()]
 
@@ -293,11 +306,12 @@ def _itar_required(s: str) -> bool:
         return False
     if has_person:
         return _mention_required(s, _US_PERSON) or bool(_EXPORT_REQ.search(s))
-    # Export-control mention without "U.S. person": a requirement, not a skill ("knowledge of
-    # ITAR regulations" in a trade-compliance posting is a qualification, not a restriction).
-    if _EXPORT_SKILL.search(s):
+    # Export-control mention without "U.S. person": only an explicit restriction on the
+    # APPLICANT counts. Skills ("knowledge of ITAR"), job duties ("ensure compliance with EAR")
+    # and corporate policy ("we comply with export controls") are not eligibility rules.
+    if _EXPORT_SKILL.search(s) and not _APPLICANT_RESTRICTION.search(s):
         return False
-    return bool(_EXPORT_REQ.search(s))
+    return bool(_APPLICANT_RESTRICTION.search(s))
 
 
 def eligibility_flags(text: str | None) -> set[str]:

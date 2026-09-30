@@ -167,6 +167,58 @@ def discover_search(ctx) -> dict:
     return out
 
 
+class _GuardStop(Exception):
+    pass
+
+
+class GuardedPage:
+    """Wraps the automation page: every navigation first re-checks (with fresh DB state) the
+    LinkedIn kill switch and active hours, so a suspension set by the apply thread while
+    discovery waited for the browser stops it before it touches LinkedIn again."""
+
+    def __init__(self, page, guard):
+        self._page, self._guard = page, guard
+
+    def goto(self, url, *args, **kwargs):
+        if reason := self._guard():
+            raise _GuardStop(reason)
+        return self._page.goto(url, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._page, name)
+
+
+def linkedin_guard(ctx) -> str | None:
+    from recrute.apply.state import suspension
+
+    with ctx.session() as s:
+        now = datetime.now(UTC)
+        state = get_state(s, "linkedin_session", {}) or {}
+        if state.get("blocked_until") and datetime.fromisoformat(state["blocked_until"]) > now:
+            return "LinkedIn browsing is blocked"
+        if suspension(s, LINKEDIN_CHANNEL, now) is not None:
+            return "LinkedIn applying is suspended"
+        start, end = (int(h) for h in get_setting(s, "active_hours"))
+        if not start <= datetime.now().hour < end:
+            return "outside active hours"
+    return None
+
+
+def _guarded_page_factory(ctx):
+    from contextlib import contextmanager
+
+    from recrute.browser.runtime import open_context
+
+    @contextmanager
+    def factory():
+        with open_context(ctx.config.browser, ctx.paths, headless=False) as bctx:
+            # the lock is ours now: re-check before the first navigation too
+            page = bctx.pages[0] if bctx.pages else bctx.new_page()
+            yield GuardedPage(page, lambda: linkedin_guard(ctx))
+
+    return factory
+
+
 def discover_linkedin(ctx) -> dict:
     """Logged-in, read-only LinkedIn browsing with a persisted daily budget, seen-ID cache and
     kill-switch backoff (PLAN 3.2 Tier 3). Off unless enabled in Settings."""
@@ -195,14 +247,19 @@ def discover_linkedin(ctx) -> dict:
                                searches_used=state["searches"], views_used=state["views"])
         seen = set(state.get("seen_ids", []))
         hours = get_setting(s, "active_hours")
+        kwargs = {}
+        if getattr(ctx, "config", None) is not None:
+            kwargs["page_factory"] = _guarded_page_factory(ctx)
         src = LinkedInSessionSource(budget=budget, seen_ids=seen,
-                                    active_hours=(int(hours[0]), int(hours[1])))
+                                    active_hours=(int(hours[0]), int(hours[1])), **kwargs)
         sctx = SourceContext(http=Http(), criteria=ctx.criteria, router=ctx.router)
         found = []
         result: dict = {}
         try:
             for raw in src.fetch(sctx):
                 found.append(raw)
+        except _GuardStop as e:
+            result["stopped"] = str(e)  # quiet stop: someone else already raised the alarm
         except SourceBlocked as e:
             until = now + e.backoff
             state.update(blocked_until=until.isoformat(), block_reason=e.reason)

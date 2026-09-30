@@ -269,7 +269,12 @@ def keyword_regex(keywords: list[str]) -> re.Pattern[str]:
 def ats_fields(*texts: str | None, apply_url: str | None = None) -> dict[str, str | None]:
     """RawJob kwargs (apply_url/ats/ats_token/ats_job_id) from an explicit apply URL or the first
     known-ATS link found in the given HTML/text. Empty dict when nothing is recognized."""
-    if apply_url and (ref := parse_ats_url(apply_url)):
+    if apply_url:
+        # an explicit application URL is authoritative, even on an ATS we don't know: another
+        # link in the text may belong to a different role (e.g. a multi-role HN comment)
+        ref = parse_ats_url(apply_url)
+        if ref is None:
+            return {"apply_url": apply_url}
         return {"apply_url": apply_url, "ats": ref.ats, "ats_token": ref.token,
                 "ats_job_id": ref.job_id}
     for t in texts:

@@ -558,3 +558,17 @@ def test_url_change_does_not_close_present_job(engine):
         assert closed == 0
         s.refresh(job)
         assert job.status != JobStatus.CLOSED
+
+
+@pytest.mark.parametrize("desc,dropped", [
+    ("This is a part-time position, 20 hours per week.", True),
+    ("A 6-month contract role supporting the SOC.", True),
+    ("Expect about 15 hours per week.", True),
+    ("This is not a contract role; it is full-time.", False),
+    ("Full-time, 40 hours per week.", False),
+    ("Contract to hire role with conversion after 6 months.", False),
+])
+def test_employment_type_from_description(desc, dropped):
+    r = apply_hard_filters(_job(employment_type=None, description_md=desc), "Acme", Criteria(),
+                           NO_ELIG)
+    assert (not r.keep) is dropped

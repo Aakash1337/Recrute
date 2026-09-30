@@ -837,3 +837,22 @@ def test_extract_fields_reads_descriptions(context):
     assert "sponsorship" in fields["wa"].description.lower()
     assert "passport" in fields["n"].description.lower()
     page.close()
+
+
+@pytest.mark.browser
+def test_required_search_field_with_unapproved_value_is_seen(context):
+    from recrute.apply import dom
+    from recrute.apply.base import coverage_check
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <label for="n">Name</label><input id="n" name="n" required value="Ada">
+      <label for="school">School</label>
+      <input type="search" id="school" name="school" required value="Saved University">
+      <header><input type="search" name="site_search" aria-label="Search jobs"></header>
+    </form>""")
+    fields = {f.id: f for f in dom.extract_fields(page)}
+    assert "school" in fields and "site_search" not in fields
+    packet = Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")])
+    assert "school" in coverage_check(list(fields.values()), packet)  # -> CP3
+    page.close()

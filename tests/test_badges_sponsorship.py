@@ -314,3 +314,16 @@ def test_clearance_mixed_clauses(text, expected):
     from recrute.badges import eligibility_flags
 
     assert ("clearance_required" in eligibility_flags(text)) is expected
+
+
+@pytest.mark.parametrize("text,flagged", [
+    ("You will ensure compliance with EAR export control regulations.", False),
+    ("We comply with all applicable export controls.", False),
+    ("Knowledge of ITAR regulations is a plus.", False),
+    ("This position requires access to export-controlled technical data.", True),
+    ("Applicants must be eligible to access information subject to ITAR.", True),
+])
+def test_export_duties_vs_restrictions(text, flagged):
+    from recrute.badges import eligibility_flags
+
+    assert ("itar_us_person" in eligibility_flags(text)) is flagged

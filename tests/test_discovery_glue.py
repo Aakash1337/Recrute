@@ -205,3 +205,31 @@ def test_delayed_feed_window(engine, monkeypatch):
     monkeypatch.setattr(discovery, "Http", lambda **kw: FakeHttp({}))
     discovery.discover_search(_ctx(engine))
     assert seen["since"] <= last - timedelta(hours=24)
+
+
+def test_guarded_page_stops_after_concurrent_suspension(engine):
+    from datetime import UTC, datetime
+
+    from recrute.apply.state import suspend
+
+    ctx = _ctx(engine)
+    visits = []
+
+    class Page:
+        def goto(self, url, **kw):
+            visits.append(url)
+
+    page = discovery.GuardedPage(Page(), lambda: discovery.linkedin_guard(ctx))
+    with Session(engine) as s:
+        from recrute.settings import set_setting
+
+        set_setting(s, "active_hours", [0, 24])
+    page.goto("https://www.linkedin.com/jobs/search?1")
+    with Session(engine) as s:  # the apply thread hits a checkpoint meanwhile
+        suspend(s, "linkedin_easy_apply", datetime.now(UTC), "captcha")
+        s.commit()
+    import pytest
+
+    with pytest.raises(discovery._GuardStop):
+        page.goto("https://www.linkedin.com/jobs/search?2")
+    assert visits == ["https://www.linkedin.com/jobs/search?1"]

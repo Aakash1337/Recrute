@@ -320,7 +320,7 @@ def parse_static_form(html: str, *, scope: str | None = None) -> list[FormQuesti
     done: set[str] = set()
     for el in root.find_all(["input", "textarea", "select"]):
         t = (el.get("type") or "text").lower() if el.name == "input" else el.name
-        if t in ("hidden", "submit", "button", "reset", "image", "search"):
+        if t in ("hidden", "submit", "button", "reset", "image"):
             continue
         key = str(el.get("name") or el.get("id") or "")
         if not key or key in done:
