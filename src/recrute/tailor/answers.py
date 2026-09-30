@@ -128,9 +128,12 @@ def answer_key(label: str) -> str:
     import hashlib
 
     full = _full_key(label)
-    if len(full) <= 60:
+    # symbols the slug would drop can change the question (C++ vs C#, >= vs <=), and so can
+    # non-ASCII text: those keys carry a digest of the exact wording
+    if len(full) <= 60 and not re.search(r"[+#<>=%$&/@*]|[^\x00-\x7f]", label):
         return full
-    return f"{full[:51]}_{hashlib.sha1(full.encode()).hexdigest()[:8]}"
+    exact = " ".join(label.lower().split())
+    return f"{full[:51]}_{hashlib.sha1(exact.encode()).hexdigest()[:8]}"
 
 
 @contextmanager
@@ -564,6 +567,9 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
             return bank.logistics.notice_period or None
         case "salary":
             full = f"{q.label} {q.description}".lower()
+            if re.search(r"\b(current|previous|prior|past|last|present|history|historical|"
+                         r"most recent|were you|was your|did you|earn(ed|ing)?)\b", full):
+                return None  # salary HISTORY: the bank only holds preferences; never invent it
             if re.search(r"hour|hourly|/\s*hr\b|per hr|month|monthly|week|weekly|daily|per day",
                          full) or re.search(r"\b(eur|gbp|cad|inr|aud|€|£|₹)", full):
                 return None  # our ranges are annual USD: never convert silently; you answer

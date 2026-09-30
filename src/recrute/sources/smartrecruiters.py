@@ -115,7 +115,10 @@ class SmartRecruitersSource(BoardSource):
             if self.country:
                 url += f"&country={self.country}"
             data = ctx.http.get_json(url)
-            content = data.get("content") or []
+            if not isinstance(data, dict) or not isinstance(data.get("content"), list):
+                # a 200 without a posting list is a failed poll, never an empty board
+                raise ValueError("malformed smartrecruiters board response")
+            content = data["content"]
             postings += content
             if len(content) < PAGE or len(postings) >= (data.get("totalFound") or 0):
                 complete = True

@@ -213,7 +213,8 @@ class GenericAdapter(BaseAdapter):
                         if isinstance(a.value, str) and a.value in files}
         report = fill_fields(page, [f for f in fields if f.type != "file" or
                                     derived.answer_for(f.id) is not None],
-                             derived, mapped_files, human)
+                             derived, mapped_files, human,
+                             blocker_check=lambda: self.detect_blockers(page))
         report.unmatched = coverage_check(fields, derived, files={})
         report.notes.append("generic filler: low confidence, always handed to the human")
         report.ready_to_submit = False

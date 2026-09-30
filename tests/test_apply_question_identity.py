@@ -166,3 +166,50 @@ def test_added_description_is_a_change():
     a = q("Please describe your experience", "textarea", ())
     b = a.model_copy(update={"description": "Professional experience with Kubernetes"})
     assert not same_question(a, b)
+
+
+def test_changed_upload_question_is_not_covered(tmp_path):
+    from recrute.apply.base import file_for, question_covered
+
+    approved = FormQuestion(id="resume", label="Resume", type="file", required=True)
+    packet = Packet(job_id=1, questions=[approved], resume_pdf="r.pdf")
+    files = {"resume": tmp_path / "r.pdf"}
+    changed = approved.model_copy(update={"description": "Include your salary history"})
+    assert not question_covered(changed, packet, files=files)
+    assert file_for(changed, packet, files) is None
+    assert question_covered(approved, packet, files=files)
+    assert file_for(approved, packet, files) == files["resume"]
+
+
+def test_fill_stops_before_next_field_when_challenge_appears(tmp_path):
+    from recrute.apply import widgets
+    from recrute.apply.base import LiveField
+
+    touched = []
+    fields = [LiveField(id=f"f{i}", label=f"Field {i}", type="text", selector=f"#f{i}")
+              for i in range(3)]
+    packet = Packet(job_id=1, questions=[FormQuestion(id=f.id, label=f.label) for f in fields],
+                    answers=[FormAnswer(question_id=f.id, value="x") for f in fields])
+    orig = widgets.fill_one if hasattr(widgets, "fill_one") else None
+    state = {"n": 0}
+
+    def check():
+        return "captcha" if state["n"] >= 1 else None
+
+    def fake_fill(root, f, value, human, *a, **k):
+        touched.append(f.id)
+        state["n"] += 1
+        return value
+
+    import pytest as _pytest
+
+    names = [n for n in ("fill_one", "fill_value", "fill_field") if hasattr(widgets, n)]
+    if not names:
+        _pytest.skip("no single-field filler to patch")
+    setattr(widgets, names[0], fake_fill)
+    try:
+        report = widgets.fill_fields(None, fields, packet, {}, human=None, blocker_check=check)
+    finally:
+        if orig is not None:
+            setattr(widgets, names[0], orig)
+    assert report.blocker == "captcha" and touched == ["f0"]

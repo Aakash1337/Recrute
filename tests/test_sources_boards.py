@@ -252,3 +252,18 @@ def test_malformed_board_is_an_error_not_an_empty_board(payload):
                         companies=[CompanyRef(name="Acme", ats="greenhouse", ats_token="acme")])
     assert list(GreenhouseSource().fetch(ctx)) == []
     assert "greenhouse:acme" in ctx.errors  # -> poll error, and no closure
+
+
+def test_malformed_smartrecruiters_page_is_an_error():
+    from recrute.criteria import Criteria
+    from recrute.sources.base import CompanyRef, SourceContext
+    from recrute.sources.smartrecruiters import SmartRecruitersSource
+
+    class Http:
+        def get_json(self, url):
+            return {"error": "temporarily unavailable"}
+
+    ctx = SourceContext(http=Http(), criteria=Criteria(), companies=[
+        CompanyRef(name="Acme", ats="smartrecruiters", ats_token="acme")])
+    assert list(SmartRecruitersSource().fetch(ctx)) == []
+    assert "smartrecruiters:acme" in ctx.errors

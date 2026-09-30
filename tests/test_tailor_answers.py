@@ -520,3 +520,27 @@ def test_bank_answer_bound_to_description():
     assert match_question(py, bank).value == "Python!"
     other = match_question(k8s, bank)
     assert other is None or other.value != "Python!" or other.needs_review
+
+
+@pytest.mark.parametrize("label", ["What is your current salary?",
+                                   "What was your previous salary?",
+                                   "Salary history"])
+def test_salary_history_never_filled_from_preferences(label):
+    from recrute.schemas import FormQuestion
+    from recrute.tailor.answers import AnswerBank, match_question
+
+    bank = AnswerBank.model_validate({"salary": {"ranges_usd": {"P1": [90000, 110000]},
+                                                 "free_text": "Negotiable"}})
+    for qtype in ("number", "text"):
+        a = match_question(FormQuestion(id="s", label=label, type=qtype), bank, priority="P1")
+        assert a is None or a.value in (None, "")
+
+
+def test_answer_keys_keep_symbols_apart():
+    from recrute.tailor.answers import answer_key
+
+    assert answer_key("Describe your experience with C++") != \
+        answer_key("Describe your experience with C#")
+    assert answer_key("Salary >= 100k?") != answer_key("Salary <= 100k?")
+    assert answer_key("Expérience en sécurité") != answer_key("Experience en securite")
+    assert answer_key("Why security?") == "why_security"  # plain labels stay readable

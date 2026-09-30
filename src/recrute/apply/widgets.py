@@ -8,7 +8,7 @@ reported as failed and the application goes to the human.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -276,12 +276,18 @@ def clear_field(root: Page | Frame, f: LiveField, human: Human) -> None:
 def fill_fields(root: Page | Frame, fields: Sequence[LiveField], packet: Packet,
                 files: Mapping[str, Path], human: Human, *,
                 aliases: Mapping[str, Sequence[str]] = {}, accept_prefilled: bool = False,
-                ) -> FillReport:
+                blocker_check: Callable[[], str | None] | None = None) -> FillReport:
     """Fill every live field that has an approved answer. Fields without one are left empty:
     an unapproved value already there is cleared (or, if that isn't safe, reported as failed so
     the run pauses at CP3). Only allowlisted contact fields may keep a site prefill."""
     report = FillReport()
     for f in fields:
+        # kill switch: a CAPTCHA/checkpoint that appears mid-form stops ALL further interaction
+        # before the next field is touched
+        if blocker_check is not None and (blocker := blocker_check()):
+            report.blocker = blocker
+            report.notes.append(f"blocker appeared while filling: {blocker}")
+            break
         report.labels[f.id] = f.label
         try:
             if f.widget == "file":

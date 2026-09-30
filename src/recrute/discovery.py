@@ -60,8 +60,9 @@ def poll_company(session: Session, http: Http, ctx, company: Company) -> dict:
     if sctx.incomplete:  # partial listing: absence proves nothing
         stats["closed"] = 0
     else:
-        stats["closed"] = mark_missing_closed(session, company.ats, company.id,
-                                              {r.url for r in raws})
+        stats["closed"] = mark_missing_closed(
+            session, company.ats, company.id, {r.url for r in raws},
+            {r.ats_job_id for r in raws if r.ats_job_id})
     return stats
 
 

@@ -542,3 +542,19 @@ def test_years_conjunction_vs_alternatives():
                           "experience") == 10
     assert years_required("5 years of experience with a BS or 3 years of experience with an "
                           "MS") == 3
+
+
+def test_url_change_does_not_close_present_job(engine):
+    with Session(engine) as s:
+        ingest(s, [raw(source="smartrecruiters", ats="smartrecruiters", ats_token="acme",
+                       ats_job_id="77", url="https://jobs.smartrecruiters.com/acme/77-soc")])
+        ingest(s, [raw(source="smartrecruiters", ats="smartrecruiters", ats_token="acme",
+                       ats_job_id="77", url="https://jobs.smartrecruiters.com/acme/77")])
+        job = s.exec(select(Job)).one()
+        from recrute.pipeline.ingest import mark_missing_closed
+
+        closed = mark_missing_closed(s, "smartrecruiters", job.company_id,
+                                     {"https://jobs.smartrecruiters.com/acme/77"}, {"77"})
+        assert closed == 0
+        s.refresh(job)
+        assert job.status != JobStatus.CLOSED

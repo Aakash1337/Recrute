@@ -295,7 +295,7 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
 
 
 def mark_missing_closed(session: Session, source: str, company_id: int,
-                        seen_urls: set[str]) -> int:
+                        seen_urls: set[str], seen_ids: set[str] | None = None) -> int:
     """After a successful full poll of one company's board, jobs from that board that
     disappeared are closed (only while not yet applied). Conditional updates: a status change a
     human made after this poll read the job (e.g. marking it applied) is never overwritten."""
@@ -307,8 +307,16 @@ def mark_missing_closed(session: Session, source: str, company_id: int,
     now = utcnow()
     rows = session.exec(select(Job, JobSource).join(JobSource, JobSource.job_id == Job.id).where(
         Job.company_id == company_id, JobSource.source == source)).all()
+    # presence is decided per JOB: a posting whose URL changed still has its old source row, so
+    # it's present if ANY of its identities (source URLs, ATS job id) is in the snapshot
+    by_job: dict[int, tuple[Job, list[str]]] = {}
     for job, src in rows:
-        if src.url in seen_urls or job.closed_at is not None:
+        by_job.setdefault(job.id, (job, []))[1].append(src.url)
+    seen_ids = seen_ids or set()
+    for job, urls in by_job.values():
+        present = any(u in seen_urls for u in urls) or (
+            job.ats_job_id is not None and job.ats_job_id in seen_ids)
+        if present or job.closed_at is not None:
             continue
         res = session.execute(
             update(Job).where(Job.id == job.id, col(Job.status).in_(open_states),

@@ -203,6 +203,11 @@ def same_question(approved: FormQuestion, live: FormQuestion) -> bool:
         if not ok:
             return False
     a, b = dom.norm(approved.label), dom.norm(live.label)
+    if fa == fl == "file" and (_GENERIC_UPLOAD.fullmatch(b) or _GENERIC_UPLOAD.fullmatch(a)):
+        # upload widgets often expose only their button text ("Attach"); the field is identified
+        # by its id, and any instructions must still match
+        return _same_description(approved.description, live.description) or (
+            not live.description)
     if not _same_description(approved.description, live.description):
         # The one tolerated case: the live page shows NO description (the extractor can miss
         # help text rendered away from the field) while the label is exactly the approved one.
@@ -224,6 +229,9 @@ def same_question(approved: FormQuestion, live: FormQuestion) -> bool:
     return set(ta) ^ set(tb) <= _COSMETIC and \
         [t for t in ta if t not in _COSMETIC] == [t for t in tb if t not in _COSMETIC]
 
+
+_GENERIC_UPLOAD = re.compile(r"(attach|upload|choose( a)? file|browse|select file|add file|"
+                             r"drop files? here|drag and drop|enter manually)( file)?")
 
 # Symbols that change meaning (C++ vs C#, >= vs <=, .NET) are part of a question's identity.
 _MEANINGFUL = "+#<>=.%$/&"
@@ -275,6 +283,8 @@ def file_for(q: FormQuestion, packet: Packet, files: Mapping[str, Path],
              aliases: Mapping[str, Sequence[str]] = {}) -> Path | None:
     """File to upload for a file question: an explicit packet answer naming a role/path wins,
     otherwise the role inferred from the label (resume / cover letter)."""
+    if identity_changed(q, packet, aliases):
+        return None
     a = resolve_answer(q, packet, aliases)
     if a is not None and has_value(a) and isinstance(a.value, str):
         v = a.value.strip()
@@ -285,7 +295,7 @@ def file_for(q: FormQuestion, packet: Packet, files: Mapping[str, Path],
     role = file_role(q)
     if a is not None and a.value is False:
         return None
-    if role and role in files:
+    if role and role in files and (a is not None or _implicit_upload_ok(q)):
         return files[role]
     return None
 
@@ -299,14 +309,38 @@ def _packet_file_roles(packet: Packet) -> set[str]:
     return roles
 
 
+def identity_changed(q: FormQuestion, packet: Packet,
+                     aliases: Mapping[str, Sequence[str]] = {}) -> bool:
+    """True when the live field corresponds to an approved question (same id/alias, or same
+    label) that no longer asks the same thing. Such a field must never fall back to any other
+    kind of match (e.g. an inferred resume upload): it goes to CP3."""
+    by_id = {pq.id: pq for pq in packet.questions}
+    for qid in (q.id, *aliases.get(q.id, ())):
+        if qid in by_id and not same_question(by_id[qid], q):
+            return True
+    want = dom.norm(q.label)
+    return bool(want) and any(dom.norm(pq.label) == want and not same_question(pq, q)
+                              for pq in packet.questions)
+
+
+def _implicit_upload_ok(q: FormQuestion) -> bool:
+    """An upload may be matched by role (resume / cover letter) only when it's a plain request:
+    extra instructions (e.g. "include your salary history") need you."""
+    return not (q.description or "").strip()
+
+
 def question_covered(q: FormQuestion, packet: Packet, *,
                      aliases: Mapping[str, Sequence[str]] = {},
                      accept_prefilled: bool = False,
                      files: Mapping[str, Path] | None = None) -> bool:
     if q.type == "file":
+        if identity_changed(q, packet, aliases):
+            return False
         a = resolve_answer(q, packet, aliases)
         if a is not None and has_value(a) and a.value is not False:
             return True
+        if not _implicit_upload_ok(q):
+            return False
         role = file_role(q)
         roles = set(files) if files is not None else _packet_file_roles(packet)
         return role in roles
@@ -567,7 +601,10 @@ class BaseAdapter:
                 report.notes.append(f"pass {i + 1}: newly revealed {[f.id for f in fields]}")
             seen |= {f.id for f in fields}
             report.merge(fill_fields(root, fields, packet, files, human, aliases=self.aliases,
-                                     accept_prefilled=self.accept_prefilled))
+                                     accept_prefilled=self.accept_prefilled,
+                                     blocker_check=lambda: self.detect_blockers(page)))
+            if report.blocker:
+                break
             # a challenge can pop up while typing (behavioural scoring): stop right there
             if blocker := self.detect_blockers(page):
                 report.blocker = blocker
