@@ -1,0 +1,14 @@
+From: "Neural Widgets Talent" <talent@neuralwidgets.example>
+To: candidate@example.test
+Subject: Update on your application
+Date: Fri, 18 Sep 2026 09:00:00 +0000
+Message-ID: <rej-002@neuralwidgets.example>
+MIME-Version: 1.0
+Content-Type: text/html; charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+<html><head><style>p{color:red}</style></head><body>
+<p>Dear Alex,</p>
+<p>Thank you for your interest in the ML Engineer position at Neural Widgets. After careful review, we have decided to move forward with other candidates.</p>
+<p>Caf=E9 chats are always welcome.<br>The Neural Widgets team</p>
+</body></html>

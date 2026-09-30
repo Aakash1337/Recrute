@@ -1,0 +1,17 @@
+From: Deals Weekly <news@deals.example>
+To: candidate@example.test
+Subject: 50% off headphones this weekend
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mix"
+
+--mix
+Content-Type: text/plain; charset="x-unknown-charset"
+
+Big savings on audio gear. Unsubscribe any time.
+--mix
+Content-Type: application/pdf; name="flyer.pdf"
+Content-Disposition: attachment; filename="flyer.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQK
+--mix--

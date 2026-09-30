@@ -1,0 +1,22 @@
+From: Glassdoor Jobs <noreply@glassdoor.com>
+To: candidate@example.test
+Subject: Data Analyst jobs you may be interested in
+Date: Mon, 28 Sep 2026 16:00:00 +0000
+Message-ID: <alert-gd-001@glassdoor.com>
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+
+<html><body>
+<div class="job">
+  <a href="https://www.glassdoor.com/partner/jobListing.htm?pos=101&amp;jobListingId=1009876543210&amp;utm=x"><img alt="logo" src="l.png"></a>
+  <div>Fabrikam 4.1 ★</div>
+  <a href="https://www.glassdoor.com/partner/jobListing.htm?pos=101&amp;jobListingId=1009876543210&amp;utm=x">Data Analyst</a>
+  <div>Chicago, IL</div>
+  <div>$65K - $80K (Employer est.)</div>
+</div>
+<div class="job">
+  <div>Northwind Traders</div>
+  <a href="https://www.glassdoor.com/job-listing/bi-analyst-northwind-JV_IC1_KO0,10_KE11,20.htm?jl=1009876543299">BI Analyst</a>
+  <div>Remote</div>
+</div>
+</body></html>

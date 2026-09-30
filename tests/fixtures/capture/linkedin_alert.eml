@@ -1,0 +1,88 @@
+From: LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>
+To: candidate@example.test
+Subject: "security analyst": Acme Security - SOC Analyst and more
+Date: Mon, 28 Sep 2026 13:05:00 +0000
+Message-ID: <alert-li-001@linkedin.com>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="alt"
+
+--alt
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Your job alert for security analyst in United States
+3 new jobs match your preferences.
+
+SOC Analyst
+Acme Security
+New York, NY (Hybrid)
+View job: https://www.linkedin.com/comm/jobs/view/4012345678/?trackingId=abc%3D%3D&refId=xyz&lipi=urn
+
+---------------------------------------------------------
+
+Detection Engineer
+Neural Widgets
+United States (Remote)
+View job: https://www.linkedin.com/comm/jobs/view/4012345679/?trackingId=def
+
+---------------------------------------------------------
+
+Cloud Security Engineer
+Big Cloud Co
+Seattle, WA
+View job: https://www.linkedin.com/comm/jobs/view/4012345680/?trackingId=ghi
+
+---------------------------------------------------------
+
+See all jobs: https://www.linkedin.com/comm/jobs/search?keywords=security%20analyst
+Unsubscribe: https://www.linkedin.com/comm/psettings/email-unsubscribe?x=1
+--alt
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+<html><head><style>.x{color:#000}</style></head><body>
+<table role="presentation" width="100%"><tr><td>
+  <table role="presentation"><tr><td>
+    <h2>Your job alert for <b>security analyst</b> in United States</h2>
+    <p>3 new jobs match your preferences.</p>
+  </td></tr></table>
+  <table role="presentation" class="jobs">
+    <tr><td>
+      <table role="presentation"><tr>
+        <td><a href="https://www.linkedin.com/comm/company/111/?trk=logo"><img alt="Acme Security" src="https://media.licdn.com/logo1.png"></a></td>
+        <td>
+          <a href="https://www.linkedin.com/comm/jobs/view/4012345678/?trackingId=abc%3D%3D&amp;refId=xyz">SOC Analyst</a>
+          <p>Acme Security &middot; New York, NY (Hybrid)</p>
+          <p>$85K-$110K / year</p>
+          <p>Actively recruiting</p>
+          <p>3 school alumni</p>
+          <a href="https://www.linkedin.com/comm/jobs/view/4012345678/?trackingId=abc&amp;cta=view">View job</a>
+        </td>
+      </tr></table>
+    </td></tr>
+    <tr><td>
+      <table role="presentation"><tr>
+        <td><img alt="Neural Widgets" src="https://media.licdn.com/logo2.png"></td>
+        <td>
+          <a href="https://www.linkedin.com/comm/jobs/view/4012345679/?trackingId=def">Detection Engineer</a>
+          <p>Neural Widgets &middot; United States (Remote)</p>
+          <p>Easy Apply</p>
+          <p>Be an early applicant</p>
+        </td>
+      </tr></table>
+    </td></tr>
+    <tr><td>
+      <table role="presentation"><tr>
+        <td>
+          <a href="https://www.linkedin.com/comm/jobs/view/4012345680/?trackingId=ghi">Cloud Security Engineer</a>
+          <p>Big Cloud Co &middot; Seattle, WA</p>
+          <p>Promoted</p>
+        </td>
+      </tr></table>
+    </td></tr>
+  </table>
+  <p><a href="https://www.linkedin.com/comm/jobs/search?keywords=security%20analyst">See all jobs</a></p>
+  <p>You are receiving Job Alert emails. <a href="https://www.linkedin.com/comm/psettings/email-unsubscribe?x=1">Unsubscribe</a></p>
+</td></tr></table>
+</body></html>
+--alt--
