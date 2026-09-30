@@ -257,11 +257,12 @@ def resolve_answer(q: FormQuestion, packet: Packet, aliases: Mapping[str, Sequen
             return a
     want = dom.norm(q.label)
     if want:
-        for pq in packet.questions:
-            if dom.norm(pq.label) == want:
-                a = packet.answer_for(pq.id)
-                if a is not None:
-                    return a
+        # label fallback (the site changed a field's id): the approved question must still be
+        # the same question in every respect, and the match must be unambiguous
+        hits = [pq for pq in packet.questions
+                if dom.norm(pq.label) == want and packet.answer_for(pq.id) is not None]
+        if len(hits) == 1 and same_question(hits[0], q):
+            return packet.answer_for(hits[0].id)
     return None
 
 

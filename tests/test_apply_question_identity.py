@@ -128,3 +128,26 @@ def test_location_fields_are_not_interchangeable(approved, live):
 def test_word_order_matters():
     assert not same_question(q("Years of Python over Java", "text", ()),
                              q("Years of Java over Python", "text", ()))
+
+
+def test_label_fallback_requires_same_question():
+    approved = FormQuestion(id="old_id", label="Work authorization", type="select",
+                            options=["Yes", "No"], description="Authorized to work in the US?")
+    packet = Packet(job_id=1, questions=[approved],
+                    answers=[FormAnswer(question_id="old_id", value="Yes")])
+    changed = approved.model_copy(update={"id": "new_id",
+                                          "description": "Authorized to work in Canada?"})
+    assert resolve_answer(changed, packet) is None
+    same = approved.model_copy(update={"id": "new_id"})
+    assert resolve_answer(same, packet).value == "Yes"
+    ambiguous = Packet(job_id=1, questions=[approved, approved.model_copy(update={"id": "x"})],
+                       answers=[FormAnswer(question_id="old_id", value="Yes"),
+                                FormAnswer(question_id="x", value="No")])
+    assert resolve_answer(same, ambiguous) is None
+
+
+def test_new_condition_in_live_description_is_a_new_question():
+    approved = FormQuestion(id="wa", label="Are you authorized to work in the US?",
+                            type="select", options=["Yes", "No"])
+    live = approved.model_copy(update={"description": "Without employer sponsorship"})
+    assert not same_question(approved, live)

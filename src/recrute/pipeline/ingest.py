@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from recrute.models import Company, Job, JobSource, JobStatus, StatusEvent, utcnow
 from recrute.pipeline.normalize import (
@@ -275,21 +275,31 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
 def mark_missing_closed(session: Session, source: str, company_id: int,
                         seen_urls: set[str]) -> int:
     """After a successful full poll of one company's board, jobs from that board that
-    disappeared are closed (only while not yet applied)."""
-    open_states = {JobStatus.DISCOVERED, JobStatus.SHORTLISTED, JobStatus.SNOOZED,
-                   JobStatus.PACKET_READY, JobStatus.FILTERED_OUT}
+    disappeared are closed (only while not yet applied). Conditional updates: a status change a
+    human made after this poll read the job (e.g. marking it applied) is never overwritten."""
+    from sqlalchemy import update
+
+    open_states = [JobStatus.DISCOVERED, JobStatus.SHORTLISTED, JobStatus.SNOOZED,
+                   JobStatus.PACKET_READY, JobStatus.FILTERED_OUT]
     closed = 0
+    now = utcnow()
     rows = session.exec(select(Job, JobSource).join(JobSource, JobSource.job_id == Job.id).where(
         Job.company_id == company_id, JobSource.source == source)).all()
     for job, src in rows:
         if src.url in seen_urls or job.closed_at is not None:
             continue
-        job.closed_at = utcnow()
-        if job.status in open_states:
-            job.status = JobStatus.CLOSED
+        res = session.execute(
+            update(Job).where(Job.id == job.id, col(Job.status).in_(open_states),
+                              col(Job.closed_at).is_(None))
+            .values(status=JobStatus.CLOSED, closed_at=now)
+            .execution_options(synchronize_session=False))
+        if res.rowcount == 1:
             session.add(StatusEvent(job_id=job.id, status=JobStatus.CLOSED,
                                     note="posting removed from board"))
-        session.add(job)
-        closed += 1
+            closed += 1
+        else:  # already applied/in flight: just remember the posting is gone
+            session.execute(update(Job).where(Job.id == job.id, col(Job.closed_at).is_(None))
+                            .values(closed_at=now).execution_options(synchronize_session=False))
     session.commit()
+    session.expire_all()
     return closed

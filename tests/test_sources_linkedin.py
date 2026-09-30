@@ -449,3 +449,29 @@ def test_session_button_fallback_ignores_buttons_outside_top_card():
     html = html.replace("</main>", '<aside class="similar"><button class="jobs-apply-button" '
                         'aria-label="Easy Apply to other job">Easy Apply</button></aside></main>')
     assert ls.parse_job_view(html, "4100000001").easy_apply is None
+
+
+def test_guest_queries_rotate_across_runs():
+    from recrute.criteria import Criteria
+    from recrute.sources.base import SourceContext
+    from recrute.sources.linkedin_guest import LinkedInGuestSource
+    from recrute.sources.testing import FakeHttp
+
+    crit = Criteria()
+    all_q = [q for _, q in crit.all_search_queries()]
+    searched = []
+
+    def search(url):
+        from urllib.parse import parse_qs, urlparse
+
+        searched.append(parse_qs(urlparse(url).query)["keywords"][0])
+        return ""
+
+    offset = 0
+    for _ in range(3):
+        src = LinkedInGuestSource(http_factory=lambda: FakeHttp({"seeMoreJobPostings": search}),
+                                  min_interval=4)
+        src.query_offset = offset
+        list(src.fetch(SourceContext(http=FakeHttp({}), criteria=crit)))
+        offset = src.next_offset
+    assert set(all_q) <= set(searched)  # every configured query covered within 3 runs

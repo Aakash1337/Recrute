@@ -223,6 +223,7 @@ def extract_fields(root: Page | Frame, *, scope: str | None = None,
             widget=r.get("widget") or "text", option_selectors=r.get("option_selectors") or [],
             trigger=r.get("trigger") or "", current=r.get("current"),
             visible=bool(r.get("visible")), hint=r.get("hint") or "",
+            description=r.get("description") or "",
         ))
     return fields
 

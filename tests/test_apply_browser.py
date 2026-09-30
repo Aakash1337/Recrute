@@ -819,3 +819,21 @@ def test_case_sensitive_url_is_verified_exactly(srv, context, paths, human, resu
               paths, human, mode="submit")
     assert out.status == "submitted"
     assert "https://github.com/AdaL/Engine-Notes" in srv.posts[0]["body"].decode()
+
+
+@pytest.mark.browser
+def test_extract_fields_reads_descriptions(context):
+    from recrute.apply import dom
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <div class="field"><label for="wa">Work authorization *</label>
+        <input id="wa" name="wa" required aria-describedby="wa-help">
+        <div id="wa-help">Without employer sponsorship, now or in the future.</div></div>
+      <div class="field"><label for="n">Name</label><input id="n" name="n">
+        <small class="hint">As on your passport</small></div>
+    </form>""")
+    fields = {f.id: f for f in dom.extract_fields(page)}
+    assert "sponsorship" in fields["wa"].description.lower()
+    assert "passport" in fields["n"].description.lower()
+    page.close()

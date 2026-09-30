@@ -511,6 +511,10 @@ def format_value(q: FormQuestion, value: bool | str | int | None) -> Any:
 # --------------------------------------------------------------------------- matching
 
 
+def _full_question(q: FormQuestion) -> str:
+    return f"{q.label} {q.description}".strip()
+
+
 _NEGATED_Q = re.compile(r"\b(not|n't|never|unable|without)\b", re.IGNORECASE)
 
 
@@ -536,10 +540,10 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
               priority: str | None) -> bool | str | int | None:
     wa, c, label = bank.work_authorization, bank.contact, clean_label(q.label)
     match kind:
-        case "sponsorship":
-            return sponsorship_answer(q.label, wa) if is_yes_no(q) else None
+        case "sponsorship":  # the whole question: conditions often sit in the description
+            return sponsorship_answer(_full_question(q), wa) if is_yes_no(q) else None
         case "work_auth":
-            return work_auth_answer(q.label, wa) if is_yes_no(q) else None
+            return work_auth_answer(_full_question(q), wa) if is_yes_no(q) else None
         case "relocate":
             return bank.logistics.willing_to_relocate
         case "start_date":

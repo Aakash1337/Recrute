@@ -118,10 +118,20 @@ def discover_search(ctx) -> dict:
                     continue
                 if name == "hn_whoshiring":
                     src.task = "extract_postings"
+                rotating = hasattr(src, "query_offset")
+                if rotating:
+                    import math
+
+                    src.query_offset = int(state.get("query_offset", 0))
+                    nq = max(1, len(ctx.criteria.all_search_queries()))
+                    cycles = math.ceil(nq / max(1, getattr(src, "max_searches", nq)))
                 # delayed feeds publish old postings late: widen the window by that delay
                 delay = getattr(src, "feed_delay", timedelta(0))
+                since = last - timedelta(hours=1) - delay if last else None
+                if rotating and last:  # each query only comes round every `cycles` runs
+                    since = now - cadence * cycles - timedelta(hours=1)
                 sctx = SourceContext(http=http, criteria=ctx.criteria, router=ctx.router,
-                                     since=last - timedelta(hours=1) - delay if last else None)
+                                     since=since)
                 try:
                     raws = list(src.fetch(sctx))
                     if sctx.errors:
@@ -148,6 +158,8 @@ def discover_search(ctx) -> dict:
                     out[name] = f"error: {e.__class__.__name__}"
                 if sctx.errors:
                     state["errors"] = dict(list(sctx.errors.items())[:5])
+                if rotating:
+                    state["query_offset"] = getattr(src, "next_offset", 0)
                 set_state(s, f"source:{name}", state)
     finally:
         http.close()

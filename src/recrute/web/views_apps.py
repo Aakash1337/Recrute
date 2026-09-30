@@ -119,7 +119,10 @@ async def packet_edit(request: Request, job_id: int):
                 return _msg("Saved and approved.")
         except packets.PacketError as e:
             return _msg(str(e), False, 409)
-    return _msg("Saved.")
+    resp = _msg("Saved.")
+    # re-render the page so every form carries the new revision, flags and file links
+    resp.headers["HX-Refresh"] = "true"
+    return resp
 
 
 @router.post("/packets/{job_id}/regenerate", response_class=HTMLResponse)

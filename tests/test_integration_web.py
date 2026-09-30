@@ -526,3 +526,47 @@ def test_cp3_handoff_notifies_before_waiting(engine, monkeypatch, paths):
                           config=SimpleNamespace(browser=None), stop=threading.Event())
     applying.run_due_task(ctx)
     assert order == ["notify", "wait"]
+
+
+def test_save_edits_refreshes_page(client):
+    job_id = _seed_packet()
+    r = client.post(f"/packets/{job_id}/edit", data={"q__q1": "Edited.", "rev": _rev(job_id)},
+                    headers=HX)
+    assert r.status_code == 200 and r.headers.get("HX-Refresh") == "true"
+    import re
+
+    page = client.get(f"/packets/{job_id}").text
+    rev = re.search(r'name="rev" value="([0-9a-f]+)"', page).group(1)
+    assert client.post(f"/packets/{job_id}/approve", data={"rev": rev},
+                       headers=HX).status_code == 200
+
+
+def test_importing_one_badge_dataset_keeps_the_other(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from recrute import db
+    from recrute.cli import app
+    from recrute.models import Company, Job
+
+    monkeypatch.setenv("RECRUTE_HOME", str(tmp_path))
+    db.get_engine.cache_clear()
+    runner = CliRunner()
+    runner.invoke(app, ["init"])
+    with Session(db.get_engine()) as s:
+        c = Company(name="Acme Inc")
+        s.add(c)
+        s.flush()
+        s.add(Job(company_id=c.id, title="t", apply_url="u", canonical_url="u", badges={}))
+        s.commit()
+    h1b = tmp_path / "h1b.csv"
+    h1b.write_text("Fiscal Year,Employer,Initial Approval,Continuing Approval\n"
+                   "2026,ACME INC,10,7\n", encoding="utf-8")
+    ev = tmp_path / "everify.csv"
+    ev.write_text("Employer Name\nAcme Inc\n", encoding="utf-8")
+    for args in (["badges", "import-h1b", str(h1b)], ["badges", "import-everify", str(ev)]):
+        r = runner.invoke(app, args)
+        assert r.exit_code == 0, r.output
+    with Session(db.get_engine()) as s:
+        job = s.exec(select(Job)).one()
+        assert job.badges["h1b"] == 17 and job.badges["e_verify"] is True
+    db.get_engine.cache_clear()

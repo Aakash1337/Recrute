@@ -451,3 +451,20 @@ def test_long_labels_do_not_collide():
     bank = AnswerBank.model_validate({"common": {answer_key(a): "Team answer."}})
     ans = match_question(FormQuestion(id="x", label=b, type="textarea"), bank)
     assert ans is None or ans.value != "Team answer." or ans.needs_review
+
+
+def test_legal_qualifiers_in_description_are_honoured():
+    from recrute.schemas import FormQuestion
+    from recrute.tailor.answers import AnswerBank, match_question
+
+    bank = AnswerBank.model_validate({"work_authorization": {
+        "authorized_to_work_in_us": True, "requires_sponsorship_now": False,
+        "requires_sponsorship_future": True}})
+    wa = FormQuestion(id="a", label="Are you legally authorized to work in the United States?",
+                      type="select", options=["Yes", "No"],
+                      description="Without employer sponsorship")
+    a = match_question(wa, bank)
+    assert a is None or a.value in (None, "")
+    sp = FormQuestion(id="b", label="Will you require visa sponsorship?", type="select",
+                      options=["Yes", "No"], description="Now or at any time in the future.")
+    assert match_question(sp, bank).value == "Yes"

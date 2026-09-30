@@ -211,6 +211,10 @@ class LinkedInGuestSource:
         self.seen_ids = seen_ids if seen_ids is not None else set()
         self.http_factory = http_factory
         self.stats: dict[str, Any] = {"searches": 0, "details": 0, "blocked": None}  # last run
+        # Rotation through the configured queries across runs (the caller persists it): with a
+        # 10-search cap, every query still gets searched regularly, not just the first ten.
+        self.query_offset = 0
+        self.next_offset = 0
 
     def _http(self) -> Http:
         if self.http_factory is not None:
@@ -255,10 +259,15 @@ class LinkedInGuestSource:
     def _run(self, ctx: SourceContext, http: Http) -> Iterator[RawJob]:
         cards: dict[str, Card] = {}
         tpr = self._tpr(ctx)
+        queries = [q for _, q in ctx.criteria.all_search_queries()]
+        start = self.query_offset % len(queries) if queries else 0
+        rotated = queries[start:] + queries[:start]
+        self.next_offset = start
         try:
-            for _, q in ctx.criteria.all_search_queries():
+            for q in rotated:
                 if self.stats["searches"] >= self.max_searches:
                     break
+                self.next_offset = (self.next_offset + 1) % len(queries)
                 params = {"keywords": q, "location": self.location, "f_TPR": tpr, "start": 0}
                 self.stats["searches"] += 1
                 try:

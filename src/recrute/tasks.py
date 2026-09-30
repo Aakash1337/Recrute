@@ -38,6 +38,12 @@ def make_badge_fn(paths):
                            company_domain=company.domain if company else None, h1b=h1b,
                            everify=ev)
         job.sponsorship_note = b.pop("sponsorship_quote", None)
+        if company is not None:  # keep company-level columns consistent with job badges
+            if h1b is not None:
+                company.h1b_recent_approvals = b.get("h1b")
+            if ev is not None:
+                company.e_verify = b.get("e_verify")
+            company.cap_exempt = b.get("cap_exempt")
         return b
 
     return badge_fn

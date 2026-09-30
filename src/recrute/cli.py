@@ -251,22 +251,20 @@ def profile_accept(force: bool = typer.Option(False, help="accept despite blocki
 
 def _import_badges(kind: str, files: list[Path]) -> None:
     from recrute.badges import EVerifyIndex, H1BIndex, update_company_badges
+    from recrute.tasks import badge_indexes, refresh_job_badges
 
     init_db()
-    out = get_paths().data / "badges"
+    paths = get_paths()
+    out = paths.data / "badges"
     out.mkdir(parents=True, exist_ok=True)
     if kind == "h1b":
-        index = H1BIndex.from_csv(*files)
-        index.save(out / "h1b.json")
-        kwargs = {"h1b": index}
+        H1BIndex.from_csv(*files).save(out / "h1b.json")
     else:
-        index = EVerifyIndex.from_csv(*files)
-        index.save(out / "everify.json")
-        kwargs = {"everify": index}
-    from recrute.tasks import refresh_job_badges
-
+        EVerifyIndex.from_csv(*files).save(out / "everify.json")
+    # recompute company badges from BOTH datasets, so importing one never erases the other
+    h1b, ev = badge_indexes(paths)
     with session_scope() as s:
-        n = update_company_badges(s, **kwargs)
+        n = update_company_badges(s, h1b=h1b, everify=ev)
         s.commit()
         jobs = refresh_job_badges(s)
     typer.echo(f"imported; {n} companies and {jobs} jobs updated.")

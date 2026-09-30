@@ -484,3 +484,34 @@ def test_filter_does_not_overwrite_concurrent_decision(engine):
         filter_new(s, Criteria(), racing_elig)
         s.refresh(job)
         assert job.status == JobStatus.SHORTLISTED
+
+
+def test_closure_does_not_overwrite_concurrent_applied(engine):
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        job = s.exec(select(Job)).one()
+        job.status = JobStatus.PACKET_READY
+        s.add(job)
+        s.commit()
+        company_id = job.company_id
+
+        import recrute.pipeline.ingest as ing
+
+        real_exec = s.exec
+
+        def exec_then_race(stmt, *a, **k):
+            out = real_exec(stmt, *a, **k)
+            if not getattr(exec_then_race, "done", False):
+                exec_then_race.done = True
+                with Session(engine) as other:  # the human marks it applied meanwhile
+                    j = other.get(Job, job.id)
+                    j.status = JobStatus.APPLIED
+                    other.add(j)
+                    other.commit()
+            return out
+
+        s.exec = exec_then_race
+        ing.mark_missing_closed(s, "greenhouse", company_id, set())
+        s.exec = real_exec
+        s.refresh(job)
+        assert job.status == JobStatus.APPLIED and job.closed_at is not None
