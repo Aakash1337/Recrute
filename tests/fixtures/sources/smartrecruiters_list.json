@@ -1,0 +1,198 @@
+{
+ "offset": 0,
+ "limit": 3,
+ "totalFound": 342,
+ "content": [
+  {
+   "id": "744000152547069",
+   "name": "Head of Autonomous Driving Technology & AI Development",
+   "uuid": "851a29fc-3b94-4b66-83da-e76dbfb229b3",
+   "jobAdId": "04dfd10f-7c73-496f-8801-9f8f7881ad37",
+   "defaultJobAd": true,
+   "refNumber": "REF258493Y",
+   "company": {
+    "identifier": "BoschGroup",
+    "name": "Bosch Group"
+   },
+   "releasedDate": "2026-09-29T23:18:53.189Z",
+   "location": {
+    "city": "Sunnyvale",
+    "region": "CA",
+    "country": "us",
+    "address": "384 Santa Trinita Avenue",
+    "postalCode": "94085",
+    "remote": false,
+    "hybrid": false,
+    "latitude": "37.38195",
+    "longitude": "-121.9994708",
+    "fullLocation": "Sunnyvale, CA, United States"
+   },
+   "industry": {
+    "id": "automotive",
+    "label": "Automotive"
+   },
+   "department": {},
+   "function": {
+    "id": "engineering",
+    "label": "Engineering"
+   },
+   "typeOfEmployment": {
+    "id": "permanent",
+    "label": "Full-time"
+   },
+   "experienceLevel": {
+    "id": "director",
+    "label": "Director"
+   },
+   "customField": [
+    {
+     "fieldId": "5abe2a4ab60a5e486a2d9b1d",
+     "fieldLabel": "Contract type",
+     "valueId": "1e46492b-d24f-460c-b095-38cf08a778d8",
+     "valueLabel": "Unlimited"
+    },
+    {
+     "fieldId": "5abe28e96d8bc56863dd9746",
+     "fieldLabel": "Tariff Area",
+     "valueId": "82f1dd4b-de9d-4134-9f1a-8d315be380ae",
+     "valueLabel": "United States Local Grades"
+    }
+   ],
+   "visibility": "PUBLIC",
+   "ref": "https://api.smartrecruiters.com/v1/companies/BoschGroup/postings/744000152547069",
+   "language": {
+    "code": "en",
+    "label": "English",
+    "labelNative": "English (US)"
+   }
+  },
+  {
+   "id": "744000152545721",
+   "name": "Director, Simulation and Evaluation - Autonomous Driving",
+   "uuid": "f509225d-7aa8-40e2-a911-fe6ef01d5dbe",
+   "jobAdId": "1859d8b4-a21e-4d22-b57e-f131df892090",
+   "defaultJobAd": true,
+   "refNumber": "REF278859Q",
+   "company": {
+    "identifier": "BoschGroup",
+    "name": "Bosch Group"
+   },
+   "releasedDate": "2026-09-29T23:16:48.439Z",
+   "location": {
+    "city": "Sunnyvale",
+    "region": "CA",
+    "country": "us",
+    "address": "384 Santa Trinita Avenue",
+    "postalCode": "94085",
+    "remote": false,
+    "hybrid": true,
+    "hybridDescription": "3 days on-site per week",
+    "latitude": "37.3820466",
+    "longitude": "-121.9996484",
+    "fullLocation": "Sunnyvale, CA, United States"
+   },
+   "industry": {
+    "id": "automotive",
+    "label": "Automotive"
+   },
+   "department": {},
+   "function": {
+    "id": "engineering",
+    "label": "Engineering"
+   },
+   "typeOfEmployment": {
+    "id": "permanent",
+    "label": "Full-time"
+   },
+   "experienceLevel": {
+    "id": "director",
+    "label": "Director"
+   },
+   "customField": [
+    {
+     "fieldId": "5abe2a4ab60a5e486a2d9b1d",
+     "fieldLabel": "Contract type",
+     "valueId": "1e46492b-d24f-460c-b095-38cf08a778d8",
+     "valueLabel": "Unlimited"
+    },
+    {
+     "fieldId": "5abe28e96d8bc56863dd9746",
+     "fieldLabel": "Tariff Area",
+     "valueId": "82f1dd4b-de9d-4134-9f1a-8d315be380ae",
+     "valueLabel": "United States Local Grades"
+    }
+   ],
+   "visibility": "PUBLIC",
+   "ref": "https://api.smartrecruiters.com/v1/companies/BoschGroup/postings/744000152545721",
+   "language": {
+    "code": "en",
+    "label": "English",
+    "labelNative": "English (US)"
+   }
+  },
+  {
+   "id": "744000152546129",
+   "name": "Senior Principal Engineer- Autonomous Driving (ADAS) Data Loop & Flywheel ",
+   "uuid": "974fdf3d-2fe1-4a8f-b1ba-8bfdd4d9e6d5",
+   "jobAdId": "4dc38cd5-915a-4d79-b04b-89d900e2fed2",
+   "defaultJobAd": true,
+   "refNumber": "REF296519K",
+   "company": {
+    "identifier": "BoschGroup",
+    "name": "Bosch Group"
+   },
+   "releasedDate": "2026-09-29T23:09:48.490Z",
+   "location": {
+    "city": "Sunnyvale",
+    "region": "CA",
+    "country": "us",
+    "address": "384 Santa Trinita Avenue",
+    "postalCode": "94085",
+    "remote": false,
+    "hybrid": true,
+    "hybridDescription": "",
+    "latitude": "37.3820466",
+    "longitude": "-121.9996484",
+    "fullLocation": "Sunnyvale, CA, United States"
+   },
+   "industry": {
+    "id": "research",
+    "label": "Research"
+   },
+   "department": {},
+   "function": {
+    "id": "research",
+    "label": "Research"
+   },
+   "typeOfEmployment": {
+    "id": "permanent",
+    "label": "Full-time"
+   },
+   "experienceLevel": {
+    "id": "mid_senior_level",
+    "label": "Mid-Senior Level"
+   },
+   "customField": [
+    {
+     "fieldId": "5abe2a4ab60a5e486a2d9b1d",
+     "fieldLabel": "Contract type",
+     "valueId": "1e46492b-d24f-460c-b095-38cf08a778d8",
+     "valueLabel": "Unlimited"
+    },
+    {
+     "fieldId": "5abe28e96d8bc56863dd9746",
+     "fieldLabel": "Tariff Area",
+     "valueId": "82f1dd4b-de9d-4134-9f1a-8d315be380ae",
+     "valueLabel": "United States Local Grades"
+    }
+   ],
+   "visibility": "PUBLIC",
+   "ref": "https://api.smartrecruiters.com/v1/companies/BoschGroup/postings/744000152546129",
+   "language": {
+    "code": "en",
+    "label": "English",
+    "labelNative": "English (US)"
+   }
+  }
+ ]
+}

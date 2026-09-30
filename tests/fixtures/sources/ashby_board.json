@@ -1,0 +1,345 @@
+{
+ "apiVersion": "1",
+ "jobs": [
+  {
+   "id": "8fb1615c-34bf-47c4-a1d1-b7b2f836bbd3",
+   "title": "Technical Program Manager, Compute Infrastructure",
+   "department": "Technical Program Management",
+   "team": "Technical Program Management",
+   "employmentType": "FullTime",
+   "location": "San Francisco",
+   "shouldDisplayCompensationOnJobPostings": true,
+   "secondaryLocations": [],
+   "publishedAt": "2026-03-12T16:38:15.322+00:00",
+   "isListed": true,
+   "isRemote": null,
+   "workplaceType": null,
+   "address": {
+    "postalAddress": {
+     "addressRegion": "California",
+     "addressCountry": "United States",
+     "addressLocality": "San Francisco"
+    }
+   },
+   "jobUrl": "https://jobs.ashbyhq.com/openai/8fb1615c-34bf-47c4-a1d1-b7b2f836bbd3",
+   "applyUrl": "https://jobs.ashbyhq.com/openai/8fb1615c-34bf-47c4-a1d1-b7b2f836bbd3/application",
+   "descriptionHtml": "<h3><strong>About the Team</strong></h3><p style=\"min-height:1.5em\">The compute infrastructure team runs the GPU fleet and large-scale compute clusters that serve the models backing ChatGPT and the API, while also supporting training workloads for our next generation models. We operate a large, modern GPU fleet and provide a unified platform for other OpenAI teams to seamlessly run production Applied AI and Research training workloads.</p><p style=\"min-height:1.5em\">We seek to learn from deployment and distribute the benefits of AI, while ensuring that this powerful tool is used responsibly and safely. Safety is more important to us than unfettered growth.<br /></p>",
+   "descriptionPlain": "ABOUT THE TEAM\n\nThe compute infrastructure team runs the GPU fleet and large-scale compute clusters that serve the models backing ChatGPT and the API, while also supporting training workloads for our next generation models. We operate a large, modern GPU fleet and provide a unified platform for other OpenAI teams to seamlessly run production Applied AI and Research training workloads.\n\nWe seek to learn from deployment and distribute the benefits of AI, while ensuring that this powerful tool is used responsibly and safely. Safety is more important to us than unfettered growth.\n\n\n\nABOUT THE ROLE",
+   "compensation": {
+    "compensationTierSummary": "$257K – $335K • Offers Equity",
+    "scrapeableCompensationSalarySummary": "$257K - $335K",
+    "compensationTiers": [
+     {
+      "id": "33e464a3-4ff9-40a4-bbd6-6dcb65d23c43",
+      "tierSummary": "$257K – $335K • Offers Equity",
+      "title": null,
+      "additionalInformation": null,
+      "components": [
+       {
+        "id": "daa3a561-a504-4bd5-99ac-3ed7fd060cf8",
+        "summary": "$257K – $335K",
+        "compensationType": "Salary",
+        "interval": "1 YEAR",
+        "currencyCode": "USD",
+        "minValue": 257000,
+        "maxValue": 335000
+       },
+       {
+        "id": "ae7ec4d0-7ec6-4186-b4c2-e4b6753df9e7",
+        "summary": "Offers Equity",
+        "compensationType": "EquityCashValue",
+        "interval": "1 YEAR",
+        "currencyCode": "USD",
+        "minValue": null,
+        "maxValue": null
+       }
+      ]
+     }
+    ],
+    "summaryComponents": [
+     {
+      "compensationType": "Salary",
+      "interval": "1 YEAR",
+      "currencyCode": "USD",
+      "minValue": 257000,
+      "maxValue": 335000
+     },
+     {
+      "compensationType": "EquityCashValue",
+      "interval": "1 YEAR",
+      "currencyCode": "USD",
+      "minValue": null,
+      "maxValue": null
+     }
+    ]
+   }
+  },
+  {
+   "id": "f763c6b3-5167-4a67-b691-4c3fa2c44156",
+   "title": "Software Engineer, Data Infrastructure",
+   "department": "Scaling",
+   "team": "Scaling",
+   "employmentType": "FullTime",
+   "location": "San Francisco",
+   "shouldDisplayCompensationOnJobPostings": true,
+   "secondaryLocations": [
+    {
+     "location": "New York City",
+     "address": {
+      "postalAddress": {
+       "addressRegion": "New York",
+       "addressCountry": "United States",
+       "addressLocality": "New York"
+      }
+     }
+    },
+    {
+     "location": "Seattle",
+     "address": {
+      "postalAddress": {
+       "addressRegion": "Washington",
+       "addressCountry": "United States",
+       "addressLocality": "Seattle"
+      }
+     }
+    },
+    {
+     "location": "Mountain View",
+     "address": {
+      "postalAddress": {
+       "addressRegion": "California",
+       "addressCountry": "United States",
+       "addressLocality": "Mountain View"
+      }
+     }
+    }
+   ],
+   "publishedAt": "2024-06-27T22:14:24.195+00:00",
+   "isListed": true,
+   "isRemote": null,
+   "workplaceType": null,
+   "address": {
+    "postalAddress": {
+     "addressRegion": "California",
+     "addressCountry": "United States",
+     "addressLocality": "San Francisco"
+    }
+   },
+   "jobUrl": "https://jobs.ashbyhq.com/openai/f763c6b3-5167-4a67-b691-4c3fa2c44156",
+   "applyUrl": "https://jobs.ashbyhq.com/openai/f763c6b3-5167-4a67-b691-4c3fa2c44156/application",
+   "descriptionHtml": "<p style=\"min-height:1.5em\"><strong>About the Team</strong></p><p style=\"min-height:1.5em\">Data Platform at OpenAI owns the foundational data stack powering critical product, research, and analytics workflows. We operate some of the largest Spark compute fleets in production; design, and build data lakes and metadata systems on Iceberg and Delta with a vision toward exabyte-scale architecture; run high throughput streaming platforms on Kafka and Flink; provide orchestration with Airflow; and support ML feature engineering tooling such as Chronon. Our mission is to deliver reliable, secure, and efficient data access at scale and accelerate intelligent, AI assisted data workflows.</p>",
+   "descriptionPlain": "About the Team\n\nData Platform at OpenAI owns the foundational data stack powering critical product, research, and analytics workflows. We operate some of the largest Spark compute fleets in production; design, and build data lakes and metadata systems on Iceberg and Delta with a vision toward exabyte-scale architecture; run high throughput streaming platforms on Kafka and Flink; provide orchestration with Airflow; and support ML feature engineering tooling such as Chronon. Our mission is to deliver reliable, secure, and efficient data access at scale and accelerate intelligent, AI assisted dat",
+   "compensation": {
+    "compensationTierSummary": "$266K – $445K • Offers Equity",
+    "scrapeableCompensationSalarySummary": "$266K - $445K",
+    "compensationTiers": [
+     {
+      "id": "7c1ee842-1513-47b6-b913-1bfad8c95fe9",
+      "tierSummary": "$266K – $445K • Offers Equity",
+      "title": null,
+      "additionalInformation": null,
+      "components": [
+       {
+        "id": "6b73abba-5284-40c5-aae4-88e3f7212811",
+        "summary": "Offers Equity",
+        "compensationType": "EquityCashValue",
+        "interval": "1 YEAR",
+        "currencyCode": "USD",
+        "minValue": null,
+        "maxValue": null
+       },
+       {
+        "id": "ca00b419-4b01-43ca-b5ac-3841ef75e085",
+        "summary": "$266K – $445K",
+        "compensationType": "Salary",
+        "interval": "1 YEAR",
+        "currencyCode": "USD",
+        "minValue": 266000,
+        "maxValue": 445000
+       }
+      ]
+     }
+    ],
+    "summaryComponents": [
+     {
+      "compensationType": "EquityCashValue",
+      "interval": "1 YEAR",
+      "currencyCode": "USD",
+      "minValue": null,
+      "maxValue": null
+     },
+     {
+      "compensationType": "Salary",
+      "interval": "1 YEAR",
+      "currencyCode": "USD",
+      "minValue": 266000,
+      "maxValue": 445000
+     }
+    ]
+   }
+  },
+  {
+   "id": "c414f15f-60c4-40b5-a896-d2ad6c7f4415",
+   "title": "Senior Technical Program Manager - Security",
+   "department": "Security",
+   "team": "Security",
+   "employmentType": "FullTime",
+   "location": "US - Remote",
+   "shouldDisplayCompensationOnJobPostings": true,
+   "secondaryLocations": [
+    {
+     "location": "New York City",
+     "address": {
+      "postalAddress": {
+       "addressRegion": "New York",
+       "addressCountry": "United States",
+       "addressLocality": "New York"
+      }
+     }
+    },
+    {
+     "location": "Seattle",
+     "address": {
+      "postalAddress": {
+       "addressRegion": "Washington",
+       "addressCountry": "United States",
+       "addressLocality": "Seattle"
+      }
+     }
+    },
+    {
+     "location": "Washington, DC",
+     "address": {
+      "postalAddress": {
+       "addressRegion": "District of Columbia",
+       "addressCountry": "United States",
+       "addressLocality": "Washington"
+      }
+     }
+    },
+    {
+     "location": "San Francisco",
+     "address": {
+      "postalAddress": {
+       "addressRegion": "California",
+       "addressCountry": "United States",
+       "addressLocality": "San Francisco"
+      }
+     }
+    }
+   ],
+   "publishedAt": "2026-06-25T17:30:54.205+00:00",
+   "isListed": true,
+   "isRemote": true,
+   "workplaceType": "Remote",
+   "address": {
+    "postalAddress": {
+     "addressCountry": "United States"
+    }
+   },
+   "jobUrl": "https://jobs.ashbyhq.com/openai/c414f15f-60c4-40b5-a896-d2ad6c7f4415",
+   "applyUrl": "https://jobs.ashbyhq.com/openai/c414f15f-60c4-40b5-a896-d2ad6c7f4415/application",
+   "descriptionHtml": "<p style=\"min-height:1.5em\"><strong>About the Team</strong></p><p style=\"min-height:1.5em\">OpenAI builds powerful AI systems like ChatGPT, the OpenAI API, and enterprise products that serve millions of users across the globe. As we scale, securing our infrastructure, protecting sensitive data, and meeting global compliance standards are essential to our success and societal impact.</p><p style=\"min-height:1.5em\"></p><p style=\"min-height:1.5em\">Security at OpenAI is a cross-cutting function that spans infrastructure, applied engineering, legal, policy, and product. Technical Program Managers (TPMs) play a critical leadership role in aligning teams and delivering execution at scale and this role will be foundational in shaping how we secure OpenAI’s systems, users, and commitments.</p>",
+   "descriptionPlain": "About the Team\n\nOpenAI builds powerful AI systems like ChatGPT, the OpenAI API, and enterprise products that serve millions of users across the globe. As we scale, securing our infrastructure, protecting sensitive data, and meeting global compliance standards are essential to our success and societal impact.\n\n\n\nSecurity at OpenAI is a cross-cutting function that spans infrastructure, applied engineering, legal, policy, and product. Technical Program Managers (TPMs) play a critical leadership role in aligning teams and delivering execution at scale and this role will be foundational in shaping ",
+   "compensation": {
+    "compensationTierSummary": "$165.4K – $285K • Offers Equity • Multiple Ranges",
+    "scrapeableCompensationSalarySummary": "$165.4K - $285K",
+    "compensationTiers": [
+     {
+      "id": "d3899e1f-0c22-4daa-86f9-4f1d9fc0c032",
+      "tierSummary": "$207K – $285K • Offers Equity",
+      "title": "San Francisco, Seattle or New York",
+      "additionalInformation": null,
+      "components": [
+       {
+        "id": "8b7496ef-c885-44be-894b-ae98047dff98",
+        "summary": "Offers Equity",
+        "compensationType": "EquityCashValue",
+        "interval": "1 YEAR",
+        "currencyCode": "USD",
+        "minValue": null,
+        "maxValue": null
+       },
+       {
+        "id": "bf8e2028-26db-4c3e-b6cd-1831f91effb5",
+        "summary": "$207K – $285K",
+        "compensationType": "Salary",
+        "interval": "1 YEAR",
+        "currencyCode": "USD",
+        "minValue": 207000,
+        "maxValue": 285000
+       }
+      ]
+     },
+     {
+      "id": "d44602e0-d1e4-4d2e-807f-1da70c1a99f2",
+      "tierSummary": "$186.3K – $256.5K • Offers Equity",
+      "title": "Zone A",
+      "additionalInformation": null,
+      "components": [
+       {
+        "id": "123a301d-8c65-45e3-9193-9bcda07f7fc8",
+        "summary": "Offers Equity",
+        "compensationType": "EquityCashValue",
+        "interval": "1 YEAR",
+        "currencyCode": "USD",
+        "minValue": null,
+        "maxValue": null
+       },
+       {
+        "id": "22e704e2-45ad-4148-a7dd-c9cbe37292db",
+        "summary": "$186.3K – $256.5K",
+        "compensationType": "Salary",
+        "interval": "1 YEAR",
+        "currencyCode": "USD",
+        "minValue": 186300,
+        "maxValue": 256500
+       }
+      ]
+     },
+     {
+      "id": "a071c99d-1ec8-4b84-8376-615609c7e3bc",
+      "tierSummary": "$165.4K – $228K • Offers Equity",
+      "title": "Zone B",
+      "additionalInformation": null,
+      "components": [
+       {
+        "id": "99c8d552-5386-42fa-bc6d-4974a02c4368",
+        "summary": "Offers Equity",
+        "compensationType": "EquityCashValue",
+        "interval": "1 YEAR",
+        "currencyCode": "USD",
+        "minValue": null,
+        "maxValue": null
+       },
+       {
+        "id": "7f4b6a00-6aed-4754-a108-32965d99a494",
+        "summary": "$165.4K – $228K",
+        "compensationType": "Salary",
+        "interval": "1 YEAR",
+        "currencyCode": "USD",
+        "minValue": 165400,
+        "maxValue": 228000
+       }
+      ]
+     }
+    ],
+    "summaryComponents": [
+     {
+      "compensationType": "EquityCashValue",
+      "minValue": null,
+      "maxValue": null,
+      "interval": "1 YEAR"
+     },
+     {
+      "minValue": 165400,
+      "maxValue": 285000,
+      "currencyCode": "USD",
+      "interval": "1 YEAR",
+      "compensationType": "Salary"
+     }
+    ]
+   }
+  }
+ ]
+}

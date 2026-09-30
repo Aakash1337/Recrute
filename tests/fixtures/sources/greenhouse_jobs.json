@@ -1,0 +1,213 @@
+{
+ "jobs": [
+  {
+   "absolute_url": "https://job-boards.greenhouse.io/anthropic/jobs/4461450008",
+   "data_compliance": [
+    {
+     "type": "gdpr",
+     "requires_consent": false,
+     "requires_processing_consent": false,
+     "requires_retention_consent": false,
+     "retention_period": null,
+     "demographic_data_consent_applies": false
+    }
+   ],
+   "internal_job_id": 4147866008,
+   "location": {
+    "name": "New York City, NY; San Francisco, CA | New York City, NY"
+   },
+   "metadata": [
+    {
+     "id": 4036944008,
+     "name": "Location Type",
+     "value": "On-Site",
+     "value_type": "single_select"
+    }
+   ],
+   "id": 4461450008,
+   "updated_at": "2026-08-21T21:32:54-04:00",
+   "requisition_id": "3356",
+   "title": "Account Executive, AI Native",
+   "company_name": "Anthropic",
+   "first_published": "2024-12-20T13:53:38-05:00",
+   "language": "en",
+   "application_deadline": null,
+   "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;h2&gt;&lt;strong&gt;About Anthropic&lt;/strong&gt;&lt;/h2&gt;\n&lt;p&gt;Anthropic’s mission is to create reliable, interpretable, and steerable AI systems. We want AI to be safe and beneficial for our users and for society as a whole. Our team is a quickly growing group of committed researchers, engineers, policy experts, and business leaders working together to build beneficial AI systems.&lt;/p&gt;",
+   "departments": [
+    {
+     "id": 4002062008,
+     "name": "Sales",
+     "child_ids": [],
+     "parent_id": null
+    }
+   ],
+   "offices": [
+    {
+     "id": 4001219008,
+     "name": "New York City, NY",
+     "location": "New York, New York, United States",
+     "child_ids": [],
+     "parent_id": null
+    },
+    {
+     "id": 4001218008,
+     "name": "San Francisco, CA",
+     "location": "San Francisco, California, United States",
+     "child_ids": [],
+     "parent_id": null
+    }
+   ],
+   "ai_disclaimer": null,
+   "include_ai_disclaimer": null,
+   "ai_opt_out_request_url": null,
+   "pay_input_ranges": [
+    {
+     "min_cents": 22280000,
+     "max_cents": 29000000,
+     "currency_type": "USD",
+     "title": "Annual Salary:",
+     "blurb": "<p>The annual compensation range for this role is listed below.&nbsp;</p>\n<p>For"
+    }
+   ]
+  },
+  {
+   "absolute_url": "https://job-boards.greenhouse.io/anthropic/jobs/5391983008",
+   "data_compliance": [
+    {
+     "type": "gdpr",
+     "requires_consent": false,
+     "requires_processing_consent": false,
+     "requires_retention_consent": false,
+     "retention_period": null,
+     "demographic_data_consent_applies": false
+    }
+   ],
+   "internal_job_id": 4533405008,
+   "location": {
+    "name": "Austin, TX | Remote-Friendly, United States"
+   },
+   "metadata": [
+    {
+     "id": 4036944008,
+     "name": "Location Type",
+     "value": "Remote",
+     "value_type": "single_select"
+    }
+   ],
+   "id": 5391983008,
+   "updated_at": "2026-08-21T12:51:03-04:00",
+   "requisition_id": "PIP-266854",
+   "title": "Community Engagement Manager, Data Centers (Texas)",
+   "company_name": "Anthropic",
+   "first_published": "2026-08-19T13:26:24-04:00",
+   "language": "en",
+   "application_deadline": null,
+   "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;h2&gt;&lt;strong&gt;About Anthropic&lt;/strong&gt;&lt;/h2&gt;\n&lt;p&gt;Anthropic’s mission is to create reliable, interpretable, and steerable AI systems. We want AI to be safe and beneficial for our users and for society as a whole. Our team is a quickly growing group of committed researchers, engineers, policy experts, and business leaders working together to build beneficial AI systems.&lt;/p&gt;&lt;/div&gt;&lt;h2&gt;About the role&lt;/h2&gt;\n&lt;p&gt;Anthropic is building AI systems that will shape the trajectory of one of the most consequential technologies in human history. That work requires physical infrastructure at significant scale, and building that infrastructure the right way means being a real, long-term partner to the communities where we operate.&lt;/p&gt;\n&lt;p&gt;We are looking for a Community Engagement Manager in Texas to join our Public Policy team and serve as Anthropic&#39;s on-the-ground presence in the communities where our data centers are sited, built, and operated. This is not a communications role or a government affairs role, though you will do elements of both. It is a relationship role: your job is to make Anthropic a trusted, visible, and valued neighbor, from the earliest stages of site selection through construction and long-term operations.&lt;/p&gt;",
+   "departments": [
+    {
+     "id": 4002056008,
+     "name": "Public Policy",
+     "child_ids": [],
+     "parent_id": null
+    }
+   ],
+   "offices": [
+    {
+     "id": 4008537008,
+     "name": "Remote-Friendly US (Travel Required)",
+     "location": null,
+     "child_ids": [],
+     "parent_id": null
+    }
+   ],
+   "ai_disclaimer": null,
+   "include_ai_disclaimer": null,
+   "ai_opt_out_request_url": null
+  },
+  {
+   "absolute_url": "https://job-boards.greenhouse.io/anthropic/jobs/5183044008",
+   "data_compliance": [
+    {
+     "type": "gdpr",
+     "requires_consent": false,
+     "requires_processing_consent": false,
+     "requires_retention_consent": false,
+     "retention_period": null,
+     "demographic_data_consent_applies": false
+    }
+   ],
+   "internal_job_id": 4381824008,
+   "location": {
+    "name": "London, UK; Ontario, CAN; Remote-Friendly, United States; San Francisco, CA"
+   },
+   "metadata": [
+    {
+     "id": 4036944008,
+     "name": "Location Type",
+     "value": "On-Site",
+     "value_type": "single_select"
+    }
+   ],
+   "id": 5183044008,
+   "updated_at": "2026-09-18T03:03:59-04:00",
+   "requisition_id": "PIP-11677",
+   "title": "Anthropic Fellows Program, AI Safety & Security",
+   "company_name": "Anthropic",
+   "first_published": "2026-04-09T20:28:23-04:00",
+   "language": "en",
+   "application_deadline": null,
+   "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;h2&gt;&lt;strong&gt;About Anthropic&lt;/strong&gt;&lt;/h2&gt;\n&lt;p&gt;Anthropic’s mission is to create reliable, interpretable, and steerable AI systems. We want AI to be safe and beneficial for our users and for society as a whole. Our team is a quickly growing group of committed researchers, engineers, policy experts, and business leaders working together to build beneficial AI systems.&lt;/p&gt;&lt;/div&gt;&lt;p&gt;Applications are now open for our January cohort - &lt;a href=&quot;https://bit.ly/afpsafety&quot;&gt;apply here.&lt;/a&gt;&lt;/p&gt;\n&lt;h1&gt;&lt;strong&gt;Anthropic Fellows Program overview&lt;/strong&gt;&lt;/h1&gt;\n&lt;p&gt;The Anthropic Fellows Program is designed to foster AI research and engineering talent. We provide funding and mentorship to promising technical talent - regardless of previous experience.&lt;/p&gt;\n&lt;p&gt;Fellows will primarily use external infrastructure (e.g. open-source models, public APIs) to work on an empirical project aligned with our research priorities, with the goal of producing a &lt;strong&gt;public output&lt;/strong&gt; (e.g. a paper submission). In one of our earlier cohorts, over 80% of fellows produced papers.&amp;nbsp;We run multiple cohorts of Fellows each year and review applications on a rolling basis.&lt;/p&gt;",
+   "departments": [
+    {
+     "id": 4002061008,
+     "name": "AI Research & Engineering",
+     "child_ids": [],
+     "parent_id": null
+    }
+   ],
+   "offices": [
+    {
+     "id": 4011066008,
+     "name": "British Columbia, CA",
+     "location": "British Columbia, Canada",
+     "child_ids": [],
+     "parent_id": null
+    },
+    {
+     "id": 4001220008,
+     "name": "London, UK",
+     "location": "London, England, United Kingdom",
+     "child_ids": [],
+     "parent_id": null
+    },
+    {
+     "id": 4011067008,
+     "name": "Ontario, CA",
+     "location": "Ontario, Canada",
+     "child_ids": [],
+     "parent_id": null
+    },
+    {
+     "id": 4008537008,
+     "name": "Remote-Friendly US (Travel Required)",
+     "location": null,
+     "child_ids": [],
+     "parent_id": null
+    },
+    {
+     "id": 4001218008,
+     "name": "San Francisco, CA",
+     "location": "San Francisco, California, United States",
+     "child_ids": [],
+     "parent_id": null
+    }
+   ],
+   "ai_disclaimer": null,
+   "include_ai_disclaimer": null,
+   "ai_opt_out_request_url": null
+  }
+ ],
+ "meta": {
+  "total": 3
+ }
+}
