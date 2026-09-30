@@ -311,7 +311,15 @@ SENSITIVE_KINDS = frozenset({
     "sponsorship", "work_auth", "citizenship", "salary", "eeo_other", "eeo_hispanic",
     "eeo_race", "eeo_gender", "eeo_veteran", "eeo_disability",
 })
-CONTACT_KINDS = frozenset(k for k, _ in _FIELD_RULES)
+# A contact question about SOMEONE ELSE (a reference, a manager, an emergency contact) or a
+# different account (a work email): never answered with the applicant's own details.
+OTHER_CONTACT = "other_contact"
+CONTACT_KINDS = frozenset([*(k for k, _ in _FIELD_RULES), OTHER_CONTACT])
+_OTHER_PERSON = re.compile(
+    r"\b(?:references?|referees?|referr\w*|managers?|supervisors?|emergency|recruiters?|"
+    r"employers?|work|company|business|office|spouse|partner|parents?|guardians?|"
+    r"next of kin|contact person|previous|former|alternate|secondary|other|someone|"
+    r"their|his|her)\b", re.I)
 EEO_KINDS = frozenset({"eeo_other", "eeo_hispanic", "eeo_race", "eeo_gender", "eeo_veteran",
                        "eeo_disability"})
 
@@ -374,6 +382,10 @@ def classify_question(q: FormQuestion) -> str | None:
     if q.type not in ("checkbox", "multiselect"):  # "Email me about openings" is not a field
         for kind, rx in _FIELD_RULES:
             if rx.fullmatch(core):
+                # the FULL question: "Email (of your professional reference)", or a
+                # description asking for a work / reference address
+                if _OTHER_PERSON.search(f"{q.label} {q.description}"):
+                    return OTHER_CONTACT
                 return kind
     text = clean_label(q.label)
     for kind, rx in _SCREEN_RULES:

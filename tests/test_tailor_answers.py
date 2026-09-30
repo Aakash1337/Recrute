@@ -743,3 +743,47 @@ def test_partial_dates_are_not_padded_into_date_fields(end):
     assert a.needs_review
     assert parse_date(end) is None and date_text(end) is None
     assert parse_date("2024-05-17") is not None and parse_date("May 17, 2024") is not None
+
+
+@pytest.mark.parametrize("label,desc", [
+    ("Email", "Provide the email address of your professional reference"),
+    ("Email (of your professional reference)", ""),
+    ("Phone number", "Your manager's phone number"),
+    ("Email address", "Use your current employer's work email address"),
+])
+def test_contact_questions_about_someone_else_are_left_to_you(label, desc):
+    from recrute.schemas import FormQuestion
+    from recrute.tailor.answer_questions import profile_answer
+
+    question = FormQuestion(id="c", label=label, description=desc,
+                            type="email" if "mail" in label.lower() else "tel")
+    bank, profile = make_bank(), make_profile()
+    assert match_question(question, bank) is None
+    assert profile_answer(question, profile) is None
+    a = answer_questions([question], profile=profile, bank=bank, router=None).answers[0]
+    assert a.value is None and a.needs_review
+
+
+def test_plain_contact_questions_still_answered():
+    from recrute.schemas import FormQuestion
+
+    a = answer_questions([FormQuestion(id="e", label="Email", type="email")],
+                         profile=make_profile(), bank=make_bank(), router=None).answers[0]
+    assert a.value and not a.needs_review
+
+
+def test_company_specific_help_text_answers_are_not_banked(paths, monkeypatch):
+    from recrute import packets
+    from recrute.models import Job
+    from recrute.schemas import FormAnswer, Packet
+    from recrute.tailor.answers import load_answer_bank
+
+    monkeypatch.setattr("recrute.paths.get_paths", lambda: paths)
+    question = q("Additional information", "textarea", id="a",
+                 description="Tell us why you want to join our company")
+    packet = Packet(job_id=1, questions=[question],
+                    answers=[FormAnswer(question_id="a", value="Acme's robots excite me.",
+                                        source="llm_new")])
+    packets._save_to_bank(Job(id=1, title="Analyst", url="u"), packet)
+    assert load_answer_bank(paths).common == {}
+    assert match_question(question, load_answer_bank(paths)) is None  # nothing reused elsewhere

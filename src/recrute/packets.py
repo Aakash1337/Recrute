@@ -125,8 +125,9 @@ def _save_to_bank(job: Job, packet: Packet) -> None:
             continue
         if q.type not in ("text", "textarea") or not a.value.strip() or len(a.value) > 1500:
             continue
-        if _JOB_SPECIFIC.search(q.label) or (job.title and job.title.lower() in
-                                             a.value.lower()):
+        # job-specific wording may sit in the help text: judge the FULL question
+        if _JOB_SPECIFIC.search(f"{q.label} {q.description}") or (
+                job.title and job.title.lower() in a.value.lower()):
             continue
         from recrute.tailor.answers import is_sensitive_question, is_sensitive_text
 

@@ -158,14 +158,22 @@ CONTACT_LABEL_RE = re.compile(
 
 
 def is_contact_field(q: FormQuestion) -> bool:
-    """Name / email / phone / phone country / city-location, by label, as plain inputs."""
+    """Name / email / phone / phone country / city-location, by label, as plain inputs, and
+    with NO instructions: "Email" + "use your current employer's work email" (or a reference's
+    email) is a different question."""
     if q.type in ("file", "checkbox", "multiselect", "textarea", "radio"):
+        return False
+    if (q.description or "").strip():
         return False
     return bool(CONTACT_LABEL_RE.fullmatch(dom.norm(q.label)))
 
 
-def prefill_ok(q: FormQuestion, accept_prefilled: bool) -> bool:
-    """May a value already on the page stand without an approved answer?"""
+def prefill_ok(q: FormQuestion, accept_prefilled: bool, packet: Packet | None = None,
+               aliases: Mapping[str, Sequence[str]] = {}) -> bool:
+    """May a value already on the page stand without an approved answer? Never for a question
+    that changed since CP2 (it must be approved again)."""
+    if packet is not None and identity_changed(q, packet, aliases):
+        return False
     return (accept_prefilled and is_contact_field(q)
             and getattr(q, "current", None) not in (None, "", []))
 
@@ -352,7 +360,7 @@ def question_covered(q: FormQuestion, packet: Packet, *,
         return role in roles
     a = resolve_answer(q, packet, aliases)
     if not has_value(a):
-        return prefill_ok(q, accept_prefilled)
+        return prefill_ok(q, accept_prefilled, packet, aliases)
     assert a is not None
     # Typeahead widgets don't expose options until opened; fall back to the option list that
     # was fetched ahead of CP2 (same id), so the value is still validated before filling.
@@ -451,7 +459,7 @@ def verify_fields(fields: Sequence[LiveField], packet: Packet, files: Mapping[st
             assert a is not None
             if not value_matches(f, cur, a.value):
                 problems[f.id] = f"shows {cur!r}, approved {a.value!r}"
-        elif cur not in (None, "", []) and not prefill_ok(f, accept_prefilled):
+        elif cur not in (None, "", []) and not prefill_ok(f, accept_prefilled, packet, aliases):
             problems[f.id] = f"unapproved value present: {cur!r}"
     return problems
 

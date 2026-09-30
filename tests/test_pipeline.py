@@ -712,3 +712,39 @@ def test_score_not_applied_when_location_changes_right_before_publication(engine
         assert apply_result(a, job, version, result, Criteria(), None, ScoreStats()) is False
     with Session(engine) as s:
         assert s.get(Job, job_id).score is None
+
+
+@pytest.mark.parametrize("before,after", [(["Toronto, ON"], ["New York, NY"]),
+                                          (["New York, NY"], ["Toronto, ON"])])
+def test_rule_result_dropped_when_location_changes_during_evaluation(engine, monkeypatch,
+                                                                     before, after):
+    from recrute.pipeline import stages
+
+    with Session(engine) as s:
+        job = Job(title="Security Engineer", apply_url="u", canonical_url="c",
+                  locations=before, description_md="SIEM", description_hash="h")
+        s.add(job)
+        s.commit()
+        job_id = job.id
+    real = stages.apply_hard_filters
+
+    def racing(*a, **kw):
+        result = real(*a, **kw)
+        with Session(engine) as other:  # a re-poll lands while the rules run
+            j = other.get(Job, job_id)
+            j.locations = after
+            other.add(j)
+            other.commit()
+        return result
+
+    monkeypatch.setattr(stages, "apply_hard_filters", racing)
+    with Session(engine) as s:
+        assert filter_new(s, Criteria()).get("skipped") == 1
+    with Session(engine) as s:
+        j = s.get(Job, job_id)
+        assert j.priority is None and j.status == JobStatus.DISCOVERED and j.filter_reason is None
+    monkeypatch.setattr(stages, "apply_hard_filters", real)
+    with Session(engine) as s:  # the next pass judges the current location
+        filter_new(s, Criteria())
+        j = s.get(Job, job_id)
+        assert (j.status == JobStatus.FILTERED_OUT) == (after == ["Toronto, ON"])

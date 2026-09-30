@@ -74,3 +74,40 @@ def test_assist_respects_suspension_and_keeps_evidence(engine, paths):
         s.refresh(app)
         d = app.outcome["details"]
         assert d["submit_attempted"] is True and d["attempted_at"].startswith("2026-09-01")
+
+
+def test_assisted_fill_reserves_daily_caps_before_browser_work(engine, paths, monkeypatch):
+    from datetime import UTC, datetime
+
+    from recrute.apply.scheduler import day_counts
+    from recrute.applying import _run_assist_request
+    from recrute.models import Application, Job, JobStatus
+    from recrute.schemas import Packet
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://boards.greenhouse.io/acme/jobs/1",
+                  canonical_url="c", ats="greenhouse", status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.flush()
+        s.add(Application(job_id=job.id, channel="greenhouse",
+                          packet=Packet(job_id=job.id).model_dump(mode="json"),
+                          outcome={"assist_requested": "x"}))
+        s.commit()
+
+    seen = {}
+
+    def crash(*a, **kw):  # the worker dies during the fill
+        with Session(engine) as other:
+            seen["counts"] = day_counts(other, datetime.now(UTC))
+        raise RuntimeError("browser crashed")
+
+    monkeypatch.setattr("recrute.apply.runner.apply_job", crash)
+    ctx = SimpleNamespace(router=None, paths=paths)
+    with Session(engine) as s:
+        try:
+            _run_assist_request(ctx, s, SimpleNamespace())
+        except RuntimeError:
+            pass
+    assert seen["counts"].total == 1 and seen["counts"].by_channel == {"greenhouse": 1}
+    with Session(engine) as s:
+        assert day_counts(s, datetime.now(UTC)).total == 1

@@ -1,5 +1,6 @@
 """Pipeline stages run by the worker (and callable from the CLI)."""
 
+import json
 from collections.abc import Callable
 
 from sqlmodel import Session, col, select
@@ -12,6 +13,15 @@ from recrute.pipeline.filter import apply_hard_filters
 def _same(column, value) -> list:
     """SQL condition: `column` still holds `value` (NULL-safe)."""
     return [col(column).is_(None) if value is None else column == value]
+
+
+def _same_json(column, value) -> list:
+    """SQL condition: a JSON column still holds `value` (compared as SQLite JSON text)."""
+    from sqlalchemy import func
+
+    if value is None:
+        return [col(column).is_(None)]
+    return [func.json(column) == func.json(json.dumps(value))]
 
 
 def filter_new(session: Session, criteria: Criteria,
@@ -50,7 +60,8 @@ def filter_new(session: Session, criteria: Criteria,
                               *_same(Job.remote, job.remote),
                               *_same(Job.employment_type, job.employment_type),
                               *_same(Job.salary_min, job.salary_min),
-                              *_same(Job.salary_max, job.salary_max))
+                              *_same(Job.salary_max, job.salary_max),
+                              *_same_json(Job.locations, job.locations))
             .values(**values).execution_options(synchronize_session=False))
         if res.rowcount != 1:
             skipped += 1

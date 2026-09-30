@@ -320,7 +320,7 @@ def fill_fields(root: Page | Frame, fields: Sequence[LiveField], packet: Packet,
             if not has_value(answer):
                 if f.current in (None, "", []):
                     report.skipped.append(f.id)
-                elif prefill_ok(f, accept_prefilled):
+                elif prefill_ok(f, accept_prefilled, packet, aliases):
                     report.prefilled[f.id] = f.current
                 else:
                     try:

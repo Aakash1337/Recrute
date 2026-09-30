@@ -178,7 +178,15 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
             else adapter_for(job, router=ctx.router)
         if suspension(session, adapter.name, datetime.now(UTC)) is not None:
             continue  # the account kill switch applies to assisted fills too; request kept
-        app.outcome = {k: v for k, v in app.outcome.items() if k != "assist_requested"}
+        # recorded BEFORE any browser work, like a scheduled attempt: the assisted hand-off
+        # holds today's global and site cap slots (see scheduler.day_counts) even if the
+        # worker dies mid-fill
+        outcome_now = {k: v for k, v in app.outcome.items() if k != "assist_requested"}
+        outcome_now["details"] = {**(outcome_now.get("details") or {}),
+                                  "attempt_started_at": datetime.now(UTC).isoformat(),
+                                  "handoff_reservation": True}
+        app.outcome = outcome_now
+        app.attempts = (app.attempts or 0) + 1
         session.add(app)
         session.commit()
         files = {k: v for k, v in (("resume", app.resume_path),

@@ -359,3 +359,20 @@ def test_packet_files_resolve_only_under_data_and_uploads_are_verified(paths, mo
     assert file_for(q, packet, files) == approved
     packet.answers = [FormAnswer(question_id="cv", value="other/thing.pdf")]
     assert file_for(q, packet, files) is None
+
+
+@pytest.mark.parametrize("answered", [True, False])
+def test_changed_contact_question_is_not_accepted_as_prefill(answered):
+    from recrute.apply.base import LiveField, coverage_check, verify_fields
+
+    approved = FormQuestion(id="email", label="Email address", type="email", required=True)
+    answers = [FormAnswer(question_id="email", value="ada@example.com")] if answered else []
+    packet = Packet(job_id=1, questions=[approved], answers=answers)
+    live = LiveField(id="email", label="Email address", type="email", required=True,
+                     current="ada@example.com",
+                     description="Use your current employer's work email address")
+    assert coverage_check([live], packet, accept_prefilled=True) == ["email"]
+    assert "email" in verify_fields([live], packet, {}, accept_prefilled=True)
+    # unchanged, the LinkedIn contact prefill is still accepted
+    same = live.model_copy(update={"description": ""})
+    assert coverage_check([same], packet, accept_prefilled=True) == []
