@@ -42,12 +42,15 @@ class LiveField(FormQuestion):
     trigger: str = ""  # visible button that opens the file chooser, for file inputs
     current: str | list[str] | None = None  # value already present (prefilled)
     visible: bool = True
+    hint: str = ""  # placeholder / format hint (date pickers)
 
 
 class FillReport(BaseModel):
     filled: dict[str, Any] = Field(default_factory=dict)  # question id -> value put in
-    prefilled: dict[str, Any] = Field(default_factory=dict)  # kept as found (accept_prefilled)
-    skipped: list[str] = Field(default_factory=list)  # optional, no approved answer
+    prefilled: dict[str, Any] = Field(default_factory=dict)  # allowlisted contact prefill kept
+    skipped: list[str] = Field(default_factory=list)  # optional, no approved answer, empty
+    cleared: list[str] = Field(default_factory=list)  # unapproved default/saved value removed
+    problems: dict[str, str] = Field(default_factory=dict)  # live value != approved packet
     unmatched: list[str] = Field(default_factory=list)  # required, not covered by the packet
     failed: dict[str, str] = Field(default_factory=dict)  # id -> why it could not be set
     required_failed: list[str] = Field(default_factory=list)
@@ -60,6 +63,8 @@ class FillReport(BaseModel):
         self.filled.update(other.filled)
         self.prefilled.update(other.prefilled)
         self.skipped += other.skipped
+        self.cleared += [c for c in other.cleared if c not in self.cleared]
+        self.problems.update(other.problems)
         self.unmatched += [u for u in other.unmatched if u not in self.unmatched]
         self.failed.update(other.failed)
         self.required_failed += [u for u in other.required_failed
@@ -107,6 +112,11 @@ class Adapter(Protocol):
 
     def detect_blockers(self, page: Page) -> str | None: ...
 
+    def is_account_security(self, blocker: str) -> bool: ...
+
+    def presubmit_problems(self, page: Page, packet: Packet,
+                           files: Mapping[str, Path]) -> dict[str, str]: ...
+
 
 # --------------------------------------------------------------------------- answers & coverage
 
@@ -131,6 +141,31 @@ def file_role(q: FormQuestion) -> FileRole | None:
     if re.search(r"resume|résumé|\bcv\b|curriculum", text):
         return "resume"
     return None
+
+
+# Contact fields whose value may be prefilled by the site from the user's own account (LinkedIn
+# Easy Apply). Nothing else is ever accepted without an approved answer.
+CONTACT_LABEL_RE = re.compile(
+    r"((first|last|full|given|family|legal|preferred) )?name|"
+    r"e-?mail( address)?|"
+    r"((mobile|cell|home|work) )?(phone|telephone)( number)?|"
+    r"(phone )?country( code)?|phone country( code)?|"
+    r"((current|home) )?(city|location)( \(city\))?",
+    re.IGNORECASE,
+)
+
+
+def is_contact_field(q: FormQuestion) -> bool:
+    """Name / email / phone / phone country / city-location, by label, as plain inputs."""
+    if q.type in ("file", "checkbox", "multiselect", "textarea", "radio"):
+        return False
+    return bool(CONTACT_LABEL_RE.fullmatch(dom.norm(q.label)))
+
+
+def prefill_ok(q: FormQuestion, accept_prefilled: bool) -> bool:
+    """May a value already on the page stand without an approved answer?"""
+    return (accept_prefilled and is_contact_field(q)
+            and getattr(q, "current", None) not in (None, "", []))
 
 
 def resolve_answer(q: FormQuestion, packet: Packet, aliases: Mapping[str, Sequence[str]] = {},
@@ -189,12 +224,10 @@ def question_covered(q: FormQuestion, packet: Packet, *,
             return True
         role = file_role(q)
         roles = set(files) if files is not None else _packet_file_roles(packet)
-        if role in roles:
-            return True
-        return accept_prefilled and bool(getattr(q, "current", None))
+        return role in roles
     a = resolve_answer(q, packet, aliases)
     if not has_value(a):
-        return accept_prefilled and bool(getattr(q, "current", None))
+        return prefill_ok(q, accept_prefilled)
     assert a is not None
     # Typeahead widgets don't expose options until opened; fall back to the option list that
     # was fetched ahead of CP2 (same id), so the value is still validated before filling.
@@ -227,6 +260,74 @@ def coverage_check(questions_on_page: Sequence[FormQuestion], packet: Packet, *,
     return [q.id for q in questions_on_page
             if q.required and not question_covered(q, packet, aliases=aliases,
                                                    accept_prefilled=accept_prefilled, files=files)]
+
+
+def value_matches(f: LiveField, current: Any, value: Any) -> bool:
+    """Does what the live control shows equal the approved value?"""
+    empty = current in (None, "", [])
+    if f.widget == "checkbox":
+        want = value is True or (not isinstance(value, bool) and (
+            dom.norm(str(value)) in {"yes", "true", "checked"}
+            or (bool(f.options) and dom.resolve_option(value, f.options) is not None)))
+        return (not empty) == want
+    if empty:
+        return False
+    if f.type == "multiselect" or isinstance(current, list):
+        want_l = dom.resolve_options(value, f.options) if f.options else (
+            value if isinstance(value, list) else [value])
+        if want_l is None:
+            return False
+        cur = current if isinstance(current, list) else [current]
+        return sorted(dom.norm(str(c)) for c in cur) == sorted(dom.norm(str(w)) for w in want_l)
+    if f.options:
+        want = dom.resolve_option(value, f.options)
+        return want is not None and dom.norm(str(current)) == dom.norm(want)
+    if f.type == "date" or f.widget == "date":
+        return dom.dates_equal(value, str(current), f.hint)
+    if f.type == "tel":
+        a, b = re.sub(r"\D", "", str(current)), re.sub(r"\D", "", dom.as_text(value))
+        return bool(b) and (a == b or (len(b) >= 7 and a.endswith(b[-10:])))
+    if f.widget == "combobox":  # shows the chosen option's label (e.g. "United States +1")
+        return dom.resolve_option(value, [str(current)]) is not None
+    return dom.norm(str(current)) == dom.norm(dom.as_text(value))
+
+
+def verify_fields(fields: Sequence[LiveField], packet: Packet, files: Mapping[str, Path], *,
+                  aliases: Mapping[str, Sequence[str]] = {}, accept_prefilled: bool = False,
+                  ) -> dict[str, str]:
+    """Every non-empty value on the live form must be the approved one (or an allowlisted
+    contact prefill), and every approved answer must actually be there. id -> problem."""
+    problems: dict[str, str] = {}
+    for f in fields:
+        cur = f.current
+        if f.widget == "file" or f.type == "file":
+            path = file_for(f, packet, files, aliases)
+            if path is not None and cur != path.name:
+                problems[f.id] = f"expected file {path.name!r}, form has {cur!r}"
+            elif path is None and cur:
+                problems[f.id] = f"unapproved file attached: {cur!r}"
+            continue
+        a = resolve_answer(f, packet, aliases)
+        if has_value(a):
+            assert a is not None
+            if not value_matches(f, cur, a.value):
+                problems[f.id] = f"shows {cur!r}, approved {a.value!r}"
+        elif cur not in (None, "", []) and not prefill_ok(f, accept_prefilled):
+            problems[f.id] = f"unapproved value present: {cur!r}"
+    return problems
+
+
+def blocker_kind(reason: str) -> str:
+    r = reason.lower()
+    if r.startswith("captcha"):
+        return "captcha"
+    if "checkpoint" in r or "unusual activity" in r or "security check" in r:
+        return "checkpoint"
+    if r.startswith("login_wall"):
+        return "login_wall"
+    if r.startswith("assessment"):
+        return "assessment"
+    return "other"
 
 
 # --------------------------------------------------------------------------- shared behaviour
@@ -332,6 +433,12 @@ class BaseAdapter:
         return dom.detect_page_blockers(page, scope=self.form_selector,
                                         extra=self.blocker_patterns)
 
+    # Signals that the site is scrutinising the account/session: stop the whole channel.
+    account_security_kinds: ClassVar[tuple[str, ...]] = ("captcha", "checkpoint")
+
+    def is_account_security(self, blocker: str) -> bool:
+        return blocker_kind(blocker) in self.account_security_kinds
+
     # ----- reading / filling
 
     def read_form(self, page: Page) -> list[LiveField]:
@@ -350,15 +457,48 @@ class BaseAdapter:
 
     def fill(self, page: Page, job: Job, packet: Packet, files: Mapping[str, Path], *,
              human: Human, pause_only: bool = False) -> FillReport:
+        root = self.form_root(page)
+        report = self.fill_rounds(page, root, packet, files, human)
+        final = self.read_form(page)
+        report.unmatched = self.coverage(final, packet, files)
+        report.problems.update(self.verify(final, packet, files))
+        report.ready_to_submit = not (report.unmatched or report.failed or report.problems)
+        return report
+
+    def fill_rounds(self, page: Page, root: Page | Frame, packet: Packet,
+                    files: Mapping[str, Path], human: Human, rounds: int = 3) -> FillReport:
+        """Fill, then re-read: answers can reveal conditional questions. Newly revealed
+        fields get their own pass (still approved values only)."""
         from recrute.apply.widgets import fill_fields
 
-        root = self.form_root(page)
-        fields = self.read_form(page)
-        report = fill_fields(root, fields, packet, files, human, aliases=self.aliases,
-                             accept_prefilled=self.accept_prefilled)
-        report.unmatched = self.coverage(fields, packet, files)
-        report.ready_to_submit = not (report.unmatched or report.required_failed)
+        report = FillReport()
+        seen: set[str] = set()
+        for i in range(rounds):
+            fields = [f for f in self.read_form(page) if f.id not in seen]
+            if not fields:
+                break
+            if i:
+                report.notes.append(f"pass {i + 1}: newly revealed {[f.id for f in fields]}")
+            seen |= {f.id for f in fields}
+            report.merge(fill_fields(root, fields, packet, files, human, aliases=self.aliases,
+                                     accept_prefilled=self.accept_prefilled))
         return report
+
+    def verify(self, fields: Sequence[LiveField], packet: Packet,
+               files: Mapping[str, Path]) -> dict[str, str]:
+        return verify_fields(fields, packet, files, aliases=self.aliases,
+                             accept_prefilled=self.accept_prefilled)
+
+    def presubmit_problems(self, page: Page, packet: Packet,
+                           files: Mapping[str, Path]) -> dict[str, str]:
+        """Re-extract the live form right before submitting: uncovered required fields and
+        any value that isn't the approved one."""
+        fields = self.read_form(page)
+        problems = {u: "required, not covered by the approved packet"
+                    for u in self.coverage(fields, packet, files)}
+        for k, v in self.verify(fields, packet, files).items():
+            problems.setdefault(k, v)
+        return problems
 
     def submit(self, page: Page, *, human: Human) -> None:
         root = self.form_root(page)

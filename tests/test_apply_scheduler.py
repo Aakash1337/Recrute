@@ -245,10 +245,10 @@ class FakeRunner:
 
 
 def add_app(s: Session, n: int, *, approved=True, channel="greenhouse", score=70,
-            status=JobStatus.APPROVED, trial=False, submitted_at=None):
+            status=JobStatus.APPROVED, trial=False, submitted_at=None, company_id=None):
     job = Job(title=f"Job {n}", apply_url=f"https://job-boards.greenhouse.io/acme/jobs/{n}",
               canonical_url=f"https://job-boards.greenhouse.io/acme/jobs/{n}",
-              ats="greenhouse", status=status, score=score)
+              ats="greenhouse", status=status, score=score, company_id=company_id)
     s.add(job)
     s.commit()
     app = Application(job_id=job.id, channel=channel,
@@ -271,7 +271,8 @@ def session(engine):
 def graduate(s, channel="greenhouse", n=5):
     """n trial applications the human already saw through -> adapter out of trial."""
     for i in range(n):
-        add_app(s, 900 + i, channel=channel, status=JobStatus.APPLIED, trial=True)
+        base = 900 if channel == "greenhouse" else 950
+        add_app(s, base + i, channel=channel, status=JobStatus.APPLIED, trial=True)
 
 
 def test_run_due_never_runs_unapproved(session, paths):
@@ -393,3 +394,226 @@ def test_manual_channel_and_already_submitted_are_not_queued(session, paths):
     runner = FakeRunner()
     res = run_due(session, page_factory=None, paths=paths, now=at(12), runner=runner)
     assert res.ran is False and res.reason.startswith("nothing") and runner.calls == []
+
+
+# --------------------------------------------------------------------------- audit regressions
+
+
+def make_due(s: Session, app: Application, now: datetime) -> None:
+    """Give the app a planned slot that has already passed, so the next tick runs it."""
+    app.scheduled_for = (now - timedelta(minutes=1)).astimezone(UTC)
+    s.add(app)
+    s.commit()
+
+
+def test_claim_is_exclusive_across_sessions(engine, session):
+    from recrute.apply.scheduler import claim
+
+    app, job = add_app(session, 1)
+    with Session(engine) as s2:
+        app2, job2 = s2.get(Application, app.id), s2.get(Job, job.id)
+        assert claim(session, app, job, owner="a", now=at(12), mode="submit",
+                     adapter_name="greenhouse", trial=False)
+        assert not claim(s2, app2, job2, owner="b", now=at(12), mode="submit",
+                         adapter_name="greenhouse", trial=False)
+    session.refresh(app)
+    assert app.attempts == 1 and app.outcome["details"]["attempt_owner"] == "a"
+
+
+def test_revocation_between_planning_and_claim_wins(engine, session):
+    from recrute.apply.scheduler import claim
+
+    app, job = add_app(session, 1)  # loaded as approved in `session`
+    with Session(engine) as other:  # the human revokes at CP2 from the UI
+        o = other.get(Application, app.id)
+        o.approved_at = None
+        other.add(o)
+        other.commit()
+    assert not claim(session, app, job, owner="a", now=at(12), mode="submit",
+                     adapter_name="greenhouse", trial=False)
+    session.refresh(job)
+    assert job.status == JobStatus.APPROVED
+
+
+def test_revocation_during_the_run_blocks_the_submit(engine, session, paths):
+    graduate(session)
+    app, job = add_app(session, 1)
+    make_due(session, app, at(12))
+
+    def runner(job_, packet, **kw):
+        with Session(engine) as other:
+            o = other.get(Application, app.id)
+            o.approved_at = None
+            other.add(o)
+            other.commit()
+        why = kw["pre_submit_check"]()
+        assert why == "CP2 approval was revoked"
+        return ApplyOutcome(status="needs_human", reason=f"not submitted: {why}",
+                            details={"mode": "submit", "effective_mode": "submit",
+                                     "submit_attempted": False})
+
+    res = run_due(session, page_factory=None, paths=paths, now=at(12), runner=runner)
+    assert res.ran and res.outcome.status == "needs_human"
+    session.refresh(job)
+    assert job.status == JobStatus.NEEDS_HUMAN
+
+
+def test_concurrent_schedulers_run_one_application_once(engine, session, paths):
+    import threading
+
+    graduate(session)
+    app, job = add_app(session, 1)
+    make_due(session, app, at(12))
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def slow_runner(job_, packet, **kw):
+        calls.append(job_.id)
+        entered.set()
+        release.wait(10)
+        return ApplyOutcome(status="submitted", reason="ok",
+                            details={"mode": "submit", "effective_mode": "submit",
+                                     "submit_attempted": True})
+
+    results = {}
+
+    def worker():
+        with Session(engine) as s:
+            results["a"] = run_due(s, page_factory=None, paths=paths, now=at(12),
+                                   runner=slow_runner, owner="worker-a")
+
+    t = threading.Thread(target=worker)
+    t.start()
+    assert entered.wait(10)
+    with Session(engine) as s2:  # a second worker ticks while the first is mid-run
+        results["b"] = run_due(s2, page_factory=None, paths=paths, now=at(12),
+                               runner=slow_runner, owner="worker-b")
+    release.set()
+    t.join(10)
+    assert results["a"].ran and not results["b"].ran
+    assert "in progress" in results["b"].reason
+    assert calls == [job.id]
+    # the lock is released afterwards: the next tick is not blocked
+    res = run_due(session, page_factory=None, paths=paths, now=at(12, 5), runner=slow_runner)
+    assert "in progress" not in res.reason
+
+
+def test_unconfirmed_submit_and_crash_count_toward_caps(session, paths):
+    graduate(session)
+    set_setting(session, "site_caps", {"greenhouse": 2})
+    for n in (1, 2, 3):
+        add_app(session, n)
+
+    def unconfirmed(job_, packet, **kw):
+        return ApplyOutcome(status="needs_human", reason="submit clicked but no confirmation",
+                            details={"mode": "submit", "effective_mode": "submit",
+                                     "attempted_at": kw["now"].isoformat(),
+                                     "submit_attempted": True})
+
+    due(session, paths, unconfirmed, now=at(10))
+
+    def crash(*a, **kw):
+        raise RuntimeError("browser died mid-submit")
+
+    due(session, paths, crash, now=at(11))
+    counts = day_counts(session, at(12))
+    assert counts.total == 2 and counts.by_channel == {"greenhouse": 2}
+    # the greenhouse site cap (2) is used up for today: nothing else runs today
+    res = run_due(session, page_factory=None, paths=paths, now=at(13), runner=FakeRunner())
+    assert res.ran is False and res.next_run_at.date() == at(12, day=30).date()
+
+
+def test_account_security_blocker_suspends_the_channel_across_ticks(session, paths):
+    from recrute.apply.state import clear_suspension, suspend, suspension
+
+    graduate(session)
+    graduate(session, channel="lever")
+    add_app(session, 1, score=90)
+    add_app(session, 2, score=80)
+    _, lever_job = add_app(session, 3, channel="lever", score=10)
+
+    def captcha(job_, packet, **kw):
+        return ApplyOutcome(status="needs_human", reason="blocker: captcha: hCaptcha",
+                            details={"mode": "submit", "effective_mode": "submit",
+                                     "account_security": True, "blocker_kind": "captcha",
+                                     "submit_attempted": False})
+
+    due(session, paths, captcha, now=at(10))
+    info = suspension(session, "greenhouse", at(10, 1))
+    assert info and "hCaptcha" in info["reason"]
+
+    ok = FakeRunner()
+    for tick in (at(11), at(15), at(12, day=30), datetime(2026, 10, 1, 12, tzinfo=TZ)):
+        res = run_due(session, page_factory=None, paths=paths, now=tick, runner=ok)
+        assert "greenhouse" in res.skipped_channels
+    due(session, paths, ok, now=at(11))
+    assert [c["job_id"] for c in ok.calls] == [lever_job.id]  # only the other channel ran
+    # the suspension expires after 3 days
+    res = due(session, paths, ok, now=datetime(2026, 10, 2, 11, tzinfo=TZ))
+    assert res.ran and res.job_id != lever_job.id and not res.skipped_channels
+
+    add_app(session, 4)
+    suspend(session, "greenhouse", datetime(2026, 10, 2, 12, tzinfo=TZ), "checkpoint")
+    res = run_due(session, page_factory=None, paths=paths,
+                  now=datetime(2026, 10, 2, 13, tzinfo=TZ), runner=ok)
+    assert res.skipped_channels.get("greenhouse")
+    clear_suspension(session, "greenhouse")  # the human clears it early
+    assert suspension(session, "greenhouse", datetime(2026, 10, 2, 13, tzinfo=TZ)) is None
+
+
+def test_stuck_applying_attempt_is_recovered_never_retried(session, paths):
+    from recrute.apply.scheduler import STUCK_NOTE
+
+    graduate(session)
+    old_app, old_job = add_app(session, 1, status=JobStatus.APPLYING)
+    new_app, new_job = add_app(session, 2, status=JobStatus.APPLYING)
+    for app_, started in ((old_app, at(11)), (new_app, at(11, 50))):
+        app_.attempts = 1
+        app_.outcome = {"status": "in_progress", "details": {
+            "attempt_started_at": started.astimezone(UTC).isoformat(), "attempt_owner": "w",
+            "attempted_at": started.astimezone(UTC).isoformat(), "mode": "submit"}}
+        session.add(app_)
+    session.commit()
+    runner = FakeRunner()
+    res = run_due(session, page_factory=None, paths=paths, now=at(12), runner=runner)
+    assert res.recovered == [old_job.id]
+    session.refresh(old_job)
+    session.refresh(new_job)
+    session.refresh(old_app)
+    assert old_job.status == JobStatus.NEEDS_HUMAN and new_job.status == JobStatus.APPLYING
+    assert old_app.last_error == STUCK_NOTE and old_app.outcome["details"]["submit_attempted"]
+    ev = session.exec(select(StatusEvent).where(StatusEvent.job_id == old_job.id)
+                      .order_by(StatusEvent.id.desc())).first()
+    assert ev.note == STUCK_NOTE
+    assert runner.calls == []  # never retried
+    assert day_counts(session, at(12)).total == 2  # both may have gone out: counted
+
+
+def test_company_cooldown(session, paths):
+    from recrute.apply.scheduler import blocked_companies
+    from recrute.models import Company
+
+    acme, globex = Company(name="Acme"), Company(name="Globex")
+    session.add(acme)
+    session.add(globex)
+    session.commit()
+    graduate(session)
+    add_app(session, 1, status=JobStatus.APPLIED, company_id=acme.id,
+            submitted_at=at(12, day=27).astimezone(UTC))
+    _, j2 = add_app(session, 2, score=95, company_id=acme.id)
+    _, j3 = add_app(session, 3, score=40, company_id=globex.id)
+    runner = FakeRunner()
+    res = due(session, paths, runner, now=at(12))
+    assert res.job_id == j3.id and acme.id in res.skipped_companies
+    # Acme is still cooling down and Globex was just applied to: nothing else runs
+    res = run_due(session, page_factory=None, paths=paths, now=at(15), runner=runner)
+    assert not res.ran and res.reason.startswith("nothing")
+    # 7 days after the Acme application, job 2 becomes eligible
+    res = due(session, paths, runner, now=datetime(2026, 10, 4, 13, tzinfo=TZ))
+    assert res.ran and res.job_id == j2.id
+    # pure helper: cap and cooldown are configurable; an unknown time counts as recent
+    now = at(12)
+    ev = [(1, now - timedelta(days=2)), (1, now - timedelta(days=9)), (2, None)]
+    assert blocked_companies(ev, now) == {1, 2}
+    assert blocked_companies(ev, now, cap=2) == set()
+    assert blocked_companies(ev, now, cooldown=timedelta(days=1)) == {2}

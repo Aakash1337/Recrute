@@ -128,6 +128,17 @@
         yn.querySelector('input').checked = b.dataset.option === 'yes';
       }));
     });
+    // formatted date picker: typed MM/DD/YYYY is re-rendered as "Nov 2, 2026" on blur/Escape
+    // (?datebug=1 simulates a picker that lands on the wrong day)
+    const dateInput = root.querySelector('.ashby-application-form-input-date');
+    const reformat = () => {
+      const m = dateInput.value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (!m) return;
+      const d = new Date(+m[3], +m[1] - 1, +m[2] + (params.get('datebug') === '1' ? 1 : 0));
+      dateInput.value = d.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'});
+    };
+    dateInput.addEventListener('blur', reformat);
+    dateInput.addEventListener('keydown', e => { if (e.key === 'Escape') reformat(); });
     // resume upload
     const resume = document.getElementById('_systemfield_resume');
     root.querySelector('.ashby-application-form-input-file-dropzone-upload').addEventListener('click', () => resume.click());

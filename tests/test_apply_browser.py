@@ -589,3 +589,129 @@ def test_human_paced_mode_end_to_end(srv, context, paths, resume):
     assert out.details["fill"]["filled"]["question_1002"] == long_answer.strip()
     assert out.details["fill"]["failed"] == {}
     assert len(slept) > 100 and all(s >= 0 for s in slept)
+
+
+# --------------------------------------------------------------------------- audit regressions
+
+
+def test_conditional_question_revealed_by_a_selection_goes_to_cp3(srv, context, paths, human,
+                                                                   resume):
+    """Item 2: coverage is re-checked on the live form AFTER filling."""
+    j = job(f"{srv.url}/greenhouse/acme/jobs/1001?conditional=1", "greenhouse")
+    out = run(j, gh_packet(resume), context, paths, human, mode="submit")
+    assert out.status == "needs_human"
+    assert out.unmatched_fields == ["question_1006"]
+    assert srv.posts == []
+
+
+def test_conditional_question_answered_in_packet_is_filled_on_second_pass(srv, context, paths,
+                                                                          human, resume):
+    packet = gh_packet(resume)
+    packet.answers.append(a("question_1006", "Contained a credential-stuffing campaign."))
+    j = job(f"{srv.url}/greenhouse/acme/jobs/1001?conditional=1", "greenhouse")
+    out = run(j, packet, context, paths, human, mode="submit")
+    assert out.status == "submitted", out.reason
+    body = srv.posts[0]["body"].decode()
+    assert "credential-stuffing" in body
+    assert any("newly revealed" in n for n in out.details["fill"]["notes"])
+
+
+def test_linkedin_prefilled_screening_answer_is_not_accepted(srv, context, paths, human,
+                                                             resume):
+    """Item 3: only contact fields may keep a LinkedIn prefill."""
+    j = job(f"{srv.url}/linkedin/jobs/view/4000/?prefilled_sponsor=1", "linkedin", job_id=4)
+    out = run(j, li_packet(resume), context, paths, human)
+    assert out.status == "needs_human"
+    assert len(out.unmatched_fields) == 1
+    assert out.unmatched_fields[0].endswith("-298-multipleChoice")
+    assert srv.posts == []
+
+
+def test_linkedin_missing_packet_resume_never_sends_saved_resume(srv, context, paths, human,
+                                                                 resume):
+    """Item 4: without the approved PDF, LinkedIn would send the saved 'Old_Resume.pdf'."""
+    packet = li_packet(resume)
+    packet.resume_pdf = str(resume.parent / "gone.pdf")
+    j = job(f"{srv.url}/linkedin/jobs/view/4000/", "linkedin", job_id=4)
+    out = run(j, packet, context, paths, human, files={"resume": resume})  # not the approved one
+    assert out.status == "needs_human" and "_resume" in out.unmatched_fields
+    assert srv.posts == []
+
+
+def test_default_selected_optional_field_is_cleared_before_submit(srv, context, paths, human,
+                                                                  resume):
+    """Item 5: an unapproved site default (optional demographic select) never goes out."""
+    j = job(f"{srv.url}/lever/acme/abc-123/apply?defaults=1", "lever", job_id=2)
+    out = run(j, lever_packet(resume), context, paths, human)
+    assert out.status == "submitted", out.reason
+    assert "eeo[veteran]" in out.details["fill"]["cleared"]
+    body = srv.posts[0]["body"].decode()
+    assert 'name="eeo[veteran]"\r\n\r\n\r\n' in body
+    assert "I am not a protected veteran" not in body
+
+
+def test_default_radio_that_cannot_be_cleared_goes_to_cp3(srv, context, paths, human, resume):
+    j = job(f"{srv.url}/lever/acme/abc-123/apply?defaults=2", "lever", job_id=2)
+    out = run(j, lever_packet(resume), context, paths, human)
+    assert out.status == "needs_human"
+    assert "cards[d0d0d0d0-0000-4000-8000-000000000002][field0]" in out.details["fill_failed"]
+    assert srv.posts == []
+
+
+def test_optional_approved_answer_that_fails_stops_submit(srv, context, paths, human, resume):
+    """Item 7: an approved answer that can't go in (over maxlength) stops the run even if the
+    field is optional."""
+    packet = gh_packet(resume)
+    packet.answers = [x for x in packet.answers if x.question_id != "question_1001"]
+    packet.answers.append(a("question_1001", "https://example.com/" + "x" * 300))
+    j = job(f"{srv.url}/greenhouse/acme/jobs/1001", "greenhouse")
+    out = run(j, packet, context, paths, human, mode="submit")
+    assert out.status == "needs_human" and "question_1001" in out.details["fill_failed"]
+    assert "allows 255" in out.details["fill_failed"]["question_1001"]
+    assert srv.posts == []
+
+
+def test_native_date_input_is_verified(srv, context, paths, human, resume):
+    """Item 9: native <input type=date> is set and read back as the approved date."""
+    packet = gh_packet(resume)
+    packet.answers.append(a("question_1007", "2026-11-02"))
+    j = job(f"{srv.url}/greenhouse/acme/jobs/1001", "greenhouse")
+    out = run(j, packet, context, paths, human, mode="submit")
+    assert out.status == "submitted", out.reason
+    assert 'name="question_1007"\r\n\r\n2026-11-02\r\n' in srv.posts[0]["body"].decode()
+
+
+def test_formatted_date_picker_is_compared_by_date(srv, context, paths, human, resume):
+    """Item 9: a picker that re-renders the date ("Nov 2, 2026") still verifies; one that lands
+    on another day does not."""
+    j = job(f"{srv.url}{ASHBY_URL}", "ashby", job_id=3)
+    out = run(j, ashby_packet(resume), context, paths, human, mode="dry_run")
+    assert out.status == "dry_run", out.reason
+    assert out.details["fill"]["filled"]["3f4e05d4-dd62-48ef-96ca-d9f293ae18d4"] == "2026-11-02"
+    html = (Path(out.receipt_dir) / "form.html").read_text(encoding="utf-8")
+    assert 'value="Nov 2, 2026"' in html
+
+    j = job(f"{srv.url}{ASHBY_URL}?datebug=1", "ashby", job_id=3)
+    out = run(j, ashby_packet(resume), context, paths, human, mode="submit")
+    assert out.status == "needs_human"
+    assert "3f4e05d4-dd62-48ef-96ca-d9f293ae18d4" in out.details["fill_failed"]
+    assert srv.posts == []
+
+
+def test_pre_submit_gate_blocks_the_click(srv, context, paths, human, resume):
+    """Item 1 (runner side): a revoked approval seen right before the click stops it."""
+    j = job(f"{srv.url}/greenhouse/acme/jobs/1001", "greenhouse")
+    out = run(j, gh_packet(resume), context, paths, human, mode="submit",
+              pre_submit_check=lambda: "CP2 approval was revoked")
+    assert out.status == "needs_human" and "revoked" in out.reason
+    assert out.details["submit_attempted"] is False
+    assert srv.posts == []
+
+
+def test_captcha_blocker_is_flagged_as_account_security(srv, context, paths, human, resume):
+    out = run(job(f"{srv.url}/captcha/apply?kind=hcaptcha", "greenhouse"), gh_packet(resume),
+              context, paths, human)
+    assert out.details["account_security"] is True and out.details["blocker_kind"] == "captcha"
+    out = run(job(f"{srv.url}/assessment/apply", "greenhouse"), gh_packet(resume), context,
+              paths, human)
+    assert out.details["account_security"] is False

@@ -8,8 +8,11 @@ Additional questions -> Review, driven by footer buttons aria-labelled "Continue
 <Company>!".
 
 Rules specific to this channel:
-  * contact fields LinkedIn prefills from the user's own profile are accepted as-is
-    (accept_prefilled); anything else required must come from the approved packet;
+  * only CONTACT fields (name, email, phone, phone country, city) that LinkedIn prefills from
+    the user's own profile may keep their value; screening / consent questions always need an
+    approved answer, and unapproved defaults are cleared or sent to CP3;
+  * the packet's resume must be attached and shown as selected, else CP3 (LinkedIn would
+    otherwise send a previously saved resume);
   * questions only appear step by step, so coverage is re-checked on EVERY step and the
     adapter stops at the first step with an uncovered required field (never guesses);
   * security checkpoints / unusual-activity notices / logouts are blockers (kill switch);
@@ -19,13 +22,12 @@ Rules specific to this channel:
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from recrute.apply import dom
-from recrute.apply.base import BaseAdapter, BlockedError, FillReport
-from recrute.apply.widgets import fill_fields
+from recrute.apply.base import BaseAdapter, BlockedError, FillReport, LiveField, file_for
 from recrute.schemas import FormQuestion, Packet
 
 if TYPE_CHECKING:
@@ -41,6 +43,7 @@ SUBMIT = 'button[aria-label="Submit application"]'
 REVIEW = 'button[aria-label="Review your application"]'
 NEXT = 'button[aria-label="Continue to next step"]'
 MAX_STEPS = 12
+RESUME_KEY = "_resume"
 
 BASELINE_QUESTIONS = [
     FormQuestion(id="first_name", label="First name", required=True),
@@ -56,7 +59,9 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
     name = "linkedin_easy_apply"
     ats_names = ("linkedin", "linkedin_easy_apply")
     hosts = ("linkedin.com",)
-    accept_prefilled = True
+    accept_prefilled = True  # contact-field allowlist only (see base.is_contact_field)
+    # a logout mid-session is unexpected here: we rely on the saved session
+    account_security_kinds: ClassVar[tuple[str, ...]] = ("captcha", "checkpoint", "login_wall")
     form_selector = MODAL
     submit_selector = SUBMIT
     blocker_patterns: ClassVar[tuple[tuple[str, str], ...]] = (
@@ -122,24 +127,52 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
         modal = self._visible(page, MODAL)
         return modal.inner_text()[:4000] if modal else ""
 
+    def coverage(self, fields: Sequence[LiveField], packet: Packet,
+                 files: Mapping[str, Path] | None = None) -> list[str]:
+        out = super().coverage(fields, packet, files)
+        if files is not None and "resume" not in files and RESUME_KEY not in out:
+            # Without the approved PDF, LinkedIn would silently send a previously saved resume.
+            out.append(RESUME_KEY)
+        return out
+
     def fill(self, page: Page, job: Job, packet: Packet, files: Mapping[str, Path], *,
              human: Human, pause_only: bool = False) -> FillReport:
         report = FillReport(steps=0)
+        resume = files.get("resume")
+        if resume is None:
+            report.unmatched.append(RESUME_KEY)
+            report.labels[RESUME_KEY] = "Resume (the approved packet PDF is missing)"
+            report.notes.append("not starting: approved resume file missing")
+            return report
+        resume_attached = False
         for _ in range(MAX_STEPS):
             report.steps += 1
+            report.merge(self.fill_rounds(page, page, packet, files, human))
             fields = self.read_form(page)
             unmatched = self.coverage(fields, packet, files)
-            step = fill_fields(page, fields, packet, files, human, aliases=self.aliases,
-                               accept_prefilled=True)
-            report.merge(step)
             if unmatched:
                 report.unmatched += [u for u in unmatched if u not in report.unmatched]
                 report.notes.append(f"stopped at step {report.steps}: required fields not "
                                     "covered by the approved packet")
                 return report
-            if step.required_failed:
+            if report.failed:
                 return report
+            problems = self.verify(fields, packet, files)
+            if problems:
+                report.problems.update(problems)
+                report.notes.append(f"stopped at step {report.steps}: values differ from packet")
+                return report
+            for f in fields:
+                if f.widget == "file" and file_for(f, packet, files, self.aliases) == resume:
+                    # attached AND shown as the selected document in the dialog
+                    resume_attached = (f.current == resume.name
+                                       and resume.name in self._signature(page))
             if self._visible(page, SUBMIT):
+                if not resume_attached:
+                    report.failed[RESUME_KEY] = ("the approved resume was never attached and "
+                                                 "selected; LinkedIn would send a saved one")
+                    report.required_failed.append(RESUME_KEY)
+                    return report
                 report.ready_to_submit = True
                 return report
             nxt = self._visible(page, REVIEW) or self._visible(page, NEXT)
