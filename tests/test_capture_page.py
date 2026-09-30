@@ -121,7 +121,7 @@ def test_description_text_keeps_inline_markup_inline():
     ("https://jobs.smartrecruiters.com/Acme/743999912345678-soc-analyst",
      ("smartrecruiters", "Acme", "743999912345678")),
     ("https://acme.wd5.myworkdayjobs.com/en-US/External/job/New-York-NY/SOC-Analyst_R12345",
-     ("workday", "acme", "R12345")),
+     ("workday", "acme/wd5/External", "R12345")),
     ("https://www.acme.example/careers/job?gh_jid=4567", ("greenhouse", None, "4567")),
 ])
 def test_detect_ats(url, expected):
@@ -136,3 +136,10 @@ def test_detect_ats_none_and_linkedin_ids():
     assert linkedin_job_id("https://www.linkedin.com/jobs/collections/recommended/?currentJobId="
                            "4011111111") == "4011111111"
     assert linkedin_job_id("https://example.com/jobs/view/4012345678") is None
+
+
+def test_eu_lever_capture_keeps_region():
+    from recrute.capture.urls import detect_ats
+
+    ref = detect_ats("https://jobs.eu.lever.co/acme/1234abcd-0000-1111-2222-333344445555")
+    assert ref is not None and ref.ats == "lever" and ref.token == "eu:acme"

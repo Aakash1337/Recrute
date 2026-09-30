@@ -243,7 +243,21 @@ def _mention_required(sentence: str, pattern: re.Pattern[str]) -> bool:
     return False
 
 
+_CLEARANCE_CLAUSES = re.compile(
+    r";|,?\s+\b(?:but|however|although|though|while|yet)\b|,\s+(?=must|candidates?|applicants?|"
+    r"you)", re.IGNORECASE)
+
+
 def _clearance_required(s: str) -> bool:
+    """Evaluated per clause: "No active clearance is required, but must be able to obtain a
+    Secret clearance" -> the second clause is a requirement despite the first's negation."""
+    clauses = [c for c in _CLEARANCE_CLAUSES.split(s) if c and c.strip()]
+    if len(clauses) > 1:
+        return any(_clearance_clause(c) for c in clauses)
+    return _clearance_clause(s)
+
+
+def _clearance_clause(s: str) -> bool:
     if not _CLEARANCE.search(s) or _CLEARANCE_NEG.search(s):
         return False
     if _all_mentions_negated(s, _CLEARANCE):

@@ -61,6 +61,7 @@ def parse_feed(payload: dict[str, Any], us_only: bool = True) -> Iterator[RawJob
 class RemotiveSource:
     name = "remotive"
     cadence = timedelta(hours=6)  # Remotive asks for at most ~4 fetches/day
+    feed_delay = timedelta(hours=24)  # postings appear in the free feed ~24h after posting
 
     def __init__(self, us_only: bool = True):
         self.us_only = us_only

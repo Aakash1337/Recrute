@@ -425,3 +425,62 @@ def test_multiple_roles_from_one_hn_comment_stay_distinct(engine):
                                ats=None, ats_token=None, ats_job_id=None, title="ML Engineer",
                                apply_url="https://acme.example/jobs/ml")])
         assert again.new == 0
+
+
+def test_hn_roles_sharing_a_careers_link_stay_distinct(engine):
+    comment = "https://news.ycombinator.com/item?id=777"
+    careers = "https://acme.example/careers"
+    with Session(engine) as s:
+        for _ in range(2):  # repeated ingestion stays stable
+            ingest(s, [
+                raw(source="hn_whoshiring", url=comment, source_job_id="777-1", ats=None,
+                    ats_token=None, ats_job_id=None, title="Security Engineer",
+                    apply_url=careers),
+                raw(source="hn_whoshiring", url=comment, source_job_id="777-2", ats=None,
+                    ats_token=None, ats_job_id=None, title="ML Engineer", apply_url=careers),
+            ])
+        titles = sorted(j.title for j in s.exec(select(Job)).all())
+        assert titles == ["ML Engineer", "Security Engineer"]
+
+
+def test_concurrent_insert_is_merged_not_fatal(engine, monkeypatch):
+    """Another writer inserted the job after our lookup (simulated: the first lookup misses a
+    row that exists). The uniqueness conflict is retried and merged instead of aborting."""
+    import recrute.pipeline.ingest as ing
+
+    with Session(engine) as other:
+        ingest(other, [raw()])
+    real_find = ing._find_existing
+    calls = {"n": 0}
+
+    def stale_find(session, r, canon, fkey):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real_find(session, r, canon, fkey)
+
+    monkeypatch.setattr(ing, "_find_existing", stale_find)
+    with Session(engine) as s:
+        stats = ingest(s, [raw(), raw(url="https://boards.greenhouse.io/acme/jobs/2",
+                                      ats_job_id="2", title="SOC Analyst")])
+        assert calls["n"] >= 3  # retried after the conflict
+        assert len(s.exec(select(Job)).all()) == 2
+        assert stats.new == 1 and stats.updated == 1
+
+
+def test_filter_does_not_overwrite_concurrent_decision(engine):
+    from recrute.review import decide
+
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        job = s.exec(select(Job)).one()
+        job.score = 60  # e.g. a stale review page shows it after a re-poll
+        s.add(job)
+        s.commit()
+
+        def racing_elig(text):
+            with Session(engine) as other:
+                decide(other, job.id, "approve")  # the human approves mid-filter
+            return {"clearance_required"}  # ...and the rules would have dropped it
+
+        filter_new(s, Criteria(), racing_elig)
+        s.refresh(job)
+        assert job.status == JobStatus.SHORTLISTED

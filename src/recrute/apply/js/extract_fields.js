@@ -116,7 +116,24 @@
   };
   const out = [];
   const used = new Set();
-  const push = f => { out.push(f); };
+  // Help/description text attached to a field (aria-describedby, or hint text in its
+  // container). Conditions often live here ("...in Canada", "without sponsorship").
+  const descOf = f => {
+    let el = null;
+    try { el = document.querySelector(f.selector); } catch (e) { el = null; }
+    if (!el) return '';
+    const ids = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+    let t = ids.map(i => document.getElementById(i)).filter(Boolean).map(txt).join(' ');
+    if (!clean(t)) {
+      const c = container(el);
+      if (c) {
+        const h = c.box.querySelector('[class*="description"], [class*="help"], [class*="hint"], [class*="subtitle"], small');
+        if (h && !h.contains(el) && h !== c.label && !c.label.contains(h)) t = txt(h);
+      }
+    }
+    return clean(t).slice(0, 500);
+  };
+  const push = f => { if (f.description === undefined) f.description = descOf(f); out.push(f); };
 
   // yes/no button pairs (Ashby "yesno")
   for (const yn of scope.querySelectorAll('[class*="yesno"]')) {

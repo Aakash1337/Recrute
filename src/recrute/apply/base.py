@@ -176,9 +176,15 @@ _FAMILY = {"text": "text", "textarea": "text", "email": "text", "tel": "text", "
 
 
 # Words whose presence/absence is purely cosmetic in a form label.
-_COSMETIC = {"please", "optional", "required", "your", "the", "a", "an", "city", "state",
-             "country", "profile", "url", "link", "full", "if", "any", "applicable", "enter",
-             "provide", "here", "e", "g", "eg", "ex"}
+_COSMETIC = {"please", "optional", "required", "your", "the", "a", "an", "profile", "url",
+             "link", "if", "applicable", "enter", "provide", "here"}
+# Explicit label equivalences (after normalization) that are genuinely the same field.
+_ALIASES = [{"location", "location city", "current location", "city location"},
+            {"linkedin", "linkedin profile", "linkedin url", "linkedin profile url"}]
+# Description content that can carry conditions: then it must match exactly.
+_CONDITION_RE = re.compile(
+    r"\d|sponsor|visa|citizen|authori[sz]|clearance|country|countries|canada|kingdom|\buk\b|"
+    r"europe|india|remote|relocat|salary|hour|year|require|must|only|not\b|without", re.I)
 
 
 def same_question(approved: FormQuestion, live: FormQuestion) -> bool:
@@ -199,16 +205,38 @@ def same_question(approved: FormQuestion, live: FormQuestion) -> bool:
             pair == {"text", "choice"} and not approved.options and not live.options)
         if not ok:
             return False
+    if not _same_description(approved.description, live.description):
+        return False
     a, b = dom.norm(approved.label), dom.norm(live.label)
     if not a or not b or a == b:
         return True
-    if re.sub(r"[^a-z0-9]", "", a) == re.sub(r"[^a-z0-9]", "", b):
+    ca, cb = re.sub(r"[^a-z0-9]", "", a), re.sub(r"[^a-z0-9]", "", b)
+    if ca == cb:
         return True  # "VeteranStatus" vs "Veteran Status"
     ta, tb = re.findall(r"[a-z0-9]+", a), re.findall(r"[a-z0-9]+", b)
+    if any({" ".join(ta), " ".join(tb)} <= group for group in _ALIASES):
+        return True
     if [t for t in ta if any(c.isdigit() for c in t)] != \
             [t for t in tb if any(c.isdigit() for c in t)]:
         return False
-    return set(ta) ^ set(tb) <= _COSMETIC  # only filler words differ
+    # only filler words may differ, and the remaining words must be in the same order
+    return set(ta) ^ set(tb) <= _COSMETIC and \
+        [t for t in ta if t not in _COSMETIC] == [t for t in tb if t not in _COSMETIC]
+
+
+def _same_description(approved: str, live: str) -> bool:
+    a, b = dom.norm(approved or ""), dom.norm(live or "")
+    if a == b or re.sub(r"[^a-z0-9]", "", a) == re.sub(r"[^a-z0-9]", "", b):
+        return True
+    if not a:
+        # nothing was reviewed at CP2: new help text is only harmless if it can't carry
+        # conditions ("in Canada", "without sponsorship", "3+ years")
+        return not _CONDITION_RE.search(b)
+    if not b:
+        # the live page shows no description where one was approved: can't reconcile unless
+        # the approved one had no conditions in it
+        return not _CONDITION_RE.search(a)
+    return False
 
 
 def resolve_answer(q: FormQuestion, packet: Packet, aliases: Mapping[str, Sequence[str]] = {},

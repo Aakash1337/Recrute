@@ -81,8 +81,7 @@ def parse_questions(data: dict[str, Any]) -> list[FormQuestion]:
         _question(q, out, seen)
     if "phone" in seen:
         # The live form pairs the phone with a required country picker that the API omits.
-        out.append(FormQuestion(id="country", label="Country", type="select", required=True,
-                                description="phone country (live-form widget, not in the API)"))
+        out.append(FormQuestion(id="country", label="Country", type="select", required=True))
     for block in data.get("compliance") or []:
         for q in block.get("questions") or []:
             _question(q, out, seen)

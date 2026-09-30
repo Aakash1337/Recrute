@@ -179,3 +179,29 @@ def test_partial_source_failure_keeps_cursor(engine, monkeypatch):
     with Session(engine) as s:
         st = get_state(s, "source:hn_whoshiring")
         assert "last_ok" not in st and st["backoff_until"]
+
+
+def test_delayed_feed_window(engine, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.settings import set_setting, set_state
+
+    seen = {}
+
+    class Delayed:
+        cadence = timedelta(hours=6)
+        feed_delay = timedelta(hours=24)
+
+        def fetch(self, sctx):
+            seen["since"] = sctx.since
+            return iter(())
+
+    with Session(engine) as s:
+        set_setting(s, "sources_enabled", {k: False for k in discovery.SEARCH_SOURCES}
+                    | {"remotive": True})
+        last = datetime.now(UTC) - timedelta(hours=7)
+        set_state(s, "source:remotive", {"last_ok": last.isoformat()})
+    monkeypatch.setattr(discovery, "get_source", lambda name: Delayed())
+    monkeypatch.setattr(discovery, "Http", lambda **kw: FakeHttp({}))
+    discovery.discover_search(_ctx(engine))
+    assert seen["since"] <= last - timedelta(hours=24)

@@ -118,8 +118,10 @@ def discover_search(ctx) -> dict:
                     continue
                 if name == "hn_whoshiring":
                     src.task = "extract_postings"
+                # delayed feeds publish old postings late: widen the window by that delay
+                delay = getattr(src, "feed_delay", timedelta(0))
                 sctx = SourceContext(http=http, criteria=ctx.criteria, router=ctx.router,
-                                     since=last - timedelta(hours=1) if last else None)
+                                     since=last - timedelta(hours=1) - delay if last else None)
                 try:
                     raws = list(src.fetch(sctx))
                     if sctx.errors:

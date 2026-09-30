@@ -109,3 +109,22 @@ def test_manual_submission_counts_toward_caps(engine):
 ])
 def test_substantive_changes_are_new_questions(approved, live):
     assert not same_question(q(approved), q(live))
+
+
+def test_same_label_different_legal_condition_in_description():
+    us = FormQuestion(id="wa", label="Work authorization", type="select",
+                      options=["Yes", "No"], description="Are you authorized to work in the US?")
+    ca = us.model_copy(update={"description": "Are you authorized to work in Canada?"})
+    assert not same_question(us, ca)
+    assert same_question(us, us.model_copy(update={"description": "Are you authorized to "
+                                                                  "work in the US"}))
+
+
+@pytest.mark.parametrize("approved,live", [("City", "Country"), ("City", "State")])
+def test_location_fields_are_not_interchangeable(approved, live):
+    assert not same_question(q(approved, "text", ()), q(live, "text", ()))
+
+
+def test_word_order_matters():
+    assert not same_question(q("Years of Python over Java", "text", ()),
+                             q("Years of Java over Python", "text", ()))

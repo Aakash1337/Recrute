@@ -301,3 +301,16 @@ def test_caveated_negative_is_not_a_denial():
     assert detect_sponsorship("We cannot guarantee visa sponsorship.")[0] == "unknown"
     assert detect_sponsorship("We are unable to sponsor visas for this role.")[0] == \
         "no_sponsorship"
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("No active Secret clearance is required, but must be able to obtain a Secret clearance.",
+     True),
+    ("No active clearance is required; you must be able to obtain a TS/SCI clearance.", True),
+    ("No security clearance is required for this role.", False),
+    ("An active Secret clearance is preferred but not required.", False),
+])
+def test_clearance_mixed_clauses(text, expected):
+    from recrute.badges import eligibility_flags
+
+    assert ("clearance_required" in eligibility_flags(text)) is expected

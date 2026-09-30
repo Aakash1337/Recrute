@@ -113,9 +113,19 @@ def load_answer_bank(paths: Paths) -> AnswerBank:
     return AnswerBank.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
 
 
+def _full_key(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "answer"
+
+
 def answer_key(label: str) -> str:
-    """Stable answers.yaml key for a question label ("Why do you want X?" -> why_do_you_want_x)."""
-    return re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:60] or "answer"
+    """Stable answers.yaml key for a question label ("Why do you want X?" -> why_do_you_want_x).
+    Long labels get a digest suffix so two different questions never share a key."""
+    import hashlib
+
+    full = _full_key(label)
+    if len(full) <= 60:
+        return full
+    return f"{full[:51]}_{hashlib.sha1(full.encode()).hexdigest()[:8]}"
 
 
 @contextmanager
@@ -358,7 +368,8 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
       now OR future; no scope words -> only answered when now and future agree.
     - polarity: "able/authorized to work WITHOUT sponsorship" asks the inverse question.
     """
-    t = clean_label(label)
+    # the FULL label: parenthetical clauses like "now (or in the future)" carry the scope
+    t = " ".join(label.lower().replace("*", " ").replace("’", "'").split())
     now, fut = wa.requires_sponsorship_now, wa.requires_sponsorship_future
     has_now, has_fut = bool(_NOW_RE.search(t)), bool(_FUTURE_RE.search(t))
     if has_now and has_fut:
@@ -511,6 +522,11 @@ def work_auth_answer(label: str, wa: WorkAuthorization) -> bool | None:
     raw = label.lower()
     if _NEGATED_Q.search(raw) or re.search(r"sponsor|visa|any employer|h-?1b|opt\b|cpt\b", raw):
         return None
+    # The bank only knows US authorization: the question must explicitly be about the US.
+    if not re.search(r"\b(u\.?s\.?a?|united states|america)\b", raw) or re.search(
+            r"country (of|in which|where)|countries|canada|kingdom|\buk\b|europe|\beu\b|"
+            r"india|mexico|australia|germany", raw):
+        return None
     if wa.authorized_to_work_in_us is None:
         return None
     return bool(wa.authorized_to_work_in_us)
@@ -585,6 +601,9 @@ def _common_answer(q: FormQuestion, bank: AnswerBank) -> tuple[str, bool] | None
     key = answer_key(q.label)
     if key in bank.common:
         return bank.common[key], True
+    legacy = _full_key(q.label)[:60]  # keys written before digest suffixes existed
+    if legacy != key and legacy in bank.common:
+        return bank.common[legacy], False  # possibly another question's answer: review it
     keys = list(bank.common)
     best = process.extractOne(q.label, [k.replace("_", " ") for k in keys],
                               scorer=fuzz.token_set_ratio, processor=utils.default_process,

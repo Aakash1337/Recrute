@@ -38,7 +38,9 @@
       {% for q in packet.questions %}
         {% set a = answers.get(q.id) %}
         <tr class="{{ 'new' if a and a.needs_review }}">
-          <td style="width:40%">{{ q.label }}{% if q.required %} <span class="bad">*</span>{% endif %}<br><span class="muted">{{ a.source if a else 'unanswered' }}</span></td>
+          <td style="width:40%">{{ q.label }}{% if q.required %} <span class="bad">*</span>{% endif %}
+            {% if q.description %}<br><span class="muted" style="font-style:italic">{{ q.description }}</span>{% endif %}
+            <br><span class="muted">{{ a.source if a else 'unanswered' }}</span></td>
           <td>
           {% if q.type == 'file' %}<span class="muted">{{ a.value if a else '' }}</span>
           {% elif q.options %}

@@ -417,3 +417,37 @@ def test_hourly_salary_not_filled_from_annual_range():
     q = FormQuestion(id="s", label="What is your desired hourly salary?", type="number")
     a = match_question(q, bank, priority="P1")
     assert a is None or a.value in (None, "")
+
+
+def test_sponsorship_scope_in_parentheses():
+    from recrute.tailor.answers import WorkAuthorization, sponsorship_answer
+
+    wa = WorkAuthorization(requires_sponsorship_now=False, requires_sponsorship_future=True)
+    assert sponsorship_answer("Will you require sponsorship now (or in the future)?", wa) is True
+    assert sponsorship_answer("Will you require sponsorship [now or in the future]?", wa) is True
+
+
+@pytest.mark.parametrize("label", [
+    "Are you legally authorized to work in Canada?",
+    "Are you legally authorized to work in the UK?",
+    "Are you legally authorized to work in the country of employment?",
+    "Are you legally authorized to work?",
+])
+def test_non_us_or_unspecified_jurisdiction_left_for_user(label):
+    from recrute.tailor.answers import WorkAuthorization, work_auth_answer
+
+    assert work_auth_answer(label, WorkAuthorization(authorized_to_work_in_us=True)) is None
+
+
+def test_long_labels_do_not_collide():
+    from recrute.schemas import FormQuestion
+    from recrute.tailor.answers import AnswerBank, answer_key, match_question
+
+    a = ("Describe a situation in which you had to resolve a difficult security incident "
+         "while working on a team")
+    b = ("Describe a situation in which you had to resolve a difficult security incident "
+         "while working independently")
+    assert answer_key(a) != answer_key(b)
+    bank = AnswerBank.model_validate({"common": {answer_key(a): "Team answer."}})
+    ans = match_question(FormQuestion(id="x", label=b, type="textarea"), bank)
+    assert ans is None or ans.value != "Team answer." or ans.needs_review

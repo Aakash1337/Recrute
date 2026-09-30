@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import timedelta
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from recrute.models import Company, Job, JobSource, JobStatus, StatusEvent, utcnow
@@ -82,13 +83,27 @@ def source_url(raw: RawJob) -> str:
     return raw.url
 
 
+# Sources that emit several roles from one page (and often one shared careers link).
+MULTI_ROLE_SOURCES = {"hn_whoshiring"}
+
+
 def job_canonical(raw: RawJob) -> tuple[str, str]:
-    """(apply target, canonical key). Without an apply URL, a multi-role source's role id keeps
-    roles that share a page URL apart."""
+    """(apply target, canonical key). A role id keeps roles apart when they share a page URL
+    (no apply URL) or, for multi-role sources, a generic careers link (anything that isn't a
+    specific requisition on a known ATS)."""
     target = raw.apply_url or raw.url
     canon = canonical_url(target)
-    if raw.apply_url is None and raw.source_job_id and raw.source_job_id not in canon:
-        canon = f"{canon}#{raw.source_job_id}"
+    sid = raw.source_job_id
+    if not sid or sid in canon:
+        return target, canon
+    if raw.apply_url is None:
+        return target, f"{canon}#{sid}"
+    if raw.source in MULTI_ROLE_SOURCES:
+        from recrute.sources.ats_url import parse_ats_url
+
+        ref = parse_ats_url(target)
+        if ref is None or not ref.job_id:  # a careers page, not one job
+            return target, f"{canon}#{sid}"
     return target, canon
 
 
@@ -143,98 +158,116 @@ def _prefer(raw: RawJob) -> bool:
     return raw.ats in {"greenhouse", "lever", "ashby", "workable", "smartrecruiters"}
 
 
+def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
+    """Upsert one posting (runs inside a savepoint; see ingest)."""
+    target, canon = job_canonical(raw)
+    fkey = fuzzy_key(raw.company, raw.title, raw.locations)
+    desc = description_markdown(raw.description_html, raw.description_text)
+    job = _find_existing(session, raw, canon, fkey)
+    if job is None:
+        company = upsert_company(session, raw)
+        job = Job(company_id=company.id, title=raw.title.strip(), locations=raw.locations,
+                  remote=raw.remote, employment_type=raw.employment_type,
+                  salary_min=raw.salary_min, salary_max=raw.salary_max,
+                  salary_currency=raw.salary_currency, description_md=desc,
+                  description_hash=content_hash(desc), apply_url=target,
+                  canonical_url=canon, ats=raw.ats, ats_job_id=raw.ats_job_id,
+                  posted_at=raw.posted_at, department=raw.department, fuzzy_key=fkey)
+        session.add(job)
+        session.flush()
+        session.add(StatusEvent(job_id=job.id, status=JobStatus.DISCOVERED,
+                                note=f"source={raw.source}"))
+        stats.new += 1
+        stats.new_job_ids.append(job.id)
+    else:
+        known = session.exec(select(JobSource).where(JobSource.job_id == job.id,
+                                                     JobSource.source == raw.source)).first()
+        if known is None:
+            stats.merged += 1
+        else:
+            stats.updated += 1
+        job.last_seen = now
+        if job.status == JobStatus.CLOSED:
+            job.status = JobStatus.DISCOVERED
+            job.priority = None  # re-run rules and triage for the reopened posting
+            job.score = None
+            job.filter_reason = None
+            session.add(StatusEvent(job_id=job.id, status=JobStatus.DISCOVERED,
+                                    note=f"posting reopened (source={raw.source})"))
+        job.closed_at = None
+        company = session.get(Company, job.company_id) if job.company_id else None
+        if company is not None:
+            learn_company_board(session, company, raw)
+        same_posting = (raw.ats and raw.ats == job.ats and raw.ats_job_id
+                        and raw.ats_job_id == job.ats_job_id and canon != job.canonical_url)
+        if (_prefer(raw) and job.ats != raw.ats) or same_posting:
+            existing = session.exec(select(Job).where(Job.canonical_url == canon)).first()
+            if existing is None or existing.id == job.id:
+                job.apply_url, job.canonical_url = target, canon
+                job.ats, job.ats_job_id = raw.ats, raw.ats_job_id
+        before = _decision_inputs(job)
+        authoritative = known is not None and (raw.ats == job.ats or not job.ats)
+        if authoritative:
+            # Re-poll of the same source: its current data replaces what we had.
+            if desc:
+                job.description_md, job.description_hash = desc, content_hash(desc)
+            job.title = raw.title.strip() or job.title
+            for attr in ("salary_min", "salary_max", "salary_currency", "employment_type",
+                         "remote", "department", "posted_at"):
+                if getattr(raw, attr) is not None:
+                    setattr(job, attr, getattr(raw, attr))
+            if raw.locations:
+                job.locations = raw.locations
+        else:
+            # A different source for the same job: only fill gaps.
+            if len(desc) > len(job.description_md):
+                job.description_md, job.description_hash = desc, content_hash(desc)
+            for attr in ("salary_min", "salary_max", "salary_currency", "employment_type",
+                         "remote", "department", "posted_at"):
+                if getattr(job, attr) is None and getattr(raw, attr) is not None:
+                    setattr(job, attr, getattr(raw, attr))
+            if not job.locations and raw.locations:
+                job.locations = raw.locations
+        if _decision_inputs(job) != before:
+            company = session.get(Company, job.company_id) if job.company_id else None
+            job.fuzzy_key = fuzzy_key(company.name if company else raw.company, job.title,
+                                      job.locations)
+            if job.status in RESCORABLE:
+                # Inputs to the rules/triage changed: decide again from scratch.
+                job.status = JobStatus.DISCOVERED
+                job.priority = job.score = job.filter_reason = None
+                job.years_required = None
+        session.add(job)
+    surl = source_url(raw)
+    src = session.exec(select(JobSource).where(JobSource.source == raw.source,
+                                               JobSource.url == surl)).first()
+    if src is None:
+        session.add(JobSource(job_id=job.id, source=raw.source,
+                              source_job_id=raw.source_job_id, url=surl))
+    else:
+        src.seen_at = now
+        session.add(src)
+    session.flush()
+
+
 def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
     stats = IngestStats()
     now = utcnow()
     for raw in raws:
-        target, canon = job_canonical(raw)
-        fkey = fuzzy_key(raw.company, raw.title, raw.locations)
-        desc = description_markdown(raw.description_html, raw.description_text)
-        job = _find_existing(session, raw, canon, fkey)
-        if job is None:
-            company = upsert_company(session, raw)
-            job = Job(company_id=company.id, title=raw.title.strip(), locations=raw.locations,
-                      remote=raw.remote, employment_type=raw.employment_type,
-                      salary_min=raw.salary_min, salary_max=raw.salary_max,
-                      salary_currency=raw.salary_currency, description_md=desc,
-                      description_hash=content_hash(desc), apply_url=target,
-                      canonical_url=canon, ats=raw.ats, ats_job_id=raw.ats_job_id,
-                      posted_at=raw.posted_at, department=raw.department, fuzzy_key=fkey)
-            session.add(job)
-            session.flush()
-            session.add(StatusEvent(job_id=job.id, status=JobStatus.DISCOVERED,
-                                    note=f"source={raw.source}"))
-            stats.new += 1
-            stats.new_job_ids.append(job.id)
-        else:
-            known = session.exec(select(JobSource).where(JobSource.job_id == job.id,
-                                                         JobSource.source == raw.source)).first()
-            if known is None:
-                stats.merged += 1
-            else:
-                stats.updated += 1
-            job.last_seen = now
-            if job.status == JobStatus.CLOSED:
-                job.status = JobStatus.DISCOVERED
-                job.priority = None  # re-run rules and triage for the reopened posting
-                job.score = None
-                job.filter_reason = None
-                session.add(StatusEvent(job_id=job.id, status=JobStatus.DISCOVERED,
-                                        note=f"posting reopened (source={raw.source})"))
-            job.closed_at = None
-            company = session.get(Company, job.company_id) if job.company_id else None
-            if company is not None:
-                learn_company_board(session, company, raw)
-            same_posting = (raw.ats and raw.ats == job.ats and raw.ats_job_id
-                            and raw.ats_job_id == job.ats_job_id and canon != job.canonical_url)
-            if (_prefer(raw) and job.ats != raw.ats) or same_posting:
-                existing = session.exec(select(Job).where(Job.canonical_url == canon)).first()
-                if existing is None or existing.id == job.id:
-                    job.apply_url, job.canonical_url = target, canon
-                    job.ats, job.ats_job_id = raw.ats, raw.ats_job_id
-            before = _decision_inputs(job)
-            authoritative = known is not None and (raw.ats == job.ats or not job.ats)
-            if authoritative:
-                # Re-poll of the same source: its current data replaces what we had.
-                if desc:
-                    job.description_md, job.description_hash = desc, content_hash(desc)
-                job.title = raw.title.strip() or job.title
-                for attr in ("salary_min", "salary_max", "salary_currency", "employment_type",
-                             "remote", "department", "posted_at"):
-                    if getattr(raw, attr) is not None:
-                        setattr(job, attr, getattr(raw, attr))
-                if raw.locations:
-                    job.locations = raw.locations
-            else:
-                # A different source for the same job: only fill gaps.
-                if len(desc) > len(job.description_md):
-                    job.description_md, job.description_hash = desc, content_hash(desc)
-                for attr in ("salary_min", "salary_max", "salary_currency", "employment_type",
-                             "remote", "department", "posted_at"):
-                    if getattr(job, attr) is None and getattr(raw, attr) is not None:
-                        setattr(job, attr, getattr(raw, attr))
-                if not job.locations and raw.locations:
-                    job.locations = raw.locations
-            if _decision_inputs(job) != before:
-                company = session.get(Company, job.company_id) if job.company_id else None
-                job.fuzzy_key = fuzzy_key(company.name if company else raw.company, job.title,
-                                          job.locations)
-                if job.status in RESCORABLE:
-                    # Inputs to the rules/triage changed: decide again from scratch.
-                    job.status = JobStatus.DISCOVERED
-                    job.priority = job.score = job.filter_reason = None
-                    job.years_required = None
-            session.add(job)
-        surl = source_url(raw)
-        src = session.exec(select(JobSource).where(JobSource.source == raw.source,
-                                                   JobSource.url == surl)).first()
-        if src is None:
-            session.add(JobSource(job_id=job.id, source=raw.source,
-                                  source_job_id=raw.source_job_id, url=surl))
-        else:
-            src.seen_at = now
-            session.add(src)
-        session.flush()
+        # Savepoint per posting: if a concurrent writer (web capture, another discovery run)
+        # inserted the same job/company/source between our lookup and insert, the uniqueness
+        # conflict is retried once, which then finds and merges the winner's row.
+        for attempt in (1, 2):
+            snap = (stats.new, stats.updated, stats.merged, len(stats.new_job_ids))
+            try:
+                with session.begin_nested():
+                    _ingest_one(session, raw, stats, now)
+                break
+            except IntegrityError:
+                stats.new, stats.updated, stats.merged = snap[:3]
+                del stats.new_job_ids[snap[3]:]
+                if attempt == 2:
+                    raise
     session.commit()
     return stats
 
