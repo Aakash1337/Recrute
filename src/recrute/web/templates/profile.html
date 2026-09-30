@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Profile · Recrute{% endblock %}
+{% block content %}
+<p class="muted">Your mega resume files in <code>resources/resume/</code>: {{ files | join(', ') if files else 'none yet' }}.
+The structured profile is the only source of facts for resumes, cover letters and answers.</p>
+<p>
+  <button class="primary" hx-post="/profile/ingest" hx-target="#r" {{ 'disabled' if not files or state.running }}>Ingest resume files</button>
+  <span id="r">{% if state.running %}Ingest running…{% elif state.error %}<span class="bad">{{ state.error }}</span>{% endif %}</span>
+</p>
+{% if proposed %}
+<h2>Proposed profile (review, then accept)</h2>
+<pre style="white-space:pre-wrap;max-height:50vh;overflow:auto;border:1px solid var(--line);padding:.5rem">{{ diff or '(new profile)' }}</pre>
+<button class="primary" hx-post="/profile/accept" hx-target="#r2">Accept proposed profile</button> <span id="r2"></span>
+<p class="muted">You can add <code>tags</code>, <code>context</code> and <code>strength</code> to items directly in <code>data/profile.yaml</code>; they survive re-ingests.</p>
+{% endif %}
+<h2>Current profile</h2>
+<pre style="white-space:pre-wrap;max-height:60vh;overflow:auto;border:1px solid var(--line);padding:.5rem">{{ current or 'No profile yet.' }}</pre>
+{% endblock %}

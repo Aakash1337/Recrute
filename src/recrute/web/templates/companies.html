@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Companies · Recrute{% endblock %}
+{% block content %}
+<form hx-post="/companies/add" hx-target="#add-result">
+  <input name="url" placeholder="job or careers URL (Greenhouse/Lever/Ashby/Workable/SmartRecruiters)" size="60">
+  <input name="name" placeholder="company name (optional)"> <button class="primary">Add company</button>
+  <span id="add-result"></span>
+</form>
+<form hx-get="/companies" hx-target="body" hx-push-url="true" style="margin-top:.5rem"><input name="q" value="{{ q }}" placeholder="search"> <button>Search</button></form>
+<table>
+  <tr><th>company</th><th>board</th><th>origin</th><th>last polled</th><th>badges</th><th></th></tr>
+  {% for c in rows %}
+  <tr>
+    <td>{{ c.name }}</td>
+    <td>{% if c.ats %}{{ c.ats }}:{{ c.ats_token }}{% else %}<span class="muted">unknown</span>{% endif %}</td>
+    <td class="muted">{{ c.origin }}</td>
+    <td class="muted">{{ c.last_polled_at | ago }}{% if c.poll_error %} <span class="bad">{{ c.poll_error }}</span>{% endif %}</td>
+    <td>{% if c.h1b_recent_approvals %}<span class="badge">📊 {{ c.h1b_recent_approvals }}</span>{% endif %}{% if c.e_verify %}<span class="badge">✅</span>{% endif %}{% if c.cap_exempt %}<span class="badge">🎓</span>{% endif %}</td>
+    <td>{% if c.ats %}<button hx-post="/companies/{{ c.id }}/toggle" hx-swap="innerHTML">{{ 'pause' if c.active else 'resume' }}</button>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

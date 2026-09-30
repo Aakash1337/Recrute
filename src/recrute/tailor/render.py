@@ -32,7 +32,9 @@ def template_dir(paths: Paths | None = None) -> Path:
     """<RECRUTE_HOME>/templates if it has the templates (user override), else the repo's."""
     if paths is not None and (paths.home / "templates" / "resume.typ").exists():
         return paths.home / "templates"
-    return REPO_TEMPLATES
+    if REPO_TEMPLATES.exists():
+        return REPO_TEMPLATES
+    return Path(__file__).resolve().parents[1] / "_templates"  # installed wheel
 
 
 @dataclass

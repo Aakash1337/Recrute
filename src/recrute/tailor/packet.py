@@ -95,6 +95,7 @@ def build_packet(job: Any, questions: list[FormQuestion], *, profile: Profile, b
         job_id=jc.job_id, resume=selection, resume_pdf=rel(resume.path),
         cover_letter=cover.text if cover else None, cover_letter_pdf=cover_rel,
         questions=questions, answers=answer_set.answers, flags=merge_flags(flags),
+        citations={k: list(v) for k, v in dict(answer_set.cited).items()},
         user_note=user_note, generated_at=datetime.now(UTC))
     (out_dir / "packet.json").write_text(packet.model_dump_json(indent=2), encoding="utf-8")
     return packet

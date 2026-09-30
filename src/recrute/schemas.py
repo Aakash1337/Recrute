@@ -175,6 +175,8 @@ class Packet(BaseModel):
     questions: list[FormQuestion] = Field(default_factory=list)
     answers: list[FormAnswer] = Field(default_factory=list)
     flags: list[VerifierFlag] = Field(default_factory=list)
+    # question_id / "resume" / "cover_letter" -> profile item ids backing it (verifier re-checks)
+    citations: dict[str, list[str]] = Field(default_factory=dict)
     user_note: str = ""  # "regenerate with a note" instruction
     generated_at: datetime | None = None
 

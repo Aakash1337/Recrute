@@ -36,7 +36,8 @@ DEFAULTS: dict[str, Any] = {
     "ghost_days": 30,
     # Notifications: backend is one of ui | ntfy | telegram | email.
     "notify": {"backend": "ui", "ntfy_url": "", "telegram_chat_id": "", "email_to": "",
-               "smtp_host": "", "smtp_port": 587, "smtp_user": "", "instant_alert_score": 90,
+               "smtp_host": "", "smtp_port": 587, "smtp_user": "", "smtp_from": "",
+               "smtp_security": "starttls", "ui_base_url": "", "instant_alert_score": 90,
                "digest_hour": 8},
     # Inbox tracking (IMAP). Password lives in the OS keyring, never here.
     "imap": {"enabled": False, "host": "imap.gmail.com", "port": 993, "user": "",
@@ -123,3 +124,23 @@ def _validate(key: str, value: Any) -> Any:
             merged[k] = v
         value = merged
     return value
+
+
+# ------------------------------------------------------------------------------ internal state
+# Small persisted values the worker needs (IMAP cursor, last digest date...). Not user settings,
+# so they bypass validation and never show up in the settings UI.
+
+STATE_PREFIX = "state:"
+
+
+def get_state(session: Session, key: str, default: Any = None) -> Any:
+    row = session.get(Setting, STATE_PREFIX + key)
+    return default if row is None else row.value
+
+
+def set_state(session: Session, key: str, value: Any) -> None:
+    now = utcnow()
+    stmt = insert(Setting).values(key=STATE_PREFIX + key, value=value, updated_at=now)
+    session.execute(stmt.on_conflict_do_update(index_elements=["key"],
+                                               set_={"value": value, "updated_at": now}))
+    session.commit()

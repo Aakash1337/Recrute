@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Inbox · Recrute{% endblock %}
+{% block content %}
+<p class="muted">Job-related emails found in your inbox (read-only). Ambiguous matches need your confirmation before they change a status.</p>
+<table>
+  <tr><th>received</th><th>email</th><th>kind</th><th>job</th><th></th></tr>
+  {% for e in events %}
+  <tr>
+    <td class="muted">{{ e.received_at | ago }}</td>
+    <td><b>{{ e.subject }}</b><br><span class="muted">{{ e.sender }} · {{ e.summary }}</span></td>
+    <td>{{ e.kind }} <span class="muted">{{ '%.0f' % (e.confidence * 100) }}%</span></td>
+    <td>{% if e.job_id and e.job_id in jobs %}{{ jobs[e.job_id].title }}{% else %}<span class="muted">unmatched</span>{% endif %}</td>
+    <td>
+      {% if not e.confirmed and e.kind != 'other' %}
+      <form hx-post="/inbox/{{ e.id }}/confirm" hx-target="this" hx-swap="outerHTML">
+        <select name="job_id"><option value="">(keep match)</option>{% for j in jobs.values() %}<option value="{{ j.id }}" {{ 'selected' if j.id == e.job_id }}>{{ j.title }}</option>{% endfor %}</select>
+        <select name="kind">{% for k in ['confirmation','rejection','interview','assessment','offer','other'] %}<option {{ 'selected' if k == e.kind }}>{{ k }}</option>{% endfor %}</select>
+        <button>Confirm</button>
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="muted">No job emails yet. Enable inbox tracking in Settings.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}
