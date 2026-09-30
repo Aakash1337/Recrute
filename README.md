@@ -94,7 +94,9 @@ you're viewing into Recrute (read-only; no automation on the site).
 3. Log into sites again in the browser profile (`recrute browser login`). Browser cookies are
    encrypted per machine, so they can't be copied.
 4. Run `uv run recrute serve --worker`. From other devices, open `http://<laptop>:8765` and log
-   in with the token printed by `uv run recrute token`.
+   in with the token printed by `uv run recrute token`. The **Live browser** page's remote
+   clicks and typing need the worker in the same process (`--worker`): typed text such as
+   passwords is kept in memory only.
 
 Access control: requests from the machine itself need no login. LAN clients need the token.
 Every state-changing request is CSRF-protected.

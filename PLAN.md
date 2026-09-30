@@ -322,7 +322,9 @@ Details:
 - **Remote browser view** (the **Live browser** page): in Phase 2 the automated browser runs on
   the laptop. When a form goes to CP3, or you open it to log into a site, the UI streams that
   browser's page (about one frame per second) and replays your clicks, typing and keys, so you
-  can finish from your main machine without sitting at the laptop. RDP is a fallback.
+  can finish from your main machine without sitting at the laptop. RDP is a fallback. What you
+  type there (passwords, verification codes) is kept in memory only and never written to disk, so
+  remote input needs the worker in the web server's process (`recrute serve --worker`).
 
 ### Stack
 Decided on **Python**. It was switched from Go after you made "fewest problems, and best at

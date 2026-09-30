@@ -9,6 +9,11 @@ from recrute.models import Company, Job, JobStatus, Priority, StatusEvent
 from recrute.pipeline.filter import apply_hard_filters
 
 
+def _same(column, value) -> list:
+    """SQL condition: `column` still holds `value` (NULL-safe)."""
+    return [col(column).is_(None) if value is None else column == value]
+
+
 def filter_new(session: Session, criteria: Criteria,
                eligibility_fn: Callable[[str], set[str]] | None = None,
                badge_fn: Callable[[Job, Company | None], dict] | None = None,
@@ -41,7 +46,11 @@ def filter_new(session: Session, criteria: Criteria,
             update(Job).where(Job.id == job.id, Job.status == JobStatus.DISCOVERED,
                               col(Job.priority).is_(None), col(Job.filter_reason).is_(None),
                               Job.title == job.title,
-                              Job.description_hash == job.description_hash)
+                              Job.description_hash == job.description_hash,
+                              *_same(Job.remote, job.remote),
+                              *_same(Job.employment_type, job.employment_type),
+                              *_same(Job.salary_min, job.salary_min),
+                              *_same(Job.salary_max, job.salary_max))
             .values(**values).execution_options(synchronize_session=False))
         if res.rowcount != 1:
             skipped += 1

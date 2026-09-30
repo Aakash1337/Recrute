@@ -380,3 +380,31 @@ def test_inclusive_us_person_wording_is_not_a_restriction(text, flagged):
     from recrute.badges.sponsorship import eligibility_flags
 
     assert ("itar_us_person" in eligibility_flags(text)) is flagged
+
+
+@pytest.mark.parametrize("text,flag", [
+    ("No visa sponsorship is available and US citizenship is required.", "citizenship_required"),
+    ("Candidates must hold a Secret clearance and no visa sponsorship is offered.",
+     "clearance_required"),
+    ("Python experience is preferred and US citizenship is required.", "citizenship_required"),
+])
+def test_coordinated_statements_keep_their_own_requirements(text, flag):
+    from recrute.badges.sponsorship import eligibility_flags
+
+    assert flag in eligibility_flags(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Must be able to obtain and maintain a Secret clearance.",
+    "US citizenship is preferred and sponsorship is available.",
+    "A clearance is not required and we welcome all applicants.",
+])
+def test_coordination_does_not_invent_requirements(text):
+    from recrute.badges.sponsorship import coordinated_statements, eligibility_flags
+
+    flags = eligibility_flags(text)
+    if "obtain and maintain" in text:
+        assert len(coordinated_statements(text)) == 1
+        assert "clearance_required" in flags
+    else:
+        assert not flags

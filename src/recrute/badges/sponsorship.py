@@ -370,11 +370,36 @@ def eligibility_flags(text: str | None) -> set[str]:
     flags: set[str] = set()
     if not text:
         return flags
-    for s in sentences(text):
-        if "clearance_required" not in flags and _clearance_required(s):
-            flags.add("clearance_required")
-        if "citizenship_required" not in flags and _citizenship_required(s):
-            flags.add("citizenship_required")
-        if "itar_us_person" not in flags and _itar_required(s):
-            flags.add("itar_us_person")
+    for sentence in sentences(text):
+        # the whole sentence, and each independent statement joined by "and" ("No sponsorship
+        # is available and US citizenship is required"): a negation or preference in one
+        # statement must not hide a requirement stated in the other
+        parts = coordinated_statements(sentence)
+        for s in [sentence, *parts] if len(parts) > 1 else [sentence]:
+            if "clearance_required" not in flags and _clearance_required(s):
+                flags.add("clearance_required")
+            if "citizenship_required" not in flags and _citizenship_required(s):
+                flags.add("citizenship_required")
+            if "itar_us_person" not in flags and _itar_required(s):
+                flags.add("itar_us_person")
     return flags
+
+
+_FINITE = re.compile(r"\b(?:is|are|was|were|must|will|shall|required|requires|offered|"
+                     r"available|needed|provided)\b", re.I)
+
+
+def coordinated_statements(sentence: str) -> list[str]:
+    """Split "X is ... and Y is ..." into independent statements. Only where BOTH sides carry
+    their own verb, so a shared-verb phrase ("able to obtain and maintain a clearance",
+    "US citizenship and a clearance are required") stays whole."""
+    pieces = re.split(r",?\s+and\s+", sentence)
+    out: list[str] = []
+    for piece in pieces:
+        if out and _FINITE.search(out[-1]) and _FINITE.search(piece):
+            out.append(piece)
+        elif out:
+            out[-1] = f"{out[-1]} and {piece}"
+        else:
+            out.append(piece)
+    return out

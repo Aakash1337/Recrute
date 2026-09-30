@@ -694,3 +694,31 @@ def test_retarget_during_build_drops_the_stale_packet(engine, monkeypatch, paths
             tasks.build_packet_for(ctx, s, s.get(Job, job_id), None, None, build)
     with Session(engine) as s:
         assert s.get(Job, job_id).status == JobStatus.SHORTLISTED
+
+
+def test_failed_regeneration_can_be_rebuilt(engine):
+    from recrute import packets, tasks
+    from recrute.models import Application, Job, JobStatus
+    from recrute.packets import revision
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://x", canonical_url="c3",
+                  status=JobStatus.PACKET_READY)
+        s.add(job)
+        s.commit()
+        data = {"job_id": job.id, "answers": []}
+        s.add(Application(job_id=job.id, channel="greenhouse", packet=data,
+                          packet_rev=revision(data)))
+        s.commit()
+        job_id = job.id
+        packets.regenerate(s, job_id, revision(data), "shorter")
+        for _ in range(3):
+            token = tasks.claim_build(s, s.get(Job, job_id))
+            tasks.record_build_failure(s, job_id, token, RuntimeError("quota"))
+        assert s.get(Job, job_id).status == JobStatus.NEEDS_HUMAN
+        packets.rebuild(s, job_id)  # the normal recovery action
+        s.expire_all()
+        app = s.exec(select(Application)).one()
+        assert s.get(Job, job_id).status == JobStatus.SHORTLISTED
+        assert app.packet and app.approved_at is None
+        assert "packet_failures" not in (app.outcome or {})

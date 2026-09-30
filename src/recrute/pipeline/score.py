@@ -184,8 +184,17 @@ def evaluate(job: Job, result: dict, criteria: Criteria) -> tuple[int, dict, str
 def apply_result(session: Session, job: Job, version: tuple, result: dict, criteria: Criteria,
                  provider: str | None, stats: ScoreStats) -> bool:
     """Atomically apply one result: only if the job is still unscored, open, awaiting triage
-    and unchanged since it was sent to the LLM. Returns whether it was applied."""
+    and unchanged since it was sent to the LLM. Returns whether it was applied.
+
+    The check and the write are one step: SQLite's write lock is taken FIRST (a no-op update),
+    then the job is re-read and compared on EVERY scoring input (location, salary, priority...),
+    so no other writer can change it between the comparison and the update."""
+    session.commit()  # end any older read snapshot: compare against the latest state
+    session.execute(update(Job).where(Job.id == job.id).values(id=Job.id)
+                    .execution_options(synchronize_session=False))
+    session.refresh(job)
     if scoring_version(job) != version:
+        session.rollback()
         return False
     score, updates, reason = evaluate(job, result, criteria)
     res = session.execute(

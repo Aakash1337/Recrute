@@ -686,3 +686,29 @@ def test_smartrecruiters_poll_without_detail_keeps_approved_target(engine):
         assert s.exec(select(Application)).one().approved_at is not None
         ingest(s, [parse_posting(posting, "Acme", detail=detail)])
         assert s.exec(select(Job)).one().status == JobStatus.APPROVED
+
+
+def test_score_not_applied_when_location_changes_right_before_publication(engine):
+    from recrute.pipeline.score import ScoreStats, apply_result, scoring_version
+
+    with Session(engine) as s:
+        job = Job(title="Security Engineer", apply_url="u", canonical_url="c",
+                  locations=["New York, NY"], priority=Priority.P1, description_hash="h")
+        s.add(job)
+        s.commit()
+        job_id = job.id
+    result = {"job_id": job_id, "score": 90, "reason": "good", "seniority": "mid",
+              "us_eligible_location": True, "years_required": None, "salary_min": None,
+              "salary_max": None}
+    with Session(engine) as a:
+        job = a.get(Job, job_id)
+        a.refresh(job)
+        version = scoring_version(job)
+        with Session(engine) as b:  # a re-poll lands between the check and the write
+            other = b.get(Job, job_id)
+            other.locations, other.priority = ["London, UK"], None
+            b.add(other)
+            b.commit()
+        assert apply_result(a, job, version, result, Criteria(), None, ScoreStats()) is False
+    with Session(engine) as s:
+        assert s.get(Job, job_id).score is None

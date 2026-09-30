@@ -4,7 +4,9 @@
 import { getSettings, originPattern } from "./common.js";
 
 const MENU_ID = "save-to-recrute";
-const MAX_HTML_CHARS = 8 * 1024 * 1024; // keep requests bounded on huge pages
+// The server's limit for the whole request body (MAX_CAPTURE_BYTES in web/views_apps.py),
+// measured in UTF-8 bytes of the serialized JSON.
+const MAX_REQUEST_BYTES = 5_000_000;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
@@ -37,13 +39,45 @@ async function setBadge(tabId, text, color, title) {
 async function capturePage(tabId) {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
-    func: () => ({
-      url: location.href,
-      title: document.title,
-      html: document.documentElement.outerHTML,
-    }),
+    func: () => {
+      // Two structural reductions, never an arbitrary cut: (1) the page without scripts,
+      // styles and media, keeping JSON-LD (JobPosting metadata); (2) only the head's metadata
+      // plus the main job content.
+      const strip = (root) => {
+        root.querySelectorAll(
+          'script:not([type="application/ld+json"]), style, noscript, svg, canvas, iframe, ' +
+          'video, audio, picture source, link, template'
+        ).forEach((e) => e.remove());
+        root.querySelectorAll("[style]").forEach((e) => e.removeAttribute("style"));
+        return root;
+      };
+      const full = strip(document.documentElement.cloneNode(true)).outerHTML;
+      const head = [...document.head.querySelectorAll(
+        'title, meta, script[type="application/ld+json"], link[rel="canonical"]'
+      )].map((e) => e.outerHTML).join("");
+      const main = document.querySelector(
+        'main, article, [role="main"], [class*="job-description"], [class*="jobDescription"], ' +
+        '[id*="job"], #content'
+      ) || document.body;
+      const core = strip(main.cloneNode(true)).outerHTML;
+      return {
+        url: location.href,
+        title: document.title,
+        candidates: [full, `<html><head>${head}</head><body>${core}</body></html>`],
+      };
+    },
   });
   return result && result.result;
+}
+
+// The first candidate whose serialized request fits the server's byte limit, else null.
+function fitRequest(page) {
+  const enc = new TextEncoder();
+  for (const html of page.candidates || []) {
+    const body = JSON.stringify({ url: page.url, title: page.title, html });
+    if (enc.encode(body).length <= MAX_REQUEST_BYTES) return body;
+  }
+  return null;
 }
 
 async function saveTab(tab) {
@@ -79,7 +113,11 @@ async function saveTab(tab) {
     await setBadge(tabId, "ERR", "#b00020", "cannot read this page");
     return;
   }
-  if (page.html.length > MAX_HTML_CHARS) page.html = page.html.slice(0, MAX_HTML_CHARS);
+  const body = fitRequest(page);
+  if (body === null) {
+    await setBadge(tabId, "BIG", "#b00020", "page too large to save, even reduced to the job content");
+    return;
+  }
 
   let resp;
   try {
@@ -89,7 +127,7 @@ async function saveTab(tab) {
         "Content-Type": "application/json",
         "X-Recrute-Token": settings.token,
       },
-      body: JSON.stringify({ url: page.url, title: page.title, html: page.html }),
+      body,
     });
   } catch (e) {
     await setBadge(tabId, "OFF", "#b00020", `server unreachable (${settings.serverUrl})`);
@@ -104,6 +142,8 @@ async function saveTab(tab) {
   }
   if (resp.status === 401) {
     await setBadge(tabId, "AUTH", "#b00020", "bad token (check Options)");
+  } else if (resp.status === 413) {
+    await setBadge(tabId, "BIG", "#b00020", "page too large for the server");
   } else if (resp.ok && data.ok) {
     if (data.new) {
       await setBadge(tabId, "NEW", "#1b7f3b", `saved as job #${data.job_id}`);

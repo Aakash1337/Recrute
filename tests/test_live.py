@@ -88,9 +88,8 @@ def test_delayed_input_never_crosses_handoffs(paths):
             def type(text, delay=0):
                 raise AssertionError("must not type")
 
-    # even an event file written for the old session (race) is dropped on replay
-    (live.live_dir(paths) / "inputs" / "0-stale.json").write_text(
-        f'{{"type": "type", "text": "secret", "session": "{old}"}}', encoding="utf-8")
+    # even an event queued for the old session (race) is dropped on replay
+    live._QUEUES[new].append({"type": "type", "text": "secret", "session": old})
     assert live.apply_inputs(paths, Page()) is False
     assert new != old
 
@@ -187,3 +186,34 @@ def test_live_page_revokes_superseded_frame_urls(client):
         browser.close()
     finally:
         pw.stop()
+
+
+def test_typed_input_never_touches_the_disk(paths):
+    from recrute import live
+
+    sid = live.start_session(paths)
+    live.enqueue(paths, {"type": "type", "text": "CANARY-p4ssw0rd", "session": sid})
+    for f in paths.data.rglob("*"):
+        if f.is_file():
+            assert b"CANARY" not in f.read_bytes(), f
+
+    typed = []
+
+    class Page:
+        class keyboard:  # noqa: N801
+            @staticmethod
+            def type(text, delay=0):
+                typed.append(text)
+
+    assert live.apply_inputs(paths, Page()) is False and typed == ["CANARY-p4ssw0rd"]
+    live.clear(paths)
+
+
+def test_remote_input_without_in_process_worker_is_refused(paths):
+    from recrute import live
+
+    sid = live.start_session(paths)
+    live._QUEUES.clear()  # as seen from a web server whose worker is another process
+    with pytest.raises(ValueError, match="serve --worker"):
+        live.enqueue(paths, {"type": "click", "x": 1, "y": 1, "session": sid})
+    live.clear(paths)

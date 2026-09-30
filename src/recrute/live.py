@@ -2,18 +2,23 @@
 into a site from another device on your network, through the web UI.
 
 The browser is owned by the apply worker's thread (Playwright objects can't be shared across
-threads), so the web UI and the worker talk through files under data/live/:
+threads). Screenshots and requests go through files under data/live/:
 
   frame.jpg     latest screenshot of the page waiting for you (written ~1/s by the worker)
   frame.json    {"url", "width", "height", "at"}
-  inputs/*.json queued input events from the UI (click/type/key/scroll/done), applied in order
   open.json     request to open the automation browser at a URL (e.g. to log into a site)
+
+Your INPUT (clicks, typed text such as passwords and verification codes) never touches the
+disk: it goes through an in-memory queue, so it needs the worker running inside the web
+server's process (`recrute serve --worker`, the default deployment).
 """
 
 import json
 import os
+import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +28,16 @@ ALLOWED_KEYS = {"Enter", "Tab", "Backspace", "Escape", "ArrowDown", "ArrowUp", "
                 "ArrowRight", "Space", "Delete", "Home", "End", "PageDown", "PageUp"}
 
 
+# session id -> queued input events. In memory only (see module docstring).
+_QUEUES: dict[str, deque[dict[str, Any]]] = {}
+_QLOCK = threading.Lock()
+NO_LOCAL_WORKER = ("remote input needs the worker in the web server's process: run "
+                   "`recrute serve --worker`")
+
+
 def live_dir(paths: Paths) -> Path:
     d = paths.data / "live"
-    (d / "inputs").mkdir(parents=True, exist_ok=True)
+    d.mkdir(parents=True, exist_ok=True)
     return d
 
 
@@ -68,8 +80,11 @@ def enqueue(paths: Paths, event: dict[str, Any]) -> None:
         pass
     else:
         raise ValueError("unknown event")
-    name = f"{time.time_ns():020d}-{uuid.uuid4().hex[:6]}.json"
-    _atomic_write(live_dir(paths) / "inputs" / name, json.dumps(clean).encode())
+    with _QLOCK:
+        queue = _QUEUES.get(session)
+        if queue is None:
+            raise ValueError(NO_LOCAL_WORKER)
+        queue.append(clean)
 
 
 def request_open(paths: Paths, url: str) -> None:
@@ -104,6 +119,8 @@ def take_open_request(paths: Paths) -> str | None:
 def start_session(paths: Paths) -> str:
     clear(paths)
     sid = uuid.uuid4().hex
+    with _QLOCK:
+        _QUEUES[sid] = deque(maxlen=500)
     _atomic_write(live_dir(paths) / "session.json",
                   json.dumps({"id": sid, "started": time.time()}).encode())
     return sid
@@ -138,12 +155,12 @@ def apply_inputs(paths: Paths, page) -> bool:
     "Done" (anything after it is discarded). Returns True when you pressed "Done"."""
     session = active_session(paths)
     done = False
-    for f in sorted((live_dir(paths) / "inputs").glob("*.json")):
-        try:
-            ev = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            ev = {}
-        f.unlink(missing_ok=True)
+    with _QLOCK:
+        queue = _QUEUES.get(session or "")
+        events = list(queue) if queue is not None else []
+        if queue is not None:
+            queue.clear()
+    for ev in events:
         if done or not session or ev.get("session") != session:
             continue  # after Done, or meant for another hand-off: dropped, never replayed
         try:
@@ -164,7 +181,10 @@ def apply_inputs(paths: Paths, page) -> bool:
 
 def clear(paths: Paths) -> None:
     """Ends the live session: nothing queued for it can run later."""
+    with _QLOCK:
+        _QUEUES.clear()
     d = live_dir(paths)
+    # (inputs/*.json: left by older versions that queued input on disk)
     for f in [d / "session.json", d / "frame.jpg", d / "frame.json",
               *(d / "inputs").glob("*.json")]:
         try:

@@ -265,15 +265,17 @@ def mark_applied(session: Session, job_id: int) -> None:
 
 
 def rebuild(session: Session, job_id: int) -> None:
-    """A job handed to you because its packet couldn't be built (e.g. repeated failures):
-    try building it again (after fixing the cause, or once quota is back)."""
+    """A job handed to you because its packet couldn't be built (e.g. repeated failures, also
+    of a requested regeneration): try building it again (after fixing the cause, or once quota
+    is back). An earlier packet stays for reference but its approval is revoked."""
     app = session.exec(select(Application).where(Application.job_id == job_id)).first()
-    if app is not None and app.packet:
+    if app is not None and app.packet and not (app.outcome or {}).get("packet_failures"):
         raise PacketError("this job already has a packet; use Regenerate on its packet page")
     _transition(session, job_id, [JobStatus.NEEDS_HUMAN], JobStatus.SHORTLISTED)
     if app is not None:
         app.outcome = {k: v for k, v in (app.outcome or {}).items() if k != "packet_failures"}
         app.build_token = ""
+        app.approved_at = None
         session.add(app)
     session.add(StatusEvent(job_id=job_id, status=JobStatus.SHORTLISTED,
                             note="packet rebuild requested"))
