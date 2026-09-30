@@ -556,3 +556,32 @@ def test_qualified_authorization_left_for_user(label):
 
     wa = WorkAuthorization(authorized_to_work_in_us=True, requires_sponsorship_future=True)
     assert work_auth_answer(label, wa) is None
+
+
+def test_gpa_matches_the_requested_degree():
+    from recrute.schemas import Education, FormQuestion, Profile
+    from recrute.tailor.answer_questions import profile_answer
+
+    p = Profile(name="Ada", education=[
+        Education(id="m", school="Tech U", degree="Master of Science", end="2025", gpa="3.9"),
+        Education(id="b", school="State U", degree="Bachelor of Science", end="2023",
+                  gpa="3.1")])
+    ug = profile_answer(FormQuestion(id="g", label="Undergraduate GPA"), p)
+    gr = profile_answer(FormQuestion(id="g2", label="Graduate GPA"), p)
+    assert ug.value == "3.1" and gr.value == "3.9"
+    assert profile_answer(FormQuestion(id="g3", label="GPA"), p) is None  # ambiguous
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("Are you willing to relocate?", True),
+    ("Open to relocation?", True),
+    ("Are you unwilling to relocate?", None),
+    ("Can you relocate at your own expense?", None),
+    ("Are you willing to relocate to Austin, TX?", None),
+])
+def test_relocation_only_plain_question(label, expected):
+    from recrute.schemas import FormQuestion
+    from recrute.tailor.answers import relocation_answer
+
+    q = FormQuestion(id="r", label=label, type="select", options=["Yes", "No"])
+    assert relocation_answer(q, True) is expected

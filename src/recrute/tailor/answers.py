@@ -554,6 +554,20 @@ def work_auth_answer(label: str, wa: WorkAuthorization) -> bool | None:
     return bool(wa.authorized_to_work_in_us)
 
 
+_PLAIN_RELOCATE = re.compile(
+    r"(are you |would you be |would you )?(willing|open|able)( to consider)?( to)? "
+    r"relocat(e|ing|ion)( for this (role|position|job|opportunity))?", re.IGNORECASE)
+
+
+def relocation_answer(q: FormQuestion, willing: bool | None) -> bool | None:
+    """Only the plain willingness question; negations ("unwilling"), destinations, costs ("at
+    your own expense") and other conditions are yours to answer."""
+    if willing is None or (q.description or "").strip():
+        return None
+    t = " ".join(q.label.lower().replace("*", " ").split()).rstrip(" ?.:")
+    return willing if _PLAIN_RELOCATE.fullmatch(t) else None
+
+
 def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
               priority: str | None) -> bool | str | int | None:
     wa, c, label = bank.work_authorization, bank.contact, clean_label(q.label)
@@ -563,7 +577,7 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
         case "work_auth":
             return work_auth_answer(_full_question(q), wa) if is_yes_no(q) else None
         case "relocate":
-            return bank.logistics.willing_to_relocate
+            return relocation_answer(q, bank.logistics.willing_to_relocate)
         case "start_date":
             return bank.logistics.earliest_start_date or None
         case "notice":

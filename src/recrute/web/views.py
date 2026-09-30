@@ -110,7 +110,10 @@ def job_detail(request: Request, job_id: int):
                         .order_by(col(StatusEvent.id).desc())).all()
         ctx = {"job": job, "company": company, "score": latest_score(s, job_id),
                "sources": sources, "events": events, "reasons": REJECT_REASONS}
-        return templates.TemplateResponse(request, "_job_detail.html", ctx)
+        if request.headers.get("hx-request") == "true":
+            return templates.TemplateResponse(request, "_job_detail.html", ctx)
+        # opened from a notification / digest link: a full page whose buttons work on their own
+        return page(request, "job_page.html", ctx, s)
 
 
 @router.post("/jobs/{job_id}/decide", response_class=HTMLResponse)

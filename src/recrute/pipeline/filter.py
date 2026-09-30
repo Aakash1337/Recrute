@@ -134,17 +134,17 @@ def normalize_employment_type(value: str | None) -> str | None:
 
 
 def is_us_location(locations: list[str], remote: str | None) -> bool | None:
-    """True/False when determinable, None when unknown (kept; LLM triage checks it)."""
+    """Per location: True if ANY location admits US candidates, False only if EVERY location
+    is explicitly foreign, None (kept; triage checks it) otherwise, e.g. ["San Francisco",
+    "London, UK"] stays eligible."""
     if not locations:
         return None
-    joined = " ; ".join(locations)
-    if US_MARKERS.search(joined):
-        return True
-    if NON_US.search(joined):
-        return False
-    if re.fullmatch(r"\s*(remote|anywhere|worldwide|global)\s*", joined, re.IGNORECASE):
-        return None
-    return None
+    verdicts = []
+    for loc in locations:
+        if US_MARKERS.search(loc):
+            return True
+        verdicts.append(False if NON_US.search(loc) else None)
+    return False if all(v is False for v in verdicts) else None
 
 
 PREFERRED_RE = re.compile(r"prefer|nice[- ]to[- ]have|bonus|a plus|\bplus\b|ideal(ly)?|"

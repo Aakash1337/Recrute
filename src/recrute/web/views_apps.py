@@ -58,6 +58,62 @@ def receipt_index(request: Request, rel: str):
         return page(request, "receipt.html", {"rel": rel, "files": files}, s)
 
 
+# ------------------------------------------------------------------------------ live browser
+
+
+@router.get("/live", response_class=HTMLResponse)
+def live_page(request: Request):
+    from recrute import live
+
+    with session_scope() as s:
+        return page(request, "live.html", {"info": live.frame_info(get_paths())}, s)
+
+
+@router.get("/live/frame")
+def live_frame():
+    from recrute import live
+
+    f = live.live_dir(get_paths()) / "frame.jpg"
+    if not f.is_file():
+        raise HTTPException(404)
+    return FileResponse(f, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@router.get("/live/status", response_class=HTMLResponse)
+def live_status():
+    from recrute import live
+
+    info = live.frame_info(get_paths())
+    if not info or not info["fresh"]:
+        return HTMLResponse('<span class="muted">No browser is waiting for you right now.</span>')
+    return HTMLResponse(f'<span class="ok">live</span> <span class="muted">'
+                        f'{escape(info["url"])}</span>')
+
+
+@router.post("/live/input", response_class=HTMLResponse)
+async def live_input(request: Request):
+    from recrute import live
+
+    form = await request.form()
+    try:
+        live.enqueue(get_paths(), dict(form))
+    except (ValueError, KeyError, TypeError) as e:
+        return _msg(f"ignored: {e}", False, 422)
+    return HTMLResponse("")
+
+
+@router.post("/live/open", response_class=HTMLResponse)
+def live_open(url: Annotated[str, Form()]):
+    from recrute import live
+
+    try:
+        live.request_open(get_paths(), url.strip())
+    except ValueError as e:
+        return _msg(str(e), False, 422)
+    return _msg("Requested: the worker opens it within about a minute (when it isn't busy "
+                "submitting). This page will show it.")
+
+
 # ------------------------------------------------------------------------------ CP2 packets
 
 

@@ -59,14 +59,26 @@ class LazyBrowser:
         return self.context.new_page()
 
     def wait_for_human(self, timeout: float = PAUSE_WAIT_SECONDS) -> None:
-        """Fill-and-pause: keep the window open until you close the tab(s) or time runs out."""
+        """Fill-and-pause: keep the window open until you're done, close the tab(s), or time
+        runs out. Meanwhile the page is streamed to the web UI's live view and your remote
+        clicks/typing are replayed (so you can do CP3 from another device)."""
+        from recrute import live
+
         if self.context is None:
             return
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and not self.ctx.stop.is_set():
-            if not [p for p in self.context.pages if not p.is_closed()]:
-                return
-            time.sleep(2)
+        try:
+            while time.monotonic() < deadline and not self.ctx.stop.is_set():
+                pages = [p for p in self.context.pages if not p.is_closed()]
+                if not pages:
+                    return
+                page = pages[-1]
+                if live.apply_inputs(self.ctx.paths, page):
+                    return  # you pressed "Done" in the live view
+                live.publish_frame(self.ctx.paths, page)
+                time.sleep(1)
+        finally:
+            live.clear(self.ctx.paths)
 
     def close(self) -> None:
         if self._cm is not None:
@@ -107,11 +119,21 @@ def left_open(outcome) -> bool:
 
 
 def run_due_task(ctx) -> dict:
+    from recrute import live
     from recrute.apply.scheduler import run_due
     from recrute.settings import get_setting
 
     browser = LazyBrowser(ctx)
     try:
+        if url := live.take_open_request(ctx.paths):
+            # "Open automation browser" from the UI (e.g. to log into a site on the server)
+            page = browser()
+            try:
+                page.goto(url, wait_until="domcontentloaded")
+            except Exception as e:  # still hand over the window: you can navigate yourself
+                log.warning("live open %s: %s", url, e.__class__.__name__)
+            browser.wait_for_human()
+            return {"live_session": url}
         with ctx.session() as s:
             assisted = _run_assist_request(ctx, s, browser)
             if assisted:

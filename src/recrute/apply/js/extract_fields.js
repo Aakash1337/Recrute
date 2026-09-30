@@ -214,8 +214,15 @@
         const grp = el.closest('[role="group"][aria-required="true"]');
         if (grp) rec.required = true;
       }
-      Object.assign(rec, {type: 'file', widget: 'file', trigger: trigger(el),
-                          current: el.files && el.files.length ? el.files[0].name : null});
+      // some widgets upload, then reset the native input and show the attachment instead
+      let attached = el.files && el.files.length ? el.files[0].name : null;
+      if (!attached) {
+        const c = container(el);
+        const box = c ? c.box : el.parentElement;
+        const m = box && (box.innerText || '').match(/([\w\-. ()]+\.(?:pdf|docx?|txt|rtf|odt))\b/i);
+        if (m) attached = m[1].trim();
+      }
+      Object.assign(rec, {type: 'file', widget: 'file', trigger: trigger(el), current: attached});
     } else if (el.tagName === 'SELECT') {
       const opts = [...el.options].filter(o => o.value !== '' && !o.disabled);
       // multi-selects: EVERY selected non-placeholder option (saved extras must be visible)
@@ -240,6 +247,29 @@
     }
     push(rec);
   }
+  // Custom (non-native) controls: role=combobox/listbox/radiogroup/spinbutton/textbox or
+  // contenteditable, rendered with buttons/divs. We can't operate these safely, but they must
+  // never be invisible: a required one, or one holding a value, forces CP3.
+  const NATIVE = 'input, select, textarea';
+  const customs = scope.querySelectorAll('[role="combobox"], [role="listbox"], [role="radiogroup"], ' +
+    '[role="spinbutton"], [role="textbox"], [contenteditable="true"]');
+  for (const el of customs) {
+    if (el.matches(NATIVE) || used.has(el)) continue;
+    // wrappers around native controls (react-select shells, native radio groups) are handled above
+    if (el.querySelector(NATIVE)) continue;
+    if (el.closest('[role="listbox"]') && el.getAttribute('role') !== 'listbox') continue;
+    if (el.getAttribute('role') === 'listbox' && el.closest('[role="combobox"]')) continue;
+    if (!visible(el)) continue;
+    const lab = labelOf(el);
+    const req = el.getAttribute('aria-required') === 'true' || reqOf(el, lab);
+    const shown = clean(el.getAttribute('aria-valuetext') || txt(el) || '');
+    const placeholder = /^(select|choose|pick|search|--|please select)/i.test(shown);
+    push({key: keyOf(el), label: clean(lab.text), type: 'select', widget: 'custom',
+          required: !!req, selector: sel(el), options: [], option_selectors: [],
+          current: shown && !placeholder ? shown : null, visible: true, trigger: '',
+          max_length: null});
+  }
+
   // stable document order
   const pos = f => { try { return document.querySelector(f.selector); } catch (e) { return null; } };
   const withPos = out.map(f => [f, pos(f)]);

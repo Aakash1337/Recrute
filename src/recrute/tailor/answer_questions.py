@@ -154,6 +154,27 @@ def _profile_value(kind: str, profile: Profile) -> str | None:
     return values.get(kind) or None
 
 
+def gpa_for(q: FormQuestion, profile: Profile) -> str | None:
+    """GPA from the education entry the question asks about: undergraduate -> bachelor's /
+    associate, graduate -> master's / PhD. Unqualified with several GPAs on file -> ambiguous
+    (None, you answer it)."""
+    import re
+
+    text = f"{q.label} {q.description}".lower()
+    with_gpa = [ed for ed in profile.education if (ed.gpa or "").strip()]
+
+    def level(ed) -> int:
+        return next((r for rx, r in _DEGREE_RANK if re.search(rx, ed.degree or "", re.I)), 0)
+
+    if "undergrad" in text:
+        hits = [ed for ed in with_gpa if level(ed) in (2, 3)]
+    elif re.search(r"\bgraduate\b|\bgrad school\b|master|ph\.?d", text):
+        hits = [ed for ed in with_gpa if level(ed) >= 4]
+    else:
+        hits = with_gpa
+    return hits[0].gpa if len(hits) == 1 else None
+
+
 def profile_answer(q: FormQuestion, profile: Profile) -> FormAnswer | None:
     kind = classify_question(q)
     if kind not in CONTACT_KINDS:
@@ -161,7 +182,8 @@ def profile_answer(q: FormQuestion, profile: Profile) -> FormAnswer | None:
         kind = next((k for k, rx in _PROFILE_RULES if rx.fullmatch(core)), None)
     if kind is None or q.type in ("file", "checkbox"):
         return None
-    value = format_value(q, _profile_value(kind, profile))
+    raw = gpa_for(q, profile) if kind == "gpa" else _profile_value(kind, profile)
+    value = format_value(q, raw)
     if value is None:
         return None
     return FormAnswer(question_id=q.id, value=value, source="profile", confidence=0.85,

@@ -418,6 +418,10 @@ def verify_fields(fields: Sequence[LiveField], packet: Packet, files: Mapping[st
     problems: dict[str, str] = {}
     for f in fields:
         cur = f.current
+        if f.widget == "custom":
+            if f.required or cur not in (None, "", []):
+                problems[f.id] = "custom control we can't verify (needs you)"
+            continue
         if f.widget == "file" or f.type == "file":
             path = file_for(f, packet, files, aliases)
             if path is not None and cur != path.name:

@@ -17,8 +17,6 @@ DEFAULTS: dict[str, Any] = {
     "site_caps": {"linkedin_easy_apply": 15},
     # Submissions only happen inside this local-time window (24h clock).
     "active_hours": [9, 22],
-    # Fraction of the LLM subscription window to leave for your own use (0 = no reserve).
-    "llm_reserve": 0.0,
     # Discovery sources on/off. linkedin_session (logged-in browsing) is opt-in.
     "sources_enabled": {
         "greenhouse": True, "lever": True, "ashby": True, "workable": True,
@@ -103,10 +101,6 @@ def _validate(key: str, value: Any) -> Any:
         if not (0 <= start < end <= 24):
             raise ValueError("active_hours must be [start, end] with 0 <= start < end <= 24")
         value = [start, end]
-    elif key == "llm_reserve":
-        value = float(value)
-        if not 0.0 <= value < 1.0:
-            raise ValueError("llm_reserve must be in [0, 1)")
     elif key in ("trial_threshold", "follow_up_days", "ghost_days", "company_cap",
                  "company_cooldown_days"):
         value = int(value)

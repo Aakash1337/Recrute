@@ -856,3 +856,56 @@ def test_required_search_field_with_unapproved_value_is_seen(context):
     packet = Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")])
     assert "school" in coverage_check(list(fields.values()), packet)  # -> CP3
     page.close()
+
+
+@pytest.mark.browser
+def test_custom_combobox_forces_cp3(context):
+    from recrute.apply import dom
+    from recrute.apply.base import coverage_check
+    from recrute.apply.widgets import fill_fields
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <label for="n">Name</label><input id="n" name="n" required>
+      <div class="field"><span id="lab">Work location</span>
+        <button type="button" role="combobox" aria-required="true" aria-labelledby="lab"
+                id="loc">Remote - US</button></div>
+    </form>""")
+    fields = dom.extract_fields(page)
+    custom = [f for f in fields if f.widget == "custom"]
+    assert custom and custom[0].required and custom[0].current == "Remote - US"
+    packet = Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")])
+    assert custom[0].id in coverage_check(fields, packet)
+    report = fill_fields(page, custom, packet, {}, human=None)
+    assert custom[0].id in report.failed
+    page.close()
+
+
+@pytest.mark.browser
+def test_upload_widget_that_resets_input_is_seen(context):
+    from recrute.apply import dom
+
+    page = context.new_page()
+    page.set_content("""<form><div class="field"><label for="cv">Resume</label>
+      <input type="file" id="cv" name="cv">
+      <div class="attachment">Ada_1a2b3c4d_Resume.pdf <button type="button">remove</button></div>
+    </div></form>""")
+    f = next(x for x in dom.extract_fields(page) if x.widget == "file")
+    assert f.current == "Ada_1a2b3c4d_Resume.pdf"
+    page.close()
+
+
+@pytest.mark.browser
+def test_live_view_frames_and_remote_input(context, paths):
+    from recrute import live
+
+    page = context.new_page()
+    page.set_content('<input id="q" style="position:absolute;left:10px;top:10px;width:200px">')
+    live.publish_frame(paths, page)
+    info = live.frame_info(paths)
+    assert info and info["fresh"] and (live.live_dir(paths) / "frame.jpg").stat().st_size > 0
+    live.enqueue(paths, {"type": "click", "x": 50, "y": 20})
+    live.enqueue(paths, {"type": "type", "text": "typed remotely"})
+    assert live.apply_inputs(paths, page) is False
+    assert page.input_value("#q") == "typed remotely"
+    page.close()

@@ -572,3 +572,9 @@ def test_employment_type_from_description(desc, dropped):
     r = apply_hard_filters(_job(employment_type=None, description_md=desc), "Acme", Criteria(),
                            NO_ELIG)
     assert (not r.keep) is dropped
+
+
+def test_mixed_locations_keep_ambiguous_us_option():
+    assert is_us_location(["San Francisco", "London, UK"], None) is None
+    assert is_us_location(["London, UK", "Berlin, Germany"], None) is False
+    assert is_us_location(["Toronto, Canada", "Austin, TX"], None) is True

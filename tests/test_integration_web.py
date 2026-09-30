@@ -610,3 +610,21 @@ def test_crlf_proposal_can_be_accepted(client):
     digest = re.search(r'name="digest" value="([0-9a-f]+)"', page).group(1)
     r = client.post("/profile/accept", data={"digest": digest, "override": "on"}, headers=HX)
     assert r.status_code == 200 and "updated" in r.text
+
+
+def test_job_link_from_notification_is_a_full_page(client):
+    from recrute.db import get_engine
+    from recrute.models import Job, JobStatus, Priority
+
+    with Session(get_engine()) as s:
+        job = Job(title="Alerted job", apply_url="https://x", canonical_url="c-alert",
+                  status=JobStatus.DISCOVERED, priority=Priority.P1, score=95)
+        s.add(job)
+        s.commit()
+        job_id = job.id
+    full = client.get(f"/jobs/{job_id}").text
+    assert "<nav>" in full and "window.recruteDecide" in full
+    frag = client.get(f"/jobs/{job_id}", headers=HX).text
+    assert "<nav>" not in frag
+    r = client.post(f"/jobs/{job_id}/decide", data={"action": "approve"}, headers=HX)
+    assert r.status_code == 200

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Live browser · Recrute{% endblock %}
+{% block content %}
+<p class="muted">The automation browser runs on the Recrute server. When it hands a form to you
+(CP3) or you open it below, it appears here: click on the picture to click in the browser, type
+in the box to type. Press <b>Done</b> when you've finished (e.g. after submitting).</p>
+<p id="live-status" hx-get="/live/status" hx-trigger="load, every 3s"></p>
+<div style="position:relative;display:inline-block;border:1px solid var(--line)">
+  <img id="live-frame" src="/live/frame?t=0" alt="" style="max-width:100%;cursor:crosshair"
+       onerror="this.style.minHeight='200px'">
+</div>
+<p>
+  <input id="live-text" placeholder="text to type into the focused field" size="50">
+  <button onclick="liveSend({type:'type', text: document.getElementById('live-text').value}); document.getElementById('live-text').value='';">Type</button>
+  {% for k in ['Enter', 'Tab', 'Backspace', 'Escape', 'ArrowDown', 'ArrowUp'] %}
+  <button onclick="liveSend({type:'key', key:'{{ k }}'})">{{ k }}</button>{% endfor %}
+  <button onclick="liveSend({type:'scroll', dy: 500})">Scroll ↓</button>
+  <button onclick="liveSend({type:'scroll', dy: -500})">Scroll ↑</button>
+  <button class="primary" onclick="liveSend({type:'done'})">Done</button>
+</p>
+<h2>Open the automation browser</h2>
+<form hx-post="/live/open" hx-target="find .result">
+  <input name="url" size="60" placeholder="https://www.linkedin.com/login" value="https://www.linkedin.com/login">
+  <button>Open</button> <span class="result"></span>
+</form>
+<p class="muted">Use this to log into LinkedIn, Google or an ATS account on the server's dedicated browser profile.</p>
+{% endblock %}
+{% block scripts %}
+<script>
+  const info = {{ (info or {}) | tojson }};
+  function liveSend(ev) {
+    htmx.ajax('POST', '/live/input', {values: ev, swap: 'none'});
+  }
+  const img = document.getElementById('live-frame');
+  img.addEventListener('click', e => {
+    const r = img.getBoundingClientRect();
+    const w = (window.__liveInfo || info).width || img.naturalWidth;
+    const h = (window.__liveInfo || info).height || img.naturalHeight;
+    liveSend({type: 'click', x: (e.clientX - r.left) * w / r.width, y: (e.clientY - r.top) * h / r.height});
+  });
+  setInterval(() => { img.src = '/live/frame?t=' + Date.now(); }, 1000);
+</script>
+{% endblock %}

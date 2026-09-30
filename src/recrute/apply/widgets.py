@@ -289,6 +289,16 @@ def fill_fields(root: Page | Frame, fields: Sequence[LiveField], packet: Packet,
             report.notes.append(f"blocker appeared while filling: {blocker}")
             break
         report.labels[f.id] = f.label
+        if f.widget == "custom":
+            # a control we can't operate safely: never guess. Required or holding any value
+            # (e.g. a pre-selected answer nobody approved) -> the human decides (CP3)
+            if f.required or f.current not in (None, "", []):
+                report.failed[f.id] = "custom control (not a native input): needs you"
+                if f.required:
+                    report.required_failed.append(f.id)
+            else:
+                report.skipped.append(f.id)
+            continue
         try:
             if f.widget == "file":
                 path = file_for(f, packet, files, aliases)

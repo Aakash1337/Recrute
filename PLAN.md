@@ -319,10 +319,10 @@ Details:
   - Moving to the laptop: install uv, Chrome, and the CLIs; clone the repo; run `uv sync`; then
     copy `resources/` and `recrute.toml` across. Log into sites again in the browser profile there,
     rather than copying `data/browser-profile`, since cookies are encrypted per machine/OS.
-- **Remote browser view**: in Phase 2 the automated browser runs on the laptop. When a form goes to
-  CP3, or you need to log into a site, the UI streams that browser's window (via CDP screencast)
-  so you can click and type into it from your main machine. There's no need to sit at the laptop.
-  RDP is a fallback.
+- **Remote browser view** (the **Live browser** page): in Phase 2 the automated browser runs on
+  the laptop. When a form goes to CP3, or you open it to log into a site, the UI streams that
+  browser's page (about one frame per second) and replays your clicks, typing and keys, so you
+  can finish from your main machine without sitting at the laptop. RDP is a fallback.
 
 ### Stack
 Decided on **Python**. It was switched from Go after you made "fewest problems, and best at
@@ -369,7 +369,9 @@ strongest ecosystem.
   - Caching results by JD hash
   - Detecting the rate-limit message, then pausing and resuming that queue later, or failing over
     to the other provider
-  - Keeping a usage meter in the UI, plus an optional "leave me X% of my window" reserve
+  - Keeping a usage meter in the UI (LLM calls per provider). A "leave me X% of my window"
+    reserve isn't possible: the subscription CLIs don't report remaining usage. Rate-limit
+    responses trigger failover to the other provider and a cooldown instead.
 - **Browser agent for unknown forms**: Claude Code or Codex runs headless with a browser MCP
   (e.g. chrome-devtools MCP) attached to the same Chrome profile, and is limited to the approved
   packet's values.

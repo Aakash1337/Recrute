@@ -28,7 +28,7 @@
       <a href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">posting ↗</a>
       {% if app and app.receipt_dir %}· <a href="/receipt/{{ app.receipt_dir }}" target="_blank">receipt</a>{% endif %}
       {% if key == 'needs_human' %}
-        {% if app and app.packet %}<button hx-post="/applications/{{ job.id }}/assist" hx-swap="outerHTML">Open &amp; pre-fill</button>{% endif %}
+        {% if app and app.packet %}<button hx-post="/applications/{{ job.id }}/assist" hx-swap="outerHTML">Open &amp; pre-fill</button> <a href="/live">live view</a>{% endif %}
         <button class="primary" hx-post="/applications/{{ job.id }}/mark-applied" hx-swap="outerHTML">I submitted it</button>
         <button hx-post="/applications/{{ job.id }}/skip" hx-swap="outerHTML">Give up</button>
       {% elif key == 'approved' %}
