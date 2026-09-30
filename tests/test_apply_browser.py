@@ -427,6 +427,13 @@ def test_ashby_extra_required_question_needs_human(srv, context, paths, human, r
     assert srv.posts == []
 
 
+def test_ashby_unnamed_custom_control_is_not_dropped(srv, context, paths, human, resume):
+    j = job(f"{srv.url}{ASHBY_URL}?extra=unnamed", "ashby", job_id=3)
+    out = run(j, ashby_packet(resume), context, paths, human)
+    assert out.status == "needs_human"
+    assert srv.posts == []
+
+
 # --------------------------------------------------------------------------- linkedin
 
 

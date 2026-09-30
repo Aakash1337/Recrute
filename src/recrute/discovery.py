@@ -296,6 +296,7 @@ def discover_linkedin(ctx) -> dict:
         sctx = SourceContext(http=Http(), criteria=ctx.criteria, router=ctx.router)
         found = []
         result: dict = {}
+        crashed: Exception | None = None
         try:
             for raw in src.fetch(sctx):
                 found.append(raw)
@@ -312,12 +313,20 @@ def discover_linkedin(ctx) -> dict:
             notify(s, "LinkedIn browsing paused",
                    f"LinkedIn showed a security check ({e.reason}). Browsing is paused until "
                    f"{until:%Y-%m-%d}. Log in manually and check your account.", "high")
+        except Exception as e:  # e.g. a navigation timeout: keep what was already collected
+            crashed = e
         finally:
+            # the account budget is spent whatever happens next: persist it right away
             state["searches"] = src.budget.searches_used
             state["views"] = src.budget.views_used
-            state["seen_ids"] = sorted(src.seen_ids)[-5000:]
             set_state(s, "linkedin_session", state)
         if found:
             result.update(ingest(s, found).as_dict())
+        # only now are the postings stored: acknowledge their ids (a failure before this point
+        # leaves them unseen, so the next session fetches them again)
+        state["seen_ids"] = sorted(src.seen_ids)[-5000:]
+        set_state(s, "linkedin_session", state)
         result.update(searches=state["searches"], views=state["views"])
+        if crashed is not None:
+            raise crashed
         return result

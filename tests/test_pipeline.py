@@ -660,3 +660,29 @@ def test_symbol_languages_stay_distinct(engine):
     with Session(engine) as s:
         ingest(s, raws)
         assert len(s.exec(select(Job)).all()) == 4
+
+
+def test_smartrecruiters_poll_without_detail_keeps_approved_target(engine):
+    from recrute.models import Application
+    from recrute.sources.smartrecruiters import parse_posting
+
+    posting = {"id": "744000", "name": "Security Engineer", "company": {"name": "Acme"},
+               "location": {"city": "Austin", "region": "TX", "country": "us"}}
+    detail = {"postingUrl": "https://jobs.smartrecruiters.com/Acme/744000-security-engineer",
+              "applyUrl": "https://jobs.smartrecruiters.com/Acme/744000-security-engineer"
+                          "?oga=true"}
+    with Session(engine) as s:
+        ingest(s, [parse_posting(posting, "Acme", detail=detail)])
+        job = s.exec(select(Job)).one()
+        target = job.apply_url
+        job.status = JobStatus.APPROVED
+        s.add(job)
+        s.add(Application(job_id=job.id, channel="smartrecruiters",
+                          approved_at=datetime(2026, 1, 1, tzinfo=UTC)))
+        s.commit()
+        ingest(s, [parse_posting(posting, "Acme")])  # this poll's detail budget skipped it
+        job = s.exec(select(Job)).one()
+        assert job.status == JobStatus.APPROVED and job.apply_url == target
+        assert s.exec(select(Application)).one().approved_at is not None
+        ingest(s, [parse_posting(posting, "Acme", detail=detail)])
+        assert s.exec(select(Job)).one().status == JobStatus.APPROVED

@@ -300,3 +300,70 @@ def test_guest_failed_query_is_retried_then_given_up():
     assert bad not in src.searched_ok and f"linkedin_guest:{bad}" in sctx.errors
     src, _ = run(given_up={bad})
     assert src.next_offset == 3  # after repeated failures it no longer holds the rotation
+
+
+def _linkedin_source(monkeypatch, fetch):
+    import recrute.sources.linkedin_session as ls
+
+    class Source:
+        def __init__(self, **kw):
+            from recrute.sources.linkedin_session import SessionBudget
+
+            self.budget = SessionBudget(max_searches=10, max_views=10)
+            self.seen_ids = set(kw.get("seen_ids") or ())
+
+        def fetch(self, ctx):
+            return fetch(self)
+
+    monkeypatch.setattr(ls, "LinkedInSessionSource", Source)
+    monkeypatch.setattr(discovery, "Http", lambda **kw: None)
+
+
+def test_linkedin_partial_failure_keeps_collected_jobs(engine, monkeypatch):
+    import pytest
+
+    from recrute.schemas import RawJob
+    from recrute.settings import get_state, set_setting
+
+    def fetch(src):
+        src.budget.searches_used, src.budget.views_used = 1, 1
+        src.seen_ids.add("41")
+        yield RawJob(source="linkedin_session", url="https://www.linkedin.com/jobs/view/41/",
+                     title="Security Engineer", company="Acme", source_job_id="41")
+        raise TimeoutError("navigation timeout")
+
+    with Session(engine) as s:
+        set_setting(s, "sources_enabled", {"linkedin_session": True})
+    _linkedin_source(monkeypatch, fetch)
+    with pytest.raises(TimeoutError):
+        discovery.discover_linkedin(_ctx(engine))
+    with Session(engine) as s:
+        assert s.exec(select(Job)).one().title == "Security Engineer"
+        st = get_state(s, "linkedin_session")
+        assert st["seen_ids"] == ["41"] and st["searches"] == 1 and st["views"] == 1
+
+
+def test_linkedin_ingest_failure_leaves_ids_unseen(engine, monkeypatch):
+    import pytest
+
+    from recrute.schemas import RawJob
+    from recrute.settings import get_state, set_setting
+
+    def fetch(src):
+        src.budget.searches_used = 2
+        src.seen_ids.add("42")
+        yield RawJob(source="linkedin_session", url="https://www.linkedin.com/jobs/view/42/",
+                     title="Security Engineer", company="Acme", source_job_id="42")
+
+    def broken_ingest(*a, **k):
+        raise RuntimeError("database is locked")
+
+    with Session(engine) as s:
+        set_setting(s, "sources_enabled", {"linkedin_session": True})
+    _linkedin_source(monkeypatch, fetch)
+    monkeypatch.setattr(discovery, "ingest", broken_ingest)
+    with pytest.raises(RuntimeError):
+        discovery.discover_linkedin(_ctx(engine))
+    with Session(engine) as s:
+        st = get_state(s, "linkedin_session")
+        assert st.get("seen_ids", []) == [] and st["searches"] == 2  # budget still counted

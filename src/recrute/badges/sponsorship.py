@@ -187,6 +187,12 @@ _CITIZEN_ALTERNATIVE = re.compile(
 _BOILERPLATE = re.compile(r"discriminat|without regard|regardless of|protected|equal (?:employment"
                           r"|opportunity)|immigration reform and control act|e-verify", re.I)
 
+_NON_US_PERSON_OK = re.compile(r"\bnon[- ]?(?:u\.?\s?s\.?|united states)\s+persons?\b|"
+                               r"\bregardless of (?:citizenship|nationality|u\.?s\.? person)",
+                               re.I)
+_NON_US_EXCLUDED = re.compile(r"\bnon[- ]?(?:u\.?\s?s\.?|united states)\s+persons?\s+"
+                              r"(?:are|is|will)\s+(?:not|ineligible|un\w+)|"
+                              r"\bnot (?:open|available) to non[- ]?u", re.I)
 _US_PERSON = re.compile(r"\bu\.?\s?s\.?\s+persons?\b|\bunited states persons?\b", re.I)
 _EXPORT = re.compile(
     r"\bITAR\b|\bEAR\b|\bexport[- ]control(?:led|s)?\b|\bexport administration regulations\b|"
@@ -335,7 +341,13 @@ def _itar_clause(s: str) -> bool:
     if _NOT_REQUIRED.search(s) and not _REQUIRED.search(s):
         return False
     if has_person:
-        return _mention_required(s, _US_PERSON) or bool(_EXPORT_REQ.search(s))
+        # "including U.S. persons and non-U.S. persons" welcomes both: no restriction
+        if _NON_US_PERSON_OK.search(s) and not _NON_US_EXCLUDED.search(s):
+            return False
+        # a bare mention isn't a rule: it must be stated as a requirement
+        return (_mention_required(s, _US_PERSON)
+                and bool(_REQUIRED.search(s) or _EXPORT_REQ.search(s)
+                         or _APPLICANT_RESTRICTION.search(s)))
     # Export-control mention without "U.S. person": only an explicit restriction on the
     # APPLICANT counts. Skills ("knowledge of ITAR"), job duties ("ensure compliance with EAR")
     # and corporate policy ("we comply with export controls") are not eligibility rules.

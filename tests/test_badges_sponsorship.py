@@ -366,3 +366,17 @@ def test_customer_statements_are_not_applicant_restrictions(text, flag):
 
     flags = eligibility_flags(text)
     assert (flag in flags) if flag else not flags
+
+
+@pytest.mark.parametrize("text,flagged", [
+    ("All qualified candidates, including U.S. persons and non-U.S. persons, are encouraged "
+     "to apply.", False),
+    ("We hire regardless of U.S. person status.", False),
+    ("We work with U.S. persons across many industries.", False),
+    ("Only U.S. persons may apply; non-U.S. persons are not eligible.", True),
+    ("Due to ITAR, applicants must be U.S. persons.", True),
+])
+def test_inclusive_us_person_wording_is_not_a_restriction(text, flagged):
+    from recrute.badges.sponsorship import eligibility_flags
+
+    assert ("itar_us_person" in eligibility_flags(text)) is flagged

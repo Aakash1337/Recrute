@@ -19,6 +19,9 @@ class RawJob(BaseModel):
     source_job_id: str | None = None
     url: str  # the posting's URL on that source
     apply_url: str | None = None  # where the application form lives, if known
+    # apply_url was constructed by us (e.g. detail unavailable), not reported by the source: it
+    # never replaces an application target already learned for the same posting
+    apply_url_is_fallback: bool = False
     title: str
     company: str
     company_domain: str | None = None

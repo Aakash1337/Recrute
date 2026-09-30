@@ -226,7 +226,9 @@ def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
         if company is not None:
             learn_company_board(session, company, raw)
         same_posting = (raw.ats and raw.ats == job.ats and raw.ats_job_id
-                        and raw.ats_job_id == job.ats_job_id and canon != job.canonical_url)
+                        and raw.ats_job_id == job.ats_job_id and canon != job.canonical_url
+                        # a guessed URL for the same posting is no evidence the target moved
+                        and not raw.apply_url_is_fallback)
         if (_prefer(raw) and job.ats != raw.ats) or same_posting:
             existing = session.exec(select(Job).where(Job.canonical_url == canon)).first()
             if existing is None or existing.id == job.id:
