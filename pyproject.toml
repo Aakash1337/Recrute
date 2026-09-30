@@ -45,6 +45,10 @@ packages = ["src/recrute"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "live: hits real public network APIs (skipped unless RECRUTE_LIVE=1)",
+    "browser: launches a real (headless) browser via patchright",
+]
 
 [tool.ruff]
 line-length = 100

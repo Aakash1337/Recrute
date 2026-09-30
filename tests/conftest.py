@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from sqlmodel import Session, SQLModel
 
@@ -22,3 +24,12 @@ def engine(paths):
 @pytest.fixture
 def session_factory(engine):
     return lambda: Session(engine)
+
+
+def pytest_collection_modifyitems(config, items):
+    if os.environ.get("RECRUTE_LIVE") == "1":
+        return
+    skip_live = pytest.mark.skip(reason="live network test (set RECRUTE_LIVE=1)")
+    for item in items:
+        if "live" in item.keywords:
+            item.add_marker(skip_live)
