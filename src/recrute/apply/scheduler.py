@@ -4,16 +4,24 @@ Approved packets are not sent as a batch. One application runs at a time, at ran
 over what is left of today's active hours, best candidates first:
 
   * only Applications with approved_at set (CP2 "go ahead") are ever considered, and the claim
-    that starts a run is a single conditional UPDATE (APPROVED -> APPLYING) that re-checks the
-    approval inside the same transaction; runs are serialized by a lock row;
+    that starts a run is a single conditional UPDATE (APPROVED -> APPLYING) that re-reads the
+    approval and binds the attempt to the packet revision (sha256 of packet + approved_at)
+    inside the same transaction; the runner gets the packet from that claimed row;
+  * runs are serialized by a lease (lock row renewed by an owner-checked heartbeat); the
+    submit click and the final status update are fenced on still holding it;
+  * right before the click the gate re-checks: lease, approval, packet revision, job status,
+    suspension, active hours and fresh caps (including this attempt); any failure -> CP3;
+  * finalization is a conditional update (only if still APPLYING and ours); a status a human
+    set meanwhile is left alone and the outcome is only recorded on the Application;
   * never outside active_hours [start, end) in local time;
   * effective cap per channel = min(site cap remaining, global apps/day remaining); the global
     knob never raises a site cap; anything that may have reached the employer counts
-    (confirmed, clicked-but-unconfirmed, crashed, in flight, handed to the human filled);
+    (confirmed, clicked-but-unconfirmed, crashed, in flight, and filled forms handed to the
+    human - handoff reservations - until resolved);
   * at most `company_cap` applications per company per `company_cooldown`;
   * a channel is suspended (default 3 days) after an account-security signal (CAPTCHA challenge,
     checkpoint / unusual activity, unexpected logout) until expiry or a human clears it;
-  * APPLYING attempts older than `stale_after` are moved to NEEDS_HUMAN, never retried;
+  * APPLYING attempts whose lease has expired are moved to NEEDS_HUMAN, never retried;
   * ordering: fit score, posting freshness (applying early matters), priority tier, then FIFO;
   * the first N runs of each adapter use fill-and-pause (trial period).
 
@@ -23,10 +31,13 @@ wires them to the database and the runner.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import random
 import socket
+import time as time_mod
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -36,13 +47,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import update
 from sqlmodel import Session, select
 
-from recrute.apply.state import (
-    DEFAULT_SUSPENSION,
-    acquire_lock,
-    release_lock,
-    suspend,
-    suspension,
-)
+from recrute.apply.state import DEFAULT_SUSPENSION, Lease, suspend, suspension
 from recrute.models import Application, Job, JobStatus, StatusEvent
 from recrute.schemas import ApplyOutcome, Packet
 from recrute.settings import get_setting
@@ -57,7 +62,8 @@ log = logging.getLogger(__name__)
 DEFAULT_MIN_GAP = timedelta(minutes=6)
 FIRST_RUN_MAX_DELAY = timedelta(minutes=20)
 TRIAL_THRESHOLD = 5
-DEFAULT_STALE_AFTER = timedelta(minutes=30)
+DEFAULT_LEASE_TTL = timedelta(minutes=5)
+DEFAULT_HEARTBEAT = 60.0  # seconds between lease renewals (must be well under the TTL)
 DEFAULT_COMPANY_CAP = 1
 DEFAULT_COMPANY_COOLDOWN = timedelta(days=7)
 STUCK_NOTE = "interrupted; may have been submitted, please check"
@@ -253,9 +259,10 @@ class RunResult:
     mode: str | None = None
     outcome: ApplyOutcome | None = None
     next_run_at: datetime | None = None
-    recovered: list[int] = field(default_factory=list)  # stuck APPLYING jobs moved to CP3
+    recovered: list[int] = field(default_factory=list)  # orphaned APPLYING jobs moved to CP3
     skipped_channels: dict[str, Any] = field(default_factory=dict)  # suspended channels
     skipped_companies: list[int] = field(default_factory=list)  # in cooldown
+    finalized: str = ""  # "status_updated" | "status_left_unchanged: ..." (conditional update)
 
 
 def _details(app: Application) -> dict[str, Any]:
@@ -276,16 +283,32 @@ def _attempted_at(app: Application, tz: Any) -> datetime | None:
     return _parse(d.get("attempted_at") or d.get("attempt_started_at"), tz)
 
 
-def may_have_been_sent(app: Application) -> bool:
-    """Conservatively: could this attempt have reached the employer (or will the human send
-    it)? Confirmed, submit clicked (confirmed or not), crashed in submit mode, still in flight,
-    or handed over filled (fill-and-pause)."""
+def packet_revision(app: Application) -> str:
+    """Identity of exactly what was approved: sha256 over the canonical packet JSON plus the
+    approval time. Any edit or re-approval changes it."""
+    approved = aware(app.approved_at)
+    blob = json.dumps({"packet": app.packet or {},
+                       "approved_at": approved.isoformat() if approved else None},
+                      sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+# statuses in which a handed-over filled form still (or finally) represents an application
+_RESERVING = (JobStatus.NEEDS_HUMAN, JobStatus.APPLYING, *SENT_STATUSES)
+
+
+def may_have_been_sent(app: Application, job_status: JobStatus | None = None) -> bool:
+    """Conservatively: could this attempt reach the employer? Confirmed, submit clicked
+    (confirmed or not), crashed in submit mode, still in flight, or a filled form handed to
+    the human (handoff reservation) that hasn't been resolved as skipped / given up."""
     out = app.outcome or {}
     d = _details(app)
-    return bool(app.submitted_at is not None or out.get("status") == "in_progress"
-                or d.get("submit_attempted")
-                or (out.get("status") == "needs_human"
-                    and d.get("effective_mode") == "fill_and_pause"))
+    if (app.submitted_at is not None or out.get("status") == "in_progress"
+            or d.get("submit_attempted")):
+        return True
+    handed_over = d.get("handoff_reservation") or (
+        out.get("status") == "needs_human" and d.get("effective_mode") == "fill_and_pause")
+    return bool(handed_over) and (job_status is None or job_status in _RESERVING)
 
 
 def day_counts(session: Session, now: datetime) -> DayCounts:
@@ -294,9 +317,11 @@ def day_counts(session: Session, now: datetime) -> DayCounts:
     today = now.date()
     total = 0
     by: dict[str, int] = {}
-    for app in session.exec(select(Application).where(Application.attempts > 0)).all():
+    rows = session.exec(select(Application, Job).join(Job, Application.job_id == Job.id)
+                        .where(Application.attempts > 0)).all()
+    for app, job in rows:
         when = aware(app.submitted_at, tz) or _attempted_at(app, tz)
-        if when is not None and when.date() == today and may_have_been_sent(app):
+        if when is not None and when.date() == today and may_have_been_sent(app, job.status):
             total += 1
             by[app.channel] = by.get(app.channel, 0) + 1
     return DayCounts(total=total, by_channel=by)
@@ -320,7 +345,8 @@ def supervised_success_count(session: Session, channel: str) -> int:
 
 def company_events(session: Session) -> list[tuple[int, datetime | None]]:
     """(company_id, when) for applications that went out or may have: SENT statuses,
-    in-flight APPLYING, and NEEDS_HUMAN attempts that may have been sent."""
+    in-flight APPLYING, and NEEDS_HUMAN attempts that may have been sent or hold a handoff
+    reservation."""
     statuses = (*SENT_STATUSES, JobStatus.APPLYING, JobStatus.NEEDS_HUMAN)
     rows = session.exec(
         select(Job, Application).join(Application, Application.job_id == Job.id,
@@ -329,7 +355,8 @@ def company_events(session: Session) -> list[tuple[int, datetime | None]]:
     ).all()
     out: list[tuple[int, datetime | None]] = []
     for job, app in rows:
-        if job.status == JobStatus.NEEDS_HUMAN and (app is None or not may_have_been_sent(app)):
+        if job.status == JobStatus.NEEDS_HUMAN and (
+                app is None or not may_have_been_sent(app, job.status)):
             continue
         when = None
         if app is not None:
@@ -340,12 +367,6 @@ def company_events(session: Session) -> list[tuple[int, datetime | None]]:
             when = aware(ev.created_at) if ev else None
         out.append((job.company_id, when))  # type: ignore[arg-type]
     return out
-
-
-def _set_status(session: Session, job: Job, status: JobStatus, note: str | None = None) -> None:
-    job.status = status
-    session.add(job)
-    session.add(StatusEvent(job_id=job.id, status=status, note=(note or "")[:500] or None))
 
 
 def build_queue(session: Session) -> list[tuple[Application, Job]]:
@@ -361,37 +382,57 @@ def build_queue(session: Session) -> list[tuple[Application, Job]]:
     return list(rows)
 
 
-def recover_stuck(session: Session, now: datetime,
-                  stale_after: timedelta = DEFAULT_STALE_AFTER) -> list[int]:
-    """APPLYING attempts older than `stale_after` (crash, killed worker, lost browser) go to
-    NEEDS_HUMAN. They are NEVER retried automatically: the submit may have gone through."""
+def _conditional_status(session: Session, job_id: int, to: JobStatus, note: str, *,
+                        closed_at: datetime | None = None) -> bool:
+    """APPLYING -> `to`, only if the job is still APPLYING. Never overwrites a status a human
+    (or another process) set meanwhile."""
+    values: dict[str, Any] = {"status": to}
+    if closed_at is not None:
+        values["closed_at"] = closed_at
+    res = session.execute(update(Job).where(Job.id == job_id,  # type: ignore[arg-type]
+                                            Job.status == JobStatus.APPLYING)
+                          .values(**values).execution_options(synchronize_session=False))
+    if res.rowcount != 1:  # type: ignore[attr-defined]
+        return False
+    session.add(StatusEvent(job_id=job_id, status=to, note=note[:500] or None))
+    return True
+
+
+def recover_orphans(session: Session, now: datetime, owner: str) -> list[int]:
+    """Run while holding the lease: any APPLYING attempt now belongs to a lease that expired
+    or was released without finishing (crash, killed worker, lost browser). Those go to
+    NEEDS_HUMAN and are NEVER retried automatically: the submit may have gone through."""
     moved: list[int] = []
     rows = session.exec(select(Application, Job).join(Job, Application.job_id == Job.id)
                         .where(Job.status == JobStatus.APPLYING)).all()
     for app, job in rows:
         d = _details(app)
-        started = _parse(d.get("attempt_started_at"))
-        if started is not None and now - started < stale_after:
-            continue
         d.update({"interrupted": True, "recovered_at": now.astimezone(UTC).isoformat(),
+                  "recovered_by": owner,
                   "submit_attempted": bool(d.get("submit_attempted")
                                            or d.get("mode", "submit") == "submit")})
-        app.outcome = {**(app.outcome or {}), "status": "needs_human", "reason": STUCK_NOTE,
-                       "details": d}
-        app.last_error = STUCK_NOTE
-        session.add(app)
-        _set_status(session, job, JobStatus.NEEDS_HUMAN, STUCK_NOTE)
-        moved.append(job.id)  # type: ignore[arg-type]
-    if moved:
-        session.commit()
+        if _conditional_status(session, job.id, JobStatus.NEEDS_HUMAN, STUCK_NOTE):  # type: ignore[arg-type]
+            app.outcome = {**(app.outcome or {}), "status": "needs_human",
+                           "reason": STUCK_NOTE, "details": d}
+            app.last_error = STUCK_NOTE
+            session.add(app)
+            moved.append(job.id)  # type: ignore[arg-type]
+    session.commit()
     return moved
 
 
+def recover_stuck(session: Session, now: datetime, owner: str = "recovery") -> list[int]:
+    """Backwards-compatible name; see recover_orphans (lease-based, not age-based)."""
+    return recover_orphans(session, now, owner)
+
+
 def claim(session: Session, app: Application, job: Job, *, owner: str, now: datetime,
-          mode: str, adapter_name: str, trial: bool) -> bool:
+          mode: str, adapter_name: str, trial: bool,
+          attempt_id: str | None = None) -> Application | None:
     """Atomically move the job APPROVED -> APPLYING, only if its Application is still
-    CP2-approved and unsubmitted. Exactly one caller can win; the approval is re-read inside
-    the same transaction before anything else happens."""
+    CP2-approved and unsubmitted. Exactly one caller can win. The Application is re-read in
+    the same transaction and the attempt is bound to its packet revision; the caller must
+    use the returned (fresh) Application's packet."""
     still_approved = select(Application.id).where(
         Application.id == app.id, Application.job_id == job.id,
         Application.approved_at != None,  # noqa: E711
@@ -403,46 +444,116 @@ def claim(session: Session, app: Application, job: Job, *, owner: str, now: date
         .values(status=JobStatus.APPLYING).execution_options(synchronize_session=False))
     if res.rowcount != 1:  # type: ignore[attr-defined]
         session.rollback()
-        return False
+        return None
     fresh = session.exec(select(Application).where(Application.id == app.id)
                          .execution_options(populate_existing=True)).one()
     if fresh.approved_at is None or fresh.submitted_at is not None:
         session.rollback()
-        return False
+        return None
     started = now.astimezone(UTC).isoformat()
     fresh.attempts += 1
     fresh.trial = trial
     fresh.scheduled_for = None
     fresh.outcome = {"status": "in_progress", "reason": "", "details": {
-        "attempt_started_at": started, "attempt_owner": owner, "attempted_at": started,
-        "mode": mode, "effective_mode": mode, "adapter": adapter_name,
-        "submit_attempted": False}}
+        "attempt_id": attempt_id or uuid.uuid4().hex, "attempt_started_at": started,
+        "attempt_owner": owner, "attempted_at": started, "mode": mode, "effective_mode": mode,
+        "adapter": adapter_name, "packet_revision": packet_revision(fresh),
+        "submit_attempted": False, "handoff_reservation": False}}
     session.add(fresh)
     session.add(StatusEvent(job_id=job.id, status=JobStatus.APPLYING,
                             note=f"{adapter_name} {mode} ({owner})"))
     session.commit()
-    session.refresh(job)
     session.refresh(fresh)
-    return True
+    return fresh
 
 
-def _approval_gate(session: Session, app_id: int, job_id: int, channel: str,
-                   ) -> Callable[[], str | None]:
-    """Re-checked (in a fresh session) right before the submit click."""
-    bind = session.get_bind()
+def submit_gate(bind: Any, *, app_id: int, job_id: int, channel: str, attempt_id: str,
+                revision: str, lease: Lease, clock: Callable[[], datetime]
+                ) -> Callable[[], str | None]:
+    """Re-checked in a fresh session right before the submit click. Any reason returned
+    means: do not submit (the runner hands the filled form to the human instead)."""
 
     def check() -> str | None:
+        if not lease.held():
+            return "scheduler lease lost; another worker may have taken over"
+        t = clock()
         with Session(bind) as s:
             a, j = s.get(Application, app_id), s.get(Job, job_id)
             if a is None or a.approved_at is None:
                 return "CP2 approval was revoked"
+            if _details(a).get("attempt_id") != attempt_id:
+                return "this attempt was superseded"
+            if packet_revision(a) != revision:
+                return "the approved packet changed since this attempt started"
             if j is None or j.status != JobStatus.APPLYING:
                 return f"job status changed to {getattr(j, 'status', None)}"
-            if (info := suspension(s, channel, datetime.now(UTC))) is not None:
+            if (info := suspension(s, channel, t)) is not None:
                 return f"channel suspended: {info.get('reason')}"
+            if not is_active(t, list(get_setting(s, "active_hours"))):
+                return "deferred: outside active hours"
+            counts = day_counts(s, t)  # includes this attempt's own reservation
+            if counts.total > int(get_setting(s, "apps_per_day")):
+                return "deferred: daily application cap reached"
+            cap = (get_setting(s, "site_caps") or {}).get(channel)
+            if cap is not None and counts.by_channel.get(channel, 0) > int(cap):
+                return f"deferred: {channel} daily cap reached"
         return None
 
     return check
+
+
+def finalize(session: Session, *, app_id: int, job_id: int, attempt_id: str, lease: Lease,
+             outcome: ApplyOutcome, adapter_name: str, max_attempts: int,
+             now: datetime) -> str:
+    """Record the outcome on the Application and move the job out of APPLYING, but only
+    if this attempt still owns it (same attempt id, lease held) and the job is still
+    APPLYING. Otherwise leave the job's status alone (rejected, applied manually, revoked,
+    recovered) and just record what happened."""
+    app = session.exec(select(Application).where(Application.id == app_id)
+                       .execution_options(populate_existing=True)).one()
+    job = session.exec(select(Job).where(Job.id == job_id)
+                       .execution_options(populate_existing=True)).one()
+    before = app.outcome or {}
+    claim_d = _details(app)
+    ours = claim_d.get("attempt_id") == attempt_id and lease.held()
+    details = {**claim_d, **outcome.details, "attempt_id": attempt_id}
+    if not ours:
+        details["previous_outcome"] = before
+    if outcome.status == "submitted":
+        app.submitted_at = datetime.now(UTC)  # a fact, whatever the job status says now
+        app.last_error = None
+    else:
+        app.last_error = outcome.reason
+    app.receipt_dir = outcome.receipt_dir or app.receipt_dir
+
+    if outcome.status == "submitted":
+        target, note = JobStatus.APPLIED, f"submitted via {adapter_name}"
+    elif outcome.status == "needs_human":
+        target, note = JobStatus.NEEDS_HUMAN, outcome.reason
+    elif outcome.status == "dry_run":
+        target, note = JobStatus.APPROVED, "dry run"
+    elif outcome.reason == "closed":
+        target, note = JobStatus.CLOSED, "posting closed before applying"
+        app.last_error = "posting closed"
+    elif app.attempts >= max_attempts:
+        target, note = JobStatus.NEEDS_HUMAN, f"failed {app.attempts}x: {outcome.reason}"
+    else:
+        target, note = JobStatus.APPROVED, f"will retry: {outcome.reason}"
+
+    result = "status_updated"
+    if not ours:
+        result = "status_left_unchanged: attempt no longer owns the job (lease lost/recovered)"
+    elif not _conditional_status(session, job_id, target, note,
+                                 closed_at=datetime.now(UTC) if target == JobStatus.CLOSED
+                                 else None):
+        result = f"status_left_unchanged: job was {job.status} when the attempt finished"
+    if result != "status_updated":
+        details["status_left_unchanged"] = result.split(": ", 1)[1]
+        details["intended_status"] = str(target)
+    app.outcome = {**outcome.model_dump(mode="json"), "details": details}
+    session.add(app)
+    session.commit()
+    return result
 
 
 def default_owner() -> str:
@@ -456,33 +567,45 @@ def run_due(session: Session, *, page_factory: Any, paths: Paths,
             adapter_resolver: Callable[[Application, Job], Adapter] | None = None,
             force_mode: str | None = None, trial_threshold: int = TRIAL_THRESHOLD,
             max_attempts: int = 3, min_gap: timedelta = DEFAULT_MIN_GAP,
-            owner: str | None = None, stale_after: timedelta = DEFAULT_STALE_AFTER,
+            owner: str | None = None, lease_ttl: timedelta = DEFAULT_LEASE_TTL,
+            heartbeat: float = DEFAULT_HEARTBEAT, clock: Callable[[], datetime] | None = None,
             suspend_for: timedelta = DEFAULT_SUSPENSION,
             company_cap: int = DEFAULT_COMPANY_CAP,
-            company_cooldown: timedelta = DEFAULT_COMPANY_COOLDOWN,
-            lock_ttl: timedelta | None = None) -> RunResult:
+            company_cooldown: timedelta = DEFAULT_COMPANY_COOLDOWN) -> RunResult:
     """Run the next application if it is due; otherwise (re)plan and persist its slot.
 
-    Call periodically (e.g. every minute) from the worker. Serialized by a lock row; never
-    runs outside active hours, never runs an Application without approved_at, never exceeds
-    the caps, skips suspended channels and companies in cooldown."""
-    now = now or datetime.now().astimezone()
+    Call periodically (e.g. every minute) from the worker. Serialized by a heartbeat-renewed
+    lease; never runs outside active hours, never runs an Application without approved_at,
+    never exceeds the caps, skips suspended channels and companies in cooldown.
+    `clock` (tz-aware local time) is used after `now` for the lease and the submit gate; by
+    default it advances from `now` in real time."""
+    if clock is None:
+        if now is None:
+            def clock() -> datetime:
+                return datetime.now().astimezone()
+        else:
+            t0, base = time_mod.monotonic(), now
+
+            def clock() -> datetime:
+                return base + timedelta(seconds=time_mod.monotonic() - t0)
+    now = now or clock()
     owner = owner or default_owner()
-    stamp = acquire_lock(session, owner, now, lock_ttl or stale_after)
-    if stamp is None:
+    lease = Lease(session.get_bind(), owner, lease_ttl, clock)
+    if not lease.acquire():
         return RunResult(ran=False, reason="another scheduler run is in progress")
+    lease.start_heartbeat(heartbeat)
     try:
         return _run_due_locked(
             session, page_factory=page_factory, paths=paths, now=now, rng=rng, router=router,
             human=human, runner=runner, adapter_resolver=adapter_resolver,
             force_mode=force_mode, trial_threshold=trial_threshold, max_attempts=max_attempts,
-            min_gap=min_gap, owner=owner, stale_after=stale_after, suspend_for=suspend_for,
+            min_gap=min_gap, owner=owner, lease=lease, clock=clock, suspend_for=suspend_for,
             company_cap=company_cap, company_cooldown=company_cooldown)
     finally:
         try:
             session.rollback()
         finally:
-            release_lock(session, stamp)
+            lease.release()
 
 
 def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: datetime,
@@ -490,14 +613,14 @@ def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: d
                     runner: Callable[..., ApplyOutcome] | None,
                     adapter_resolver: Callable[[Application, Job], Adapter] | None,
                     force_mode: str | None, trial_threshold: int, max_attempts: int,
-                    min_gap: timedelta, owner: str, stale_after: timedelta,
-                    suspend_for: timedelta, company_cap: int,
+                    min_gap: timedelta, owner: str, lease: Lease,
+                    clock: Callable[[], datetime], suspend_for: timedelta, company_cap: int,
                     company_cooldown: timedelta) -> RunResult:
     from recrute.apply.adapters import ADAPTERS, adapter_for, get_adapter
     from recrute.apply.runner import apply_job
 
     runner = runner or apply_job
-    recovered = recover_stuck(session, now, stale_after)
+    recovered = recover_orphans(session, now, owner)
     apps_per_day = int(get_setting(session, "apps_per_day"))
     site_caps = dict(get_setting(session, "site_caps") or {})
     active_hours = list(get_setting(session, "active_hours"))
@@ -542,7 +665,6 @@ def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: d
         base.reason, base.next_run_at = plan.reason, plan.run_at
         return base
 
-    packet = Packet.model_validate(app.packet)
     if adapter_resolver is not None:
         adapter = adapter_resolver(app, job)
     elif app.channel in ADAPTERS:
@@ -553,58 +675,38 @@ def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: d
                        trial_threshold)
     mode = force_mode or ("fill_and_pause" if trial or not adapter.can_submit else "submit")
 
-    # ---- the claim: conditional UPDATE, approval re-read in the same transaction
-    if not claim(session, app, job, owner=owner, now=now, mode=mode, adapter_name=adapter.name,
-                 trial=trial):
+    # ---- the claim: conditional UPDATE; approval + packet re-read in the same transaction
+    app_id, job_id, channel = app.id, job.id, app.channel
+    attempt_id = uuid.uuid4().hex
+    claimed = claim(session, app, job, owner=owner, now=now, mode=mode,
+                    adapter_name=adapter.name, trial=trial, attempt_id=attempt_id)
+    if claimed is None:
         base.reason = "not claimed: approval revoked or already taken"
         return base
-    claim_details = _details(app)
-
-    files = {k: v for k, v in (("resume", app.resume_path),
-                               ("cover_letter", app.cover_letter_path)) if v}
+    revision = _details(claimed)["packet_revision"]
+    files = {k: v for k, v in (("resume", claimed.resume_path),
+                               ("cover_letter", claimed.cover_letter_path)) if v}
+    gate = submit_gate(session.get_bind(), app_id=app_id, job_id=job_id,  # type: ignore[arg-type]
+                       channel=channel, attempt_id=attempt_id, revision=revision, lease=lease,
+                       clock=clock)
     try:
+        packet = Packet.model_validate(claimed.packet)  # the packet that was just claimed
         outcome = runner(job, packet, mode=mode, page_factory=page_factory, paths=paths,
                          adapter=adapter, router=router, human=human, files=files or None,
-                         now=now.astimezone(UTC),
-                         pre_submit_check=_approval_gate(session, app.id, job.id,  # type: ignore[arg-type]
-                                                         app.channel))
+                         now=now.astimezone(UTC), pre_submit_check=gate)
     except Exception as e:  # noqa: BLE001 - we can't know how far it got: never retry blindly
-        log.exception("runner crashed for application %s", app.id)
+        log.exception("runner crashed for application %s", app_id)
         outcome = ApplyOutcome(status="needs_human", reason=f"runner crashed: {e}"[:300],
                                details={"mode": mode, "effective_mode": mode,
                                         "submit_attempted": mode == "submit"})
 
-    session.refresh(app)
-    session.refresh(job)
-    details = {**claim_details, **outcome.details,
-               "attempt_started_at": claim_details.get("attempt_started_at"),
-               "attempt_owner": owner}
-    app.outcome = {**outcome.model_dump(mode="json"), "details": details}
-    app.receipt_dir = outcome.receipt_dir
-    if outcome.status == "submitted":
-        app.submitted_at = datetime.now(UTC)
-        app.last_error = None
-        _set_status(session, job, JobStatus.APPLIED, f"submitted via {adapter.name}")
-    elif outcome.status == "needs_human":
-        app.last_error = outcome.reason
-        _set_status(session, job, JobStatus.NEEDS_HUMAN, outcome.reason)
-    elif outcome.status == "dry_run":
-        _set_status(session, job, JobStatus.APPROVED, "dry run")
-    elif outcome.reason == "closed":
-        app.last_error = "posting closed"
-        job.closed_at = datetime.now(UTC)
-        _set_status(session, job, JobStatus.CLOSED, "posting closed before applying")
-    else:
-        app.last_error = outcome.reason
-        if app.attempts >= max_attempts:
-            _set_status(session, job, JobStatus.NEEDS_HUMAN,
-                        f"failed {app.attempts}x: {outcome.reason}")
-        else:
-            _set_status(session, job, JobStatus.APPROVED, f"will retry: {outcome.reason}")
-    session.add(app)
-    session.commit()
-    if details.get("account_security"):
-        suspend(session, app.channel, now, f"{outcome.reason} (job {job.id})", suspend_for)
-        log.warning("channel %s suspended: %s", app.channel, outcome.reason)
+    base.finalized = finalize(session, app_id=app_id, job_id=job_id,  # type: ignore[arg-type]
+                              attempt_id=attempt_id, lease=lease, outcome=outcome,
+                              adapter_name=adapter.name, max_attempts=max_attempts, now=now)
+    if outcome.details.get("account_security"):
+        suspend(session, channel, now, f"{outcome.reason} (job {job_id})", suspend_for)
+        log.warning("channel %s suspended: %s", channel, outcome.reason)
     base.ran, base.reason, base.mode, base.outcome = True, outcome.reason, mode, outcome
     return base
+
+

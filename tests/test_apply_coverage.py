@@ -371,3 +371,24 @@ def test_dates_compare_by_calendar_day():
     assert date_text("2026-11-02", "") == "11/02/2026"
     assert date_text("2026-11-02", "YYYY-MM-DD") == "2026-11-02"
     assert date_text("2026-11-02", "dd/mm/yyyy") == "02/11/2026"
+
+
+def test_values_are_compared_exactly_not_like_labels():
+    from recrute.apply.base import value_matches
+    from recrute.apply.dom import same_value
+
+    url = "https://github.com/AdaL/Engine-Notes"
+    assert same_value("url", url, url) and same_value("text", f"  {url} ", url)
+    assert not same_value("url", url.lower(), url)  # paths are case-sensitive
+    assert not same_value("text", "Ada.", "Ada")  # punctuation is meaningful
+    assert not same_value("text", "ada lovelace", "Ada Lovelace")
+    assert same_value("email", "Ada@Example.com", "ada@example.com")
+    assert same_value("tel", "(415) 555-0100", "4155550100")
+    assert same_value("tel", "+1 415 555 0100", "415-555-0100")
+    assert not same_value("tel", "415 555 0199", "4155550100")
+    assert same_value("textarea", "line1\r\nline2", "line1\nline2")
+    f = LiveField(id="u", label="Portfolio", type="text", current=url.lower())
+    assert not value_matches(f, url.lower(), url)
+    sel = LiveField(id="s", label="Sponsor", type="select", widget="select",
+                    options=["Yes", "No"], current="No")
+    assert value_matches(sel, "No", "no")  # option LABELS still match as labels

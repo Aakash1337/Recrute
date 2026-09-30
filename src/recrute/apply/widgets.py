@@ -212,7 +212,11 @@ def fill_one(root: Page | Frame, f: LiveField, value: Any, human: Human) -> Any:
                 raise FillError(f"approved value {value!r} does not match the options")
             loc = root.locator(f.selector).first
             human.move_to(loc)
-            loc.select_option(label=labels)
+            loc.select_option(label=labels)  # sets exactly these; saved extras are dropped
+            shown = loc.evaluate("e => [...e.options].filter(o => o.selected && o.value !== '')"
+                                 ".map(o => o.text.trim())")
+            if sorted(shown) != sorted(labels):
+                raise FillError(f"multi-select shows {shown!r}, approved {labels!r}")
             return labels
         return fill_select(root, f, value, human)
     if f.widget in ("radio", "checkbox_group"):
@@ -242,6 +246,8 @@ def clear_field(root: Page | Frame, f: LiveField, human: Human) -> None:
     if f.widget == "select":
         if f.type == "multiselect":
             loc.select_option([])
+            if loc.evaluate("e => [...e.options].some(o => o.selected && o.value !== '')"):
+                raise FillError("could not clear the saved selections")
             return
         if not loc.evaluate("e => [...e.options].some(o => o.value === '')"):
             raise FillError("select has no empty option to fall back to")

@@ -715,3 +715,107 @@ def test_captcha_blocker_is_flagged_as_account_security(srv, context, paths, hum
     out = run(job(f"{srv.url}/assessment/apply", "greenhouse"), gh_packet(resume), context,
               paths, human)
     assert out.details["account_security"] is False
+
+
+# --------------------------------------------------------------------------- re-audit regressions
+
+
+def _race_values(body: str) -> list[str]:
+    return re.findall(r'name="eeo\[race\]"\r\n\r\n([^\r]*)\r\n', body)
+
+
+def test_multi_select_is_read_as_a_set_and_filled_exactly(srv, context, paths, human, resume):
+    """Item 3: every selected option is read; a saved extra selection is dropped."""
+    from recrute.apply.adapters.lever import LeverAdapter
+
+    page = context.new_page()
+    page.goto(f"{srv.url}/lever/acme/abc-123/apply?saved=1")
+    race = next(f for f in LeverAdapter().read_form(page) if f.id == "eeo[race]")
+    assert race.type == "multiselect" and race.current == ["Asian"]
+    page.close()
+
+    packet = lever_packet(resume)
+    packet.answers.append(a("eeo[race]", ["White", "Hispanic or Latino"]))
+    j = job(f"{srv.url}/lever/acme/abc-123/apply?saved=1", "lever", job_id=2)
+    out = run(j, packet, context, paths, human)
+    assert out.status == "submitted", out.reason
+    assert sorted(_race_values(srv.posts[0]["body"].decode())) == ["Hispanic or Latino", "White"]
+
+
+def test_saved_multi_selection_without_approved_answer_is_cleared(srv, context, paths, human,
+                                                                  resume):
+    j = job(f"{srv.url}/lever/acme/abc-123/apply?saved=1", "lever", job_id=2)
+    out = run(j, lever_packet(resume), context, paths, human)
+    assert out.status == "submitted", out.reason
+    assert "eeo[race]" in out.details["fill"]["cleared"]
+    assert _race_values(srv.posts[0]["body"].decode()) == []
+
+
+def test_multi_select_extra_is_a_verification_problem():
+    from recrute.apply.base import LiveField, verify_fields
+
+    f = LiveField(id="m", label="Race", type="multiselect", widget="select",
+                  options=["Asian", "White"], current=["Asian", "White"])
+    pk = Packet(job_id=1, answers=[a("m", ["White"])])
+    assert "m" in verify_fields([f], pk, {})
+
+
+def test_captcha_appearing_mid_fill_stops_everything(srv, context, paths, human, resume):
+    """Item 4: a challenge that pops up while typing is caught before anything else."""
+    j = job(f"{srv.url}/greenhouse/acme/jobs/1001?captcha_mid=1", "greenhouse")
+    out = run(j, gh_packet(resume), context, paths, human, mode="submit")
+    assert out.status == "needs_human" and out.reason == "blocker: captcha: hCaptcha"
+    assert out.details["account_security"] is True
+    assert srv.posts == []
+
+
+def test_linkedin_captcha_after_next_is_caught(srv, context, paths, human, resume):
+    j = job(f"{srv.url}/linkedin/jobs/view/4000/?captcha_after=1", "linkedin", job_id=4)
+    out = run(j, li_packet(resume), context, paths, human)
+    assert out.status == "needs_human" and out.reason.startswith("blocker: captcha")
+    assert out.details["account_security"] is True
+    assert out.details["fill"]["steps"] == 1  # caught right after the first Next
+    assert srv.posts == []
+
+
+def test_linkedin_new_upload_is_explicitly_selected(srv, context, paths, human, resume):
+    """Item 5: the uploaded document isn't auto-selected; the adapter selects it."""
+    j = job(f"{srv.url}/linkedin/jobs/view/4000/?no_autoselect=1", "linkedin", job_id=4)
+    out = run(j, li_packet(resume), context, paths, human)
+    assert out.status == "submitted", out.reason
+    assert json.loads(srv.posts[0]["body"])["resume"] == "resume.pdf"
+
+
+def test_linkedin_old_resume_left_selected_goes_to_cp3(srv, context, paths, human, resume):
+    j = job(f"{srv.url}/linkedin/jobs/view/4000/?stuck_old=1", "linkedin", job_id=4)
+    out = run(j, li_packet(resume), context, paths, human)
+    assert out.status == "needs_human"
+    assert "not the selected document" in out.details["fill_failed"]["_resume"]
+    assert srv.posts == []
+
+
+def test_handoff_reservation_flag(srv, context, paths, human, resume):
+    """Item 6 (runner side): a filled form left open is marked as a pending application."""
+    j = job(f"{srv.url}/greenhouse/acme/jobs/1001?extra=1", "greenhouse")
+    out = run(j, gh_packet(resume), context, paths, human, mode="submit")
+    assert out.status == "needs_human" and out.details["handoff_reservation"] is True
+    out = run(job(f"{srv.url}/greenhouse/acme/jobs/1001", "greenhouse"), gh_packet(resume),
+              context, paths, human, mode="dry_run")
+    assert out.details["handoff_reservation"] is False
+
+
+def test_case_sensitive_url_is_verified_exactly(srv, context, paths, human, resume):
+    """Item 9: a site that lowercases the URL on blur changes the approved value -> CP3."""
+    packet = gh_packet(resume)
+    packet.answers = [x for x in packet.answers if x.question_id != "question_1001"]
+    packet.answers.append(a("question_1001", "https://github.com/AdaL/Engine-Notes"))
+    j = job(f"{srv.url}/greenhouse/acme/jobs/1001?lowercase=1", "greenhouse")
+    out = run(j, packet, context, paths, human, mode="submit")
+    assert out.status == "needs_human"
+    assert "question_1001" in out.details["verify_problems"]
+    assert srv.posts == []
+    # without the lowercasing the exact value goes through untouched
+    out = run(job(f"{srv.url}/greenhouse/acme/jobs/1001", "greenhouse"), packet, context,
+              paths, human, mode="submit")
+    assert out.status == "submitted"
+    assert "https://github.com/AdaL/Engine-Notes" in srv.posts[0]["body"].decode()

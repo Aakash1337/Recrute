@@ -7,6 +7,8 @@ written by either is interchangeable.
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -110,3 +112,80 @@ def release_lock(session: Session, stamp: datetime) -> None:
     session.execute(delete(Setting).where(Setting.key == LOCK_KEY,  # type: ignore[arg-type]
                                           Setting.updated_at == stamp))
     session.commit()
+
+
+class Lease:
+    """The scheduler lease: the lock row plus an owner-checked heartbeat.
+
+    The stamp we last wrote is the fencing token: renewals and release are conditional on
+    the row still carrying it, so once another worker has taken over (after expiry) this
+    holder can neither renew nor act. `held()` is checked before submitting and before
+    finalizing. Every DB access uses its own short session (safe from the heartbeat thread).
+    """
+
+    def __init__(self, bind: Any, owner: str, ttl: timedelta, clock: Callable[[], datetime]):
+        self.bind, self.owner, self.ttl, self.clock = bind, owner, ttl, clock
+        self.stamp: datetime | None = None
+        self.renewals = 0
+        self._mu = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def acquire(self) -> bool:
+        with Session(self.bind) as s:
+            self.stamp = acquire_lock(s, self.owner, self.clock(), self.ttl)
+        return self.stamp is not None
+
+    def renew(self) -> bool:
+        with self._mu:
+            if self.stamp is None:
+                return False
+            new = _utc(self.clock())
+            if new <= self.stamp:
+                new = self.stamp + timedelta(microseconds=1)
+            with Session(self.bind) as s:
+                res = s.execute(
+                    update(Setting).where(Setting.key == LOCK_KEY,  # type: ignore[arg-type]
+                                          Setting.updated_at == self.stamp)
+                    .values(updated_at=new, value={"owner": self.owner, "at": new.isoformat()})
+                    .execution_options(synchronize_session=False))
+                if res.rowcount == 1:  # type: ignore[attr-defined]
+                    s.commit()
+                    self.stamp = new
+                    self.renewals += 1
+                    return True
+                s.rollback()
+            self.stamp = None  # somebody else holds it now
+            return False
+
+    def held(self) -> bool:
+        """Still ours and not expired (a stale holder must not act even if nobody took over
+        yet: another worker may do so at any moment)."""
+        with self._mu:
+            if self.stamp is None or self.clock() - self.stamp >= self.ttl:
+                return False
+            with Session(self.bind) as s:
+                row = s.get(Setting, LOCK_KEY)
+                return row is not None and row.updated_at == self.stamp
+
+    def start_heartbeat(self, interval: float) -> None:
+        def beat() -> None:
+            while not self._stop.wait(interval):
+                try:
+                    if not self.renew():
+                        return
+                except Exception:  # noqa: BLE001 - DB busy etc.; try again next beat
+                    continue
+
+        self._thread = threading.Thread(target=beat, name=f"lease-{self.owner}", daemon=True)
+        self._thread.start()
+
+    def release(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=10)
+        with self._mu:
+            if self.stamp is not None:
+                with Session(self.bind) as s:
+                    release_lock(s, self.stamp)
+            self.stamp = None

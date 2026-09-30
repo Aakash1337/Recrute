@@ -57,11 +57,13 @@ class FillReport(BaseModel):
     labels: dict[str, str] = Field(default_factory=dict)  # id -> label, for humans
     steps: int = 1
     ready_to_submit: bool = False
+    blocker: str | None = None  # CAPTCHA / checkpoint / ... that appeared while filling
     notes: list[str] = Field(default_factory=list)
 
     def merge(self, other: FillReport) -> None:
         self.filled.update(other.filled)
         self.prefilled.update(other.prefilled)
+        self.blocker = self.blocker or other.blocker
         self.skipped += other.skipped
         self.cleared += [c for c in other.cleared if c not in self.cleared]
         self.problems.update(other.problems)
@@ -273,23 +275,22 @@ def value_matches(f: LiveField, current: Any, value: Any) -> bool:
     if empty:
         return False
     if f.type == "multiselect" or isinstance(current, list):
+        # the full selected SET must equal the approved set (option labels are matched as
+        # labels; nothing extra may stay selected)
         want_l = dom.resolve_options(value, f.options) if f.options else (
             value if isinstance(value, list) else [value])
         if want_l is None:
             return False
         cur = current if isinstance(current, list) else [current]
         return sorted(dom.norm(str(c)) for c in cur) == sorted(dom.norm(str(w)) for w in want_l)
-    if f.options:
+    if f.options:  # the value was resolved to one option label: label comparison
         want = dom.resolve_option(value, f.options)
         return want is not None and dom.norm(str(current)) == dom.norm(want)
-    if f.type == "date" or f.widget == "date":
-        return dom.dates_equal(value, str(current), f.hint)
-    if f.type == "tel":
-        a, b = re.sub(r"\D", "", str(current)), re.sub(r"\D", "", dom.as_text(value))
-        return bool(b) and (a == b or (len(b) >= 7 and a.endswith(b[-10:])))
     if f.widget == "combobox":  # shows the chosen option's label (e.g. "United States +1")
         return dom.resolve_option(value, [str(current)]) is not None
-    return dom.norm(str(current)) == dom.norm(dom.as_text(value))
+    if f.type == "date" or f.widget == "date":
+        return dom.dates_equal(value, str(current), f.hint)
+    return dom.same_value(f.type, current, value)
 
 
 def verify_fields(fields: Sequence[LiveField], packet: Packet, files: Mapping[str, Path], *,
@@ -459,6 +460,8 @@ class BaseAdapter:
              human: Human, pause_only: bool = False) -> FillReport:
         root = self.form_root(page)
         report = self.fill_rounds(page, root, packet, files, human)
+        if report.blocker:
+            return report
         final = self.read_form(page)
         report.unmatched = self.coverage(final, packet, files)
         report.problems.update(self.verify(final, packet, files))
@@ -482,6 +485,11 @@ class BaseAdapter:
             seen |= {f.id for f in fields}
             report.merge(fill_fields(root, fields, packet, files, human, aliases=self.aliases,
                                      accept_prefilled=self.accept_prefilled))
+            # a challenge can pop up while typing (behavioural scoring): stop right there
+            if blocker := self.detect_blockers(page):
+                report.blocker = blocker
+                report.notes.append(f"blocker appeared while filling: {blocker}")
+                break
         return report
 
     def verify(self, fields: Sequence[LiveField], packet: Packet,
