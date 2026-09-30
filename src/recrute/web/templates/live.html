@@ -49,6 +49,7 @@ in the box to type. Press <b>Done</b> when you've finished (e.g. after submittin
       const r = await fetch('/live/frame', {cache: 'no-store'});
       if (!r.ok) { window.__frame = null; return; }
       const meta = {session: r.headers.get('X-Live-Session'),
+                    target: r.headers.get('X-Live-Target'),
                     width: +r.headers.get('X-Live-Width'), height: +r.headers.get('X-Live-Height'),
                     capturedAt: Date.now() - 1000 * (+r.headers.get('X-Live-Age') || 0)};
       const blob = await r.blob();
@@ -70,6 +71,7 @@ in the box to type. Press <b>Done</b> when you've finished (e.g. after submittin
     const f = window.__frame;
     if (!f || !f.session || Date.now() - f.shownAt > 5000) return;
     ev.session = f.session;
+    ev.target = f.target;  // the tab (and navigation) of the picture this input was made on
     htmx.ajax('POST', '/live/input', {values: ev, swap: 'none'});
   }
   img.addEventListener('click', e => {

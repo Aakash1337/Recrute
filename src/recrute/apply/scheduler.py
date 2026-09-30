@@ -531,10 +531,13 @@ def cap_block_reason(s: Session, t: datetime, *, app_id: int | None, job: Job,
     if cap is not None and others.by_channel.get(channel, 0) + 1 > int(cap):
         return f"deferred: {channel} daily cap reached"
     # another application to this company may have been recorded meanwhile
+    company_cap = int(get_setting(s, "company_cap"))
+    if company_cap < 1:  # (a stored 0 from older versions) no company may get one
+        return "deferred: company cap is 0"
     if job.company_id is not None:
         blocked = blocked_companies(
             company_events(s, exclude_job_id=job.id), t,
-            cap=int(get_setting(s, "company_cap")),
+            cap=company_cap,
             cooldown=timedelta(days=int(get_setting(s, "company_cooldown_days"))))
         if job.company_id in blocked:
             return "deferred: company cap/cooldown reached"
@@ -667,6 +670,8 @@ def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: d
     rows = build_queue(session)
     suspended = {ch: info for ch in {app.channel for app, _ in rows}
                  if (info := suspension(session, ch, now)) is not None}
+    if company_cap < 1:  # (a stored 0 from older versions) no company may get one
+        return RunResult(ran=False, reason="company cap is 0: nothing may be sent")
     cooling = blocked_companies(company_events(session), now, cap=company_cap,
                                 cooldown=company_cooldown)
     eligible = [(app, job) for app, job in rows

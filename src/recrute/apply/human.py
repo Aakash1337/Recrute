@@ -176,6 +176,19 @@ class Human:
         self.pause(0.04, 0.13)
         page.mouse.up()
 
+    def click_here(self, locator: Locator) -> None:
+        """Click with no approach: the cursor was already brought onto the element (see
+        prepare_submit), so nothing slow happens between the last check and the click."""
+        page = locator.page
+        box = locator.bounding_box()
+        x, y = self._pos.get(id(page), (-1.0, -1.0))
+        if not box or not (box["x"] <= x <= box["x"] + box["width"]
+                           and box["y"] <= y <= box["y"] + box["height"]):
+            locator.click()  # (moved/resized meanwhile: a plain click, still no dwell)
+            return
+        page.mouse.down()
+        page.mouse.up()
+
     # ----- scrolling
 
     def scroll_into_view(self, locator: Locator) -> None:

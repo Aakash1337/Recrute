@@ -42,6 +42,33 @@ def sentences(text: str) -> list[str]:
     return out
 
 
+_PREFERRED_HEADER = re.compile(r"^\W*(?:preferred|nice[- ]to[- ]have|bonus|desired|pluses|"
+                               r"good to have|extra credit|bonus points)\b", re.I)
+_OTHER_HEADER = re.compile(r"^\W*(?:required|requirements|minimum|basic|must[- ]have|"
+                           r"qualifications|what you|who you are|you have|responsibilities|"
+                           r"about|benefits|key|your|the role|eligibility)\b", re.I)
+_MANDATORY = re.compile(r"\b(?:must|required|mandatory|condition of employment|"
+                        r"prerequisite)\b", re.I)
+
+
+def sentences_in_context(text: str) -> list[tuple[str, bool]]:
+    """(sentence, in a "preferred / nice to have" section). Sections are tracked across
+    lines, so "Preferred qualifications:\n- Active Secret clearance" is known to be optional."""
+    out: list[tuple[str, bool]] = []
+    preferred = False
+    for line in _to_text(text).splitlines():
+        head = line.strip()
+        if not head:
+            continue
+        if len(head) <= 120 and _PREFERRED_HEADER.match(head):
+            preferred = True
+        elif len(head) <= 80 and _OTHER_HEADER.match(head) and (
+                head.rstrip().endswith(":") or head.startswith("#") or len(head.split()) <= 4):
+            preferred = False
+        out += [(s, preferred) for s in sentences(line)]
+    return out
+
+
 def _snippet(s: str) -> str:
     return s if len(s) <= MAX_SNIPPET else s[: MAX_SNIPPET - 1].rstrip() + "…"
 
@@ -385,7 +412,9 @@ def eligibility_flags(text: str | None) -> set[str]:
     flags: set[str] = set()
     if not text:
         return flags
-    for sentence in sentences(text):
+    for sentence, preferred in sentences_in_context(text):
+        if preferred and not _MANDATORY.search(sentence):
+            continue  # listed under preferred / nice-to-have qualifications: optional
         # the whole sentence, and each independent statement joined by "and" ("No sponsorship
         # is available and US citizenship is required"): a negation or preference in one
         # statement must not hide a requirement stated in the other

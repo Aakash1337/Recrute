@@ -2,15 +2,14 @@
 into a site from another device on your network, through the web UI.
 
 The browser is owned by the apply worker's thread (Playwright objects can't be shared across
-threads). Screenshots and requests go through files under data/live/:
+threads). The live session, its screenshots (which can show a code you just typed) and your
+input (clicks, typed passwords and verification codes) are kept IN MEMORY only, never on disk,
+so remote control needs the worker inside the web server's process (`recrute serve --worker`,
+the default deployment). Only a request to open a URL goes through data/live/open.json.
 
-  frame.jpg     latest screenshot of the page waiting for you (written ~1/s by the worker)
-  frame.json    {"url", "width", "height", "at"}
-  open.json     request to open the automation browser at a URL (e.g. to log into a site)
-
-Your INPUT (clicks, typed text such as passwords and verification codes) never touches the
-disk: it goes through an in-memory queue, so it needs the worker running inside the web
-server's process (`recrute serve --worker`, the default deployment).
+Every screenshot names the exact tab (and navigation) it shows, and every input carries the
+tab of the picture it was made on: input for a tab that is no longer the one being shown
+(a popup opened, the page navigated) is dropped, never replayed somewhere you haven't seen.
 """
 
 import json
@@ -27,13 +26,15 @@ from recrute.paths import Paths
 ALLOWED_KEYS = {"Enter", "Tab", "Backspace", "Escape", "ArrowDown", "ArrowUp", "ArrowLeft",
                 "ArrowRight", "Space", "Delete", "Home", "End", "PageDown", "PageUp"}
 
-
-# session id -> queued input events. In memory only (see module docstring).
-_QUEUES: dict[str, deque[dict[str, Any]]] = {}
-_QLOCK = threading.Lock()
 MAX_INPUT_AGE = 15.0  # seconds an input event may wait before it's replayed
+FRESH_SECONDS = 10.0  # a screenshot older than this is not shown / acted on
 NO_LOCAL_WORKER = ("remote input needs the worker in the web server's process: run "
                    "`recrute serve --worker`")
+
+_LOCK = threading.Lock()
+_SESSION: dict[str, Any] = {}  # {"id", "started"}
+_FRAME: dict[str, Any] = {}  # {"jpg": bytes, "meta": {...}}
+_QUEUES: dict[str, deque[dict[str, Any]]] = {}  # session id -> queued input events
 
 
 def live_dir(paths: Paths) -> Path:
@@ -48,28 +49,61 @@ def _atomic_write(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
+def page_target(page) -> str:
+    """Which tab AND which navigation of it a screenshot or an input is for."""
+    try:
+        url = page.url
+    except Exception:  # noqa: BLE001 - closing page
+        url = ""
+    return f"{id(page):x}:{url}"
+
+
 # ------------------------------------------------------------------------------ UI side
 
 
-def active_session(paths: Paths) -> str | None:
-    try:
-        return json.loads((live_dir(paths) / "session.json").read_text(encoding="utf-8"))["id"]
-    except (OSError, ValueError, KeyError):
+def active_session(paths: Paths | None = None) -> str | None:
+    with _LOCK:
+        return _SESSION.get("id")
+
+
+def frame_info(paths: Paths | None = None) -> dict | None:
+    """Metadata of the latest screenshot of the active session (None without one)."""
+    with _LOCK:
+        meta = dict(_FRAME.get("meta") or {})
+    if not meta:
         return None
+    meta["fresh"] = time.time() - meta.get("at", 0) < FRESH_SECONDS
+    return meta
 
 
-def enqueue(paths: Paths, event: dict[str, Any]) -> None:
+def frame_jpeg(paths: Paths | None = None) -> tuple[bytes, dict] | None:
+    """(screenshot, metadata) together, so the picture and its tab/session always match."""
+    with _LOCK:
+        if not _FRAME:
+            return None
+        jpg, meta = _FRAME["jpg"], dict(_FRAME["meta"])
+    meta["fresh"] = time.time() - meta.get("at", 0) < FRESH_SECONDS
+    return jpg, meta
+
+
+def enqueue(paths: Paths | None, event: dict[str, Any]) -> None:
     """Validate and queue one input event from the UI. Every event is bound to the live
-    session (hand-off) it was made for: events for an ended or different session are refused,
-    so a delayed click or typed text can never land on the next page."""
-    session = active_session(paths)
+    session (hand-off) AND the tab of the picture it was made on: events for an ended or
+    different session, a stale picture, or a tab that is no longer shown are refused."""
+    with _LOCK:
+        session = _SESSION.get("id")
+        meta = dict(_FRAME.get("meta") or {})
+        queue = _QUEUES.get(session or "")
     if not session or event.get("session") != session:
         raise ValueError("no matching live session (it ended or changed); reload the page")
-    info = frame_info(paths)
-    if not info or not info.get("fresh") or info.get("session") != session:
+    if (not meta or meta.get("session") != session
+            or time.time() - meta.get("at", 0) >= FRESH_SECONDS):
         raise ValueError("the live view is not current (screenshots stopped); wait for it")
+    if event.get("target") != meta.get("target"):
+        raise ValueError("the page changed since the picture you acted on; wait for the new one")
     kind = event.get("type")
-    clean: dict[str, Any] = {"type": kind, "session": session, "at": time.time()}
+    clean: dict[str, Any] = {"type": kind, "session": session, "target": meta["target"],
+                             "at": time.time()}
     if kind == "click":
         clean["x"], clean["y"] = float(event["x"]), float(event["y"])
     elif kind == "type":
@@ -84,10 +118,9 @@ def enqueue(paths: Paths, event: dict[str, Any]) -> None:
         pass
     else:
         raise ValueError("unknown event")
-    with _QLOCK:
-        queue = _QUEUES.get(session)
-        if queue is None:
-            raise ValueError(NO_LOCAL_WORKER)
+    if queue is None:
+        raise ValueError(NO_LOCAL_WORKER)
+    with _LOCK:
         queue.append(clean)
 
 
@@ -95,16 +128,6 @@ def request_open(paths: Paths, url: str) -> None:
     if not url.lower().startswith(("http://", "https://")):
         raise ValueError("only http(s) URLs")
     _atomic_write(live_dir(paths) / "open.json", json.dumps({"url": url}).encode())
-
-
-def frame_info(paths: Paths) -> dict | None:
-    f = live_dir(paths) / "frame.json"
-    try:
-        info = json.loads(f.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    info["fresh"] = time.time() - info.get("at", 0) < 10
-    return info
 
 
 # ------------------------------------------------------------------------------ worker side
@@ -123,52 +146,47 @@ def take_open_request(paths: Paths) -> str | None:
 def start_session(paths: Paths) -> str:
     clear(paths)
     sid = uuid.uuid4().hex
-    with _QLOCK:
+    with _LOCK:
+        _SESSION.update(id=sid, started=time.time())
         _QUEUES[sid] = deque(maxlen=500)
-    _atomic_write(live_dir(paths) / "session.json",
-                  json.dumps({"id": sid, "started": time.time()}).encode())
     return sid
 
 
 def publish_frame(paths: Paths, page) -> None:
-    d = live_dir(paths)
+    """Keep the latest screenshot of `page` (in memory) for the live view."""
     try:
         jpg = page.screenshot(type="jpeg", quality=60)
         size = page.viewport_size or page.evaluate(
             "() => ({width: window.innerWidth, height: window.innerHeight})")
     except Exception:  # page navigating/closing: skip this frame
         return
-    try:
-        _atomic_write(d / "frame.jpg", jpg)
-    except OSError:  # Windows: the UI is reading the old frame right now; next tick
-        return
-    _safe_write(d / "frame.json", json.dumps({
-        "url": page.url, "width": size["width"], "height": size["height"],
-        "at": time.time(), "session": active_session(paths)}).encode())
-
-
-def _safe_write(path: Path, data: bytes) -> None:
-    try:
-        _atomic_write(path, data)
-    except OSError:  # a concurrent reader on Windows; the next tick rewrites it
-        pass
+    meta = {"url": page.url, "width": size["width"], "height": size["height"],
+            "at": time.time(), "target": page_target(page)}
+    with _LOCK:
+        meta["session"] = _SESSION.get("id")
+        _FRAME.clear()
+        _FRAME.update(jpg=jpg, meta=meta)
 
 
 def apply_inputs(paths: Paths, page) -> bool:
-    """Replays queued UI events for the ACTIVE session on the page, in order, and stops at
-    "Done" (anything after it is discarded). Returns True when you pressed "Done"."""
-    session = active_session(paths)
-    done = False
-    with _QLOCK:
+    """Replays queued UI events for the ACTIVE session on `page`, in order, and stops at
+    "Done" (anything after it is discarded). Events made on a picture of another tab or of an
+    earlier navigation are dropped. Returns True when you pressed "Done"."""
+    target = page_target(page)
+    with _LOCK:
+        session = _SESSION.get("id")
         queue = _QUEUES.get(session or "")
         events = list(queue) if queue is not None else []
         if queue is not None:
             queue.clear()
+    done = False
     for ev in events:
         if time.time() - float(ev.get("at") or 0) > MAX_INPUT_AGE:
             continue  # queued too long ago (the page may have changed since): dropped
         if done or not session or ev.get("session") != session:
             continue  # after Done, or meant for another hand-off: dropped, never replayed
+        if ev.get("type") != "done" and ev.get("target") != target:
+            continue  # made on a picture of a different tab / navigation: dropped
         try:
             if ev.get("type") == "click":
                 page.mouse.click(ev["x"], ev["y"])
@@ -186,13 +204,15 @@ def apply_inputs(paths: Paths, page) -> bool:
 
 
 def clear(paths: Paths) -> None:
-    """Ends the live session: nothing queued for it can run later."""
-    with _QLOCK:
+    """Ends the live session: nothing queued for it can run later, and its screenshots are
+    gone. Also removes files left by older versions, which kept these on disk."""
+    with _LOCK:
+        _SESSION.clear()
+        _FRAME.clear()
         _QUEUES.clear()
     d = live_dir(paths)
-    # (inputs/*.json: left by older versions that queued input on disk)
     for f in [d / "session.json", d / "frame.jpg", d / "frame.json",
-              *(d / "inputs").glob("*.json")]:
+              *d.glob(".frame.*.tmp"), *(d / "inputs").glob("*.json")]:
         try:
             f.unlink(missing_ok=True)
         except OSError:  # Windows sharing violation: retried at the next session start

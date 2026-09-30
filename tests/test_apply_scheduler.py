@@ -871,3 +871,28 @@ def test_company_cooldown(session, paths):
     assert blocked_companies(ev, now) == {1, 2}
     assert blocked_companies(ev, now, cap=2) == set()
     assert blocked_companies(ev, now, cooldown=timedelta(days=1)) == {2}
+
+
+def test_company_cap_zero_is_rejected_or_blocks_everything(engine):
+    from datetime import UTC, datetime
+
+    import pytest
+    from sqlmodel import Session
+
+    from recrute.apply.scheduler import cap_block_reason
+    from recrute.models import Company, Job, Setting
+    from recrute.settings import set_setting
+
+    with Session(engine) as s:
+        with pytest.raises(ValueError):
+            set_setting(s, "company_cap", 0)
+        s.add(Setting(key="company_cap", value=0))  # stored by an older version
+        c = Company(name="Fresh Co")
+        s.add(c)
+        s.flush()
+        job = Job(title="t", apply_url="u", canonical_url="c", company_id=c.id)
+        s.add(job)
+        s.commit()
+        # a company with no application history is still blocked by a zero cap
+        assert cap_block_reason(s, datetime.now(UTC), app_id=None, job=job,
+                                channel="greenhouse") == "deferred: company cap is 0"

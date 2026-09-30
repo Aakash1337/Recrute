@@ -76,20 +76,17 @@ def live_frame():
 
     from recrute import live
 
-    paths = get_paths()
-    info = live.frame_info(paths)
-    session = live.active_session(paths)
-    # only frames of the ACTIVE session; the frame carries its session id + size, so input
-    # the page sends is bound to exactly the picture you're looking at
-    if not info or not session or info.get("session") != session or not info.get("fresh"):
+    frame = live.frame_jpeg()
+    session = live.active_session()
+    # only frames of the ACTIVE session; the frame carries its session id, tab and size, so
+    # input the page sends is bound to exactly the picture you're looking at
+    if frame is None or not session or frame[1].get("session") != session \
+            or not frame[1].get("fresh"):
         raise HTTPException(404)  # (an expired frame: screenshots stopped; don't act on it)
-    f = live.live_dir(paths) / "frame.jpg"
-    try:
-        data = f.read_bytes()  # read at once: keeps the file open for the shortest time
-    except OSError:
-        raise HTTPException(404) from None
+    data, info = frame
     return Response(data, media_type="image/jpeg", headers={
         "Cache-Control": "no-store", "X-Live-Session": session,
+        "X-Live-Target": str(info.get("target") or ""),
         "X-Live-Width": str(info.get("width") or ""),
         "X-Live-Height": str(info.get("height") or ""),
         # how old the picture is: the page's input guard counts from the capture, not from

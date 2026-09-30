@@ -323,8 +323,10 @@ Details:
   the laptop. When a form goes to CP3, or you open it to log into a site, the UI streams that
   browser's page (about one frame per second) and replays your clicks, typing and keys, so you
   can finish from your main machine without sitting at the laptop. RDP is a fallback. What you
-  type there (passwords, verification codes) is kept in memory only and never written to disk, so
-  remote input needs the worker in the web server's process (`recrute serve --worker`).
+  type there (passwords, verification codes) and the screenshots (which can show it) are kept in
+  memory only and never written to disk, so the live view needs the worker in the web server's
+  process (`recrute serve --worker`). Input is bound to the exact tab shown: a popup or a
+  navigation since the picture you acted on drops it.
 
 ### Stack
 Decided on **Python**. It was switched from Go after you made "fewest problems, and best at

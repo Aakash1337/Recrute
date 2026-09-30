@@ -277,9 +277,8 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
         report.required_failed.append("_navigation")
         return report
 
-    def submit(self, page: Page, *, human: Human) -> None:
+    def submit_button(self, page: Page) -> Locator:
         btn = self._visible(page, SUBMIT)
         if btn is None:
             raise RuntimeError("Submit application button not visible")
-        human.dwell()
-        human.click(btn)
+        return btn

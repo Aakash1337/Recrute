@@ -260,6 +260,12 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
             keep_open = True
             return done("needs_human", "adapter did not reach a submittable state: "
                         + "; ".join(report.notes or ["unknown"]))
+        # Human pacing (hesitation, moving onto the button) happens NOW, before the final
+        # checks: nothing slow may sit between the last check and the irreversible click.
+        adapter.prepare_submit(page, human=human)
+        if blocker := adapter.detect_blockers(page):
+            keep_open = True
+            return blocked(blocker)
         if pre_submit_check is not None and (why := pre_submit_check()):
             keep_open = True
             return done("needs_human", f"not submitted: {why}")

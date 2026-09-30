@@ -20,7 +20,7 @@ from recrute.apply import dom
 from recrute.schemas import FormAnswer, FormQuestion, Packet
 
 if TYPE_CHECKING:
-    from patchright.sync_api import Frame, Page, Response
+    from patchright.sync_api import Frame, Locator, Page, Response
 
     from recrute.apply.human import Human
     from recrute.http import Http
@@ -102,6 +102,8 @@ class Adapter(Protocol):
 
     def fill(self, page: Page, job: Job, packet: Packet, files: Mapping[str, Path], *,
              human: Human, pause_only: bool = False) -> FillReport: ...
+
+    def prepare_submit(self, page: Page, *, human: Human) -> None: ...
 
     def submit(self, page: Page, *, human: Human) -> None: ...
 
@@ -660,11 +662,18 @@ class BaseAdapter:
             problems.setdefault(k, v)
         return problems
 
-    def submit(self, page: Page, *, human: Human) -> None:
-        root = self.form_root(page)
-        btn = root.locator(self.submit_selector).locator("visible=true").first
+    def submit_button(self, page: Page) -> Locator:
+        return self.form_root(page).locator(self.submit_selector).locator("visible=true").first
+
+    def prepare_submit(self, page: Page, *, human: Human) -> None:
+        """All human pacing BEFORE the final checks: hesitate, bring the cursor onto the
+        submit button. The runner then re-checks everything and calls submit(), which only
+        presses."""
         human.dwell()
-        human.click(btn)
+        human.move_to(self.submit_button(page))
+
+    def submit(self, page: Page, *, human: Human) -> None:
+        human.click_here(self.submit_button(page))
 
     def form_errors(self, page: Page) -> list[str]:
         try:

@@ -1,62 +1,88 @@
+import time
+
 import pytest
 
 HX = {"HX-Request": "true"}
 
 
-def fresh_frame(paths, sid):
-    """What the worker publishes every second while a hand-off is live."""
-    import json
-    import time
+class FakePage:
+    """A tab: screenshots, mouse and keyboard, recording what was replayed on it."""
 
+    def __init__(self, url="https://x"):
+        self.url = url
+        self.viewport_size = {"width": 800, "height": 600}
+        self.calls = []
+        page = self
+
+        class Mouse:
+            def click(self, x, y):
+                page.calls.append(("click", x, y))
+
+            def wheel(self, dx, dy):
+                page.calls.append(("wheel", dy))
+
+        class Keyboard:
+            def type(self, text, delay=0):
+                page.calls.append(("type", text))
+
+            def press(self, key):
+                page.calls.append(("press", key))
+
+        self.mouse, self.keyboard = Mouse(), Keyboard()
+
+    def screenshot(self, **kw):
+        return b"\xff\xd8jpg"
+
+
+def fresh_frame(paths, page=None):
+    """What the worker publishes every second while a hand-off is live; returns the tab."""
     from recrute import live
 
-    (live.live_dir(paths) / "frame.json").write_text(json.dumps(
-        {"url": "https://x", "width": 800, "height": 600, "at": time.time(), "session": sid}),
-        encoding="utf-8")
+    page = page or FakePage()
+    live.publish_frame(paths, page)
+    return page
+
+
+def ev(page, **kw):
+    from recrute import live
+
+    return {"session": live.active_session(), "target": live.page_target(page), **kw}
 
 
 def test_live_queue_roundtrip(paths):
     from recrute import live
 
-    sid = live.start_session(paths)
-    fresh_frame(paths, sid)
-    live.enqueue(paths, {"type": "click", "x": "10", "y": "20", "session": sid})
-    live.enqueue(paths, {"type": "type", "text": "hello", "session": sid})
-    live.enqueue(paths, {"type": "key", "key": "Enter", "session": sid})
-    live.enqueue(paths, {"type": "done", "session": sid})
-    live.enqueue(paths, {"type": "type", "text": "after done", "session": sid})
+    live.start_session(paths)
+    page = fresh_frame(paths)
+    live.enqueue(paths, ev(page, type="click", x="10", y="20"))
+    live.enqueue(paths, ev(page, type="type", text="hello"))
+    live.enqueue(paths, ev(page, type="key", key="Enter"))
+    live.enqueue(paths, ev(page, type="done"))
+    live.enqueue(paths, ev(page, type="type", text="after done"))
     with pytest.raises(ValueError):
-        live.enqueue(paths, {"type": "key", "key": "Meta+Q", "session": sid})
-
-    class Mouse:
-        def __init__(self):
-            self.calls = []
-
-        def click(self, x, y):
-            self.calls.append(("click", x, y))
-
-        def wheel(self, dx, dy):
-            self.calls.append(("wheel", dy))
-
-    class Keyboard:
-        def __init__(self, log):
-            self.log = log
-
-        def type(self, text, delay=0):
-            self.log.append(("type", text))
-
-        def press(self, key):
-            self.log.append(("press", key))
-
-    class Page:
-        def __init__(self):
-            self.mouse = Mouse()
-            self.keyboard = Keyboard(self.mouse.calls)
-
-    page = Page()
+        live.enqueue(paths, ev(page, type="key", key="Meta+Q"))
     assert live.apply_inputs(paths, page) is True
-    assert page.mouse.calls == [("click", 10.0, 20.0), ("type", "hello"), ("press", "Enter")]
-    assert not list((live.live_dir(paths) / "inputs").glob("*.json"))
+    assert page.calls == [("click", 10.0, 20.0), ("type", "hello"), ("press", "Enter")]
+    live.clear(paths)
+
+
+def test_input_never_lands_in_a_tab_you_have_not_seen(paths):
+    from recrute import live
+
+    live.start_session(paths)
+    login = fresh_frame(paths, FakePage("https://login.example"))
+    live.enqueue(paths, ev(login, type="type", text="CANARY-code"))
+    popup = FakePage("https://popup.example")  # opened before the input was replayed
+    assert live.apply_inputs(paths, popup) is False and popup.calls == []
+    # the same tab after a navigation is a different target too
+    live.enqueue(paths, ev(login, type="click", x=1, y=1))
+    login.url = "https://login.example/next"
+    assert live.apply_inputs(paths, login) is False and login.calls == []
+    # and input made on the old picture is refused once the new one is published
+    fresh_frame(paths, popup)
+    with pytest.raises(ValueError, match="page changed"):
+        live.enqueue(paths, {"session": live.active_session(), "target": "old", "type": "done"})
+    live.clear(paths)
 
 
 def test_live_open_request_only_http(paths):
@@ -87,42 +113,26 @@ def test_delayed_input_never_crosses_handoffs(paths):
     old = live.start_session(paths)
     live.clear(paths)  # hand-off 1 ended
     new = live.start_session(paths)
+    page = fresh_frame(paths)
     with pytest.raises(ValueError):
-        live.enqueue(paths, {"type": "type", "text": "secret", "session": old})
-
-    class Page:
-        class mouse:  # noqa: N801
-            @staticmethod
-            def click(x, y):
-                raise AssertionError("must not click")
-
-        class keyboard:  # noqa: N801
-            @staticmethod
-            def type(text, delay=0):
-                raise AssertionError("must not type")
-
+        live.enqueue(paths, {**ev(page, type="type", text="secret"), "session": old})
     # even an event queued for the old session (race) is dropped on replay
-    live._QUEUES[new].append({"type": "type", "text": "secret", "session": old})
-    assert live.apply_inputs(paths, Page()) is False
+    live._QUEUES[new].append({**ev(page, type="type", text="secret"), "session": old,
+                              "at": time.time()})
+    assert live.apply_inputs(paths, page) is False and page.calls == []
     assert new != old
+    live.clear(paths)
 
 
-def test_publish_frame_survives_sharing_violation(paths, monkeypatch):
+def test_screenshots_never_touch_the_disk(paths):
     from recrute import live
 
-    class Page:
-        url = "https://x"
-        viewport_size = {"width": 100, "height": 100}
-
-        def screenshot(self, **kw):
-            return b"jpg"
-
-    def locked(path, data):
-        raise PermissionError(32, "The process cannot access the file")
-
-    monkeypatch.setattr(live, "_atomic_write", locked)
-    live.publish_frame(paths, Page())  # must not raise
+    live.start_session(paths)
+    fresh_frame(paths)
+    assert live.frame_jpeg() is not None
+    assert not [f for f in paths.data.rglob("*") if f.is_file() and b"jpg" in f.read_bytes()]
     live.clear(paths)
+    assert live.frame_jpeg() is None
 
 
 def test_frames_only_for_active_session_and_carry_it(client):
@@ -131,21 +141,15 @@ def test_frames_only_for_active_session_and_carry_it(client):
 
     paths = get_paths()
     sid = live.start_session(paths)
-
-    class Page:
-        url = "https://x"
-        viewport_size = {"width": 800, "height": 600}
-
-        def screenshot(self, **kw):
-            return b"\\xff\\xd8jpg"
-
-    live.publish_frame(paths, Page())
+    page = fresh_frame(paths)
     r = client.get("/live/frame")
     assert r.status_code == 200 and r.headers["X-Live-Session"] == sid
     assert r.headers["X-Live-Width"] == "800"
+    assert r.headers["X-Live-Target"] == live.page_target(page)
     live.clear(paths)
     live.start_session(paths)  # a new hand-off, no frame of its own yet
     assert client.get("/live/frame").status_code == 404
+    live.clear(paths)
 
 
 @pytest.mark.browser
@@ -167,7 +171,7 @@ def test_live_page_revokes_superseded_frame_urls(client):
             frames["n"] += 1
             return route.fulfill(body=png, content_type="image/png",
                                  headers={"X-Live-Session": "s1", "X-Live-Width": "1",
-                                          "X-Live-Height": "1"})
+                                          "X-Live-Height": "1", "X-Live-Target": "t1"})
         if path.startswith("static/"):
             r = client.get("/" + path)
             return route.fulfill(body=r.content, content_type=r.headers.get("content-type"))
@@ -194,8 +198,8 @@ def test_live_page_revokes_superseded_frame_urls(client):
         page.wait_for_function("window.__urls.made >= 4", timeout=15000)
         counts = page.evaluate("window.__urls", isolated_context=False)
         assert counts["made"] - counts["revoked"] <= 1  # only the frame on screen is alive
-        assert page.evaluate("window.__frame && window.__frame.session",
-                             isolated_context=False) == "s1"
+        frame = page.evaluate("window.__frame", isolated_context=False)
+        assert frame["session"] == "s1" and frame["target"] == "t1"
         browser.close()
     finally:
         pw.stop()
@@ -204,74 +208,54 @@ def test_live_page_revokes_superseded_frame_urls(client):
 def test_typed_input_never_touches_the_disk(paths):
     from recrute import live
 
-    sid = live.start_session(paths)
-    fresh_frame(paths, sid)
-    live.enqueue(paths, {"type": "type", "text": "CANARY-p4ssw0rd", "session": sid})
+    live.start_session(paths)
+    page = fresh_frame(paths)
+    live.enqueue(paths, ev(page, type="type", text="CANARY-p4ssw0rd"))
     for f in paths.data.rglob("*"):
         if f.is_file():
             assert b"CANARY" not in f.read_bytes(), f
-
-    typed = []
-
-    class Page:
-        class keyboard:  # noqa: N801
-            @staticmethod
-            def type(text, delay=0):
-                typed.append(text)
-
-    assert live.apply_inputs(paths, Page()) is False and typed == ["CANARY-p4ssw0rd"]
+    assert live.apply_inputs(paths, page) is False
+    assert page.calls == [("type", "CANARY-p4ssw0rd")]
     live.clear(paths)
 
 
 def test_remote_input_without_in_process_worker_is_refused(paths):
     from recrute import live
 
-    sid = live.start_session(paths)
-    fresh_frame(paths, sid)
+    live.start_session(paths)
+    page = fresh_frame(paths)
     live._QUEUES.clear()  # as seen from a web server whose worker is another process
     with pytest.raises(ValueError, match="serve --worker"):
-        live.enqueue(paths, {"type": "click", "x": 1, "y": 1, "session": sid})
+        live.enqueue(paths, ev(page, type="click", x=1, y=1))
     live.clear(paths)
 
 
 def test_input_refused_and_dropped_when_screenshots_stop(paths, monkeypatch):
-    import time
-
     from recrute import live
 
     sid = live.start_session(paths)
     with pytest.raises(ValueError, match="not current"):  # no frame at all yet
-        live.enqueue(paths, {"type": "click", "x": 1, "y": 1, "session": sid})
-    fresh_frame(paths, sid)
-    live.enqueue(paths, {"type": "type", "text": "late", "session": sid})
+        live.enqueue(paths, {"type": "click", "x": 1, "y": 1, "session": sid, "target": ""})
+    page = fresh_frame(paths)
+    live.enqueue(paths, ev(page, type="type", text="late"))
     real = time.time
     monkeypatch.setattr(time, "time", lambda: real() + 60)  # a minute without screenshots
     with pytest.raises(ValueError, match="not current"):
-        live.enqueue(paths, {"type": "click", "x": 1, "y": 1, "session": sid})
-
-    class Page:
-        class keyboard:  # noqa: N801
-            @staticmethod
-            def type(text, delay=0):
-                raise AssertionError("a stale event must not be replayed")
-
-    assert live.apply_inputs(paths, Page()) is False
+        live.enqueue(paths, ev(page, type="click", x=1, y=1))
+    assert live.apply_inputs(paths, page) is False and page.calls == []
     live.clear(paths)
 
 
-def test_expired_frame_is_not_served(client, paths):
-    import json
-
+def test_expired_frame_is_not_served(client, monkeypatch):
     from recrute import live
     from recrute.paths import get_paths
 
     p = get_paths()
-    sid = live.start_session(p)
-    (live.live_dir(p) / "frame.jpg").write_bytes(b"jpg")
-    (live.live_dir(p) / "frame.json").write_text(json.dumps(
-        {"url": "u", "width": 1, "height": 1, "at": 0, "session": sid}), encoding="utf-8")
-    assert client.get("/live/frame").status_code == 404
-    fresh_frame(p, sid)
+    live.start_session(p)
+    fresh_frame(p)
     r = client.get("/live/frame")
     assert r.status_code == 200 and float(r.headers["X-Live-Age"]) < 5
+    real = time.time
+    monkeypatch.setattr(time, "time", lambda: real() + 60)
+    assert client.get("/live/frame").status_code == 404
     live.clear(p)

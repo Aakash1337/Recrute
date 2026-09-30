@@ -221,5 +221,8 @@ class GenericAdapter(BaseAdapter):
         report.ready_to_submit = False
         return report
 
+    def prepare_submit(self, page: Page, *, human: Human) -> None:
+        raise RuntimeError("the generic filler never submits; a human must review and submit")
+
     def submit(self, page: Page, *, human: Human) -> None:
         raise RuntimeError("the generic filler never submits; a human must review and submit")

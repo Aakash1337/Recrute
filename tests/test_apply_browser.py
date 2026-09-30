@@ -915,11 +915,14 @@ def test_live_view_frames_and_remote_input(context, paths):
     sid = live.start_session(paths)
     live.publish_frame(paths, page)
     info = live.frame_info(paths)
-    assert info and info["fresh"] and (live.live_dir(paths) / "frame.jpg").stat().st_size > 0
-    live.enqueue(paths, {"type": "click", "x": 50, "y": 20, "session": sid})
-    live.enqueue(paths, {"type": "type", "text": "typed remotely", "session": sid})
+    assert info and info["fresh"] and len(live.frame_jpeg()[0]) > 0
+    target = live.page_target(page)
+    live.enqueue(paths, {"type": "click", "x": 50, "y": 20, "session": sid, "target": target})
+    live.enqueue(paths, {"type": "type", "text": "typed remotely", "session": sid,
+                         "target": target})
     assert live.apply_inputs(paths, page) is False
     assert page.input_value("#q") == "typed remotely"
+    live.clear(paths)
     page.close()
 
 
@@ -1099,3 +1102,22 @@ def test_extra_attachment_in_multiple_file_input_is_caught(context, tmp_path, hi
                     answers=[FormAnswer(question_id="cv", value="resume")])
     assert "cv" in verify_fields(fields, packet, {"resume": approved})
     page.close()
+
+
+def test_gate_is_rechecked_after_submit_pacing(srv, context, paths, human, resume):
+    """Active hours end / a cap is hit WHILE the pre-click pacing runs: never submitted."""
+    state = {"prepared": False}
+    adapter = GreenhouseAdapter()
+    real_prepare = adapter.prepare_submit
+
+    def prepare(page, *, human):
+        real_prepare(page, human=human)
+        state["prepared"] = True  # e.g. the clock passed the end of active hours meanwhile
+
+    adapter.prepare_submit = prepare
+    j = job(f"{srv.url}/greenhouse/acme/jobs/1001", "greenhouse")
+    out = run(j, gh_packet(resume), context, paths, human, adapter=adapter,
+              pre_submit_check=lambda: "deferred: outside active hours"
+              if state["prepared"] else None)
+    assert state["prepared"] and out.status == "needs_human"
+    assert "outside active hours" in out.reason and srv.posts == []

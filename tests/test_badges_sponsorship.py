@@ -426,3 +426,17 @@ def test_eeo_boilerplate_still_ignored():
     assert not eligibility_flags("We do not discriminate on the basis of citizenship, "
                                  "protected veteran status or any other legally protected "
                                  "characteristic.")
+
+
+@pytest.mark.parametrize("text,flagged", [
+    ("Preferred qualifications:\n- Active Secret clearance", False),
+    ("### Nice to have\n* TS/SCI clearance\n* Python", False),
+    ("<h3>Preferred Qualifications</h3><ul><li>Active Secret clearance</li></ul>", False),
+    ("Preferred qualifications:\n- Kubernetes\nRequirements:\n- Active Secret clearance", True),
+    ("Required qualifications:\n- Active TS/SCI clearance", True),
+    ("Preferred qualifications:\n- Must hold an active Secret clearance", True),
+])
+def test_preferred_section_clearance_is_optional(text, flagged):
+    from recrute.badges.sponsorship import eligibility_flags
+
+    assert ("clearance_required" in eligibility_flags(text)) is flagged

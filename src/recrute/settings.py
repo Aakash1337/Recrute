@@ -101,8 +101,11 @@ def _validate(key: str, value: Any) -> Any:
         if not (0 <= start < end <= 24):
             raise ValueError("active_hours must be [start, end] with 0 <= start < end <= 24")
         value = [start, end]
-    elif key in ("trial_threshold", "follow_up_days", "ghost_days", "company_cap",
-                 "company_cooldown_days"):
+    elif key == "company_cap":
+        value = int(value)
+        if value < 1:  # 0 would silently still allow each company's first application
+            raise ValueError("company_cap must be >= 1 (lower apps_per_day to pause applying)")
+    elif key in ("trial_threshold", "follow_up_days", "ghost_days", "company_cooldown_days"):
         value = int(value)
         if value < 0:
             raise ValueError(f"{key} must be >= 0")
