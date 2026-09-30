@@ -1,0 +1,174 @@
+# Search criteria. Copy to criteria.yaml (gitignored) and edit.
+# tracks: priority tiers (P0 highest). Jobs match the highest-priority track whose title keywords hit.
+# eligibility: drops jobs legally closed to you. Visa/sponsorship is NEVER a filter (badges only).
+# min_score: minimum LLM fit score (0-100) per priority to reach the review queue.
+country: US
+allow_remote: true
+locations: []
+employment_types:
+- full-time
+exclude_title_keywords:
+- intern
+- internship
+- co-op
+- senior
+- sr.
+- 'sr '
+- staff
+- principal
+- lead
+- manager
+- director
+- head of
+- vp
+- vice president
+- chief
+- architect
+- distinguished
+- fellow
+- part-time
+- part time
+- contract
+- temporary
+max_years_required: 5
+exclude_companies: []
+salary_floor: null
+eligibility:
+  drop_clearance_required: true
+  drop_citizenship_required: true
+  drop_itar_us_person: true
+min_score:
+  P0: 55
+  P1: 55
+  P2: 65
+  P3: 75
+tracks:
+- priority: P0
+  name: Security x AI
+  title_keywords:
+  - ai security
+  - ml security
+  - llm security
+  - ai red team
+  - adversarial ml
+  - ai safety engineer
+  - machine learning security
+  - security machine learning
+  - security data scientist
+  - detection data scientist
+  - ai threat
+  description_keywords:
+  - adversarial machine learning
+  - prompt injection
+  - llm security
+  - model security
+  - ai red teaming
+  search_queries:
+  - AI security engineer
+  - LLM security
+  - AI red team
+- priority: P1
+  name: Cybersecurity
+  title_keywords:
+  - security
+  - soc analyst
+  - soc engineer
+  - cyber
+  - infosec
+  - incident response
+  - threat
+  - detection engineer
+  - penetration
+  - pentest
+  - red team
+  - blue team
+  - appsec
+  - application security
+  - cloud security
+  - vulnerability
+  - grc
+  - iam engineer
+  - identity and access
+  - forensic
+  - malware
+  - dfir
+  - siem
+  - offensive security
+  - product security
+  - security operations
+  description_keywords:
+  - siem
+  - soc
+  - incident response
+  - threat hunting
+  - splunk
+  - vulnerability management
+  - nist
+  - mitre att&ck
+  search_queries:
+  - security analyst
+  - security engineer
+  - SOC analyst
+  - cybersecurity
+  - incident response
+  - detection engineer
+  - penetration tester
+  - application security engineer
+  - cloud security engineer
+  - GRC analyst
+- priority: P2
+  name: AI / ML
+  title_keywords:
+  - machine learning
+  - ml engineer
+  - ai engineer
+  - artificial intelligence
+  - deep learning
+  - llm
+  - genai
+  - generative ai
+  - applied scientist
+  - mlops
+  - nlp
+  - computer vision
+  - data scientist
+  - research engineer
+  description_keywords:
+  - pytorch
+  - tensorflow
+  - llm
+  - transformers
+  - rag
+  - fine-tuning
+  search_queries:
+  - machine learning engineer
+  - AI engineer
+  - LLM engineer
+  - MLOps engineer
+  - applied scientist
+- priority: P3
+  name: Adjacent
+  title_keywords:
+  - data analyst
+  - data engineer
+  - business intelligence
+  - bi analyst
+  - analytics engineer
+  - software engineer
+  - backend engineer
+  - cloud engineer
+  - devops
+  - site reliability
+  - network engineer
+  - systems administrator
+  - sysadmin
+  - it support
+  - systems engineer
+  - platform engineer
+  - python developer
+  description_keywords: []
+  search_queries:
+  - data analyst
+  - data engineer
+  - cloud engineer
+  - network engineer

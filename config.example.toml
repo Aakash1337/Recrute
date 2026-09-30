@@ -1,0 +1,31 @@
+# Copy to recrute.toml (or run `recrute init`). recrute.toml is gitignored.
+
+[server]
+host = "127.0.0.1"   # use "0.0.0.0" on the LAN server so other machines can reach the UI
+port = 8765
+
+[browser]
+# "chrome" = your installed Google Chrome (recommended), "msedge", or "" for bundled Chromium
+channel = "chrome"
+headless = false
+
+[llm]
+timeout_seconds = 300
+
+[llm.providers.claude]
+command = "claude"
+model = ""           # empty = CLI default
+extra_args = []
+
+[llm.providers.codex]
+command = "codex"
+model = ""
+extra_args = []      # e.g. ["-c", "model_reasoning_effort=\"low\""]
+
+# task -> "provider" or "provider:model", in order; later ones are fallbacks
+# (e.g. when a usage limit is hit). Lighter models for high-volume tasks save quota.
+[llm.routing]
+default = ["claude:sonnet", "codex"]
+triage  = ["codex", "claude:haiku"]
+tailor  = ["claude:sonnet", "codex"]
+verify  = ["claude:sonnet", "codex"]

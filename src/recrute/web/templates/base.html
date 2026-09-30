@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Recrute{% endblock %}</title>
+  <script src="/static/htmx.min.js"></script>
+  <style>
+    :root { color-scheme: light dark; --muted: #888; --ok: #2e9e5b; --bad: #d64545; --warn: #d69a2d; }
+    body { font: 15px/1.5 system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
+    header { display: flex; align-items: baseline; gap: 1rem; border-bottom: 1px solid #8884; margin-bottom: 1.5rem; }
+    header h1 { margin: 0 0 .5rem; font-size: 1.4rem; }
+    header span { color: var(--muted); }
+    section { margin-bottom: 2rem; }
+    h2 { font-size: 1.05rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+    table { border-collapse: collapse; width: 100%; }
+    td { padding: .35rem .5rem; border-bottom: 1px solid #8882; vertical-align: top; }
+    .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+    .stats { display: flex; gap: 1rem; }
+    .stat { border: 1px solid #8884; border-radius: 8px; padding: .75rem 1rem; min-width: 8rem; }
+    .stat b { display: block; font-size: 1.6rem; }
+    input[type=range] { width: 20rem; vertical-align: middle; }
+    .muted { color: var(--muted); font-size: .9em; }
+  </style>
+</head>
+<body>
+  <header><h1>Recrute</h1><span>human-in-the-loop job applications</span></header>
+  {% block content %}{% endblock %}
+</body>
+</html>

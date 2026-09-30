@@ -1,0 +1,43 @@
+# Copy to answers.yaml and fill in. Used to answer application form questions.
+# Anything left blank is asked of you during packet review (CP2).
+
+contact:
+  full_name: ""
+  email: ""
+  phone: ""
+  current_city: ""        # e.g. "Austin, TX"
+  linkedin: ""
+  github: ""
+  portfolio: ""
+
+work_authorization:
+  authorized_to_work_in_us: true
+  requires_sponsorship_now: null      # true/false: answered truthfully, never gamed
+  requires_sponsorship_future: null
+  status_note: ""                     # e.g. "citizen", "green card", "F-1 OPT"; shown to you only
+
+logistics:
+  willing_to_relocate: true
+  earliest_start_date: ""             # e.g. "2 weeks after offer"
+  notice_period: ""
+
+salary:
+  # Policy for "desired salary" fields. "negotiable" is used where free text is allowed;
+  # numeric fields use the range for the job's priority tier.
+  free_text: "Negotiable / open to discussing based on the full compensation package"
+  ranges_usd:
+    P0: [null, null]
+    P1: [null, null]
+    P2: [null, null]
+    P3: [null, null]
+
+eeo:  # voluntary self-identification; "decline" is always an allowed value
+  gender: "decline"
+  race_ethnicity: "decline"
+  veteran_status: "decline"
+  disability_status: "decline"
+
+# Reusable free-text answers. Keys are free-form; new approved answers are added here.
+common:
+  why_security: ""
+  why_ai: ""

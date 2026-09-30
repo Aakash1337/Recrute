@@ -1,0 +1,10 @@
+<form id="knob" hx-post="/settings/apps-per-day" hx-trigger="change" hx-swap="outerHTML">
+  <label>
+    Applications per day:
+    <input type="range" name="value" min="{{ apps_min }}" max="{{ apps_max }}"
+           value="{{ settings.apps_per_day }}"
+           oninput="this.nextElementSibling.textContent = this.value">
+    <b>{{ settings.apps_per_day }}</b>
+  </label>
+  {% if error %}<span class="bad">{{ error }}</span>{% elif saved %}<span class="ok">saved</span>{% endif %}
+</form>

@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Personal data: never commit
+/recrute.toml
+/data/
+/resources/**
+!/resources/README.md
+!/resources/answers.example.yaml
+!/resources/criteria.example.yaml
+!/resources/*/
+!/resources/*/.gitkeep
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

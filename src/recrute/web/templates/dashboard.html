@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h2>Overview</h2>
+  <div class="stats">
+    <div class="stat"><b>{{ stats.jobs }}</b>jobs</div>
+    <div class="stat"><b>{{ stats.llm_calls }}</b>LLM calls</div>
+  </div>
+</section>
+
+<section>
+  <h2>Volume</h2>
+  {% include "_knob.html" %}
+  <p class="muted">
+    Per-site caps (not raised by this knob):
+    {% for site, cap in settings.site_caps.items() %}{{ site }} ≤ {{ cap }}/day{% if not loop.last %}, {% endif %}{% endfor %}.
+    Active hours: {{ settings.active_hours[0] }}:00–{{ settings.active_hours[1] }}:00.
+  </p>
+</section>
+
+<section>
+  <h2>System checks</h2>
+  <table>
+    {% for c in checks %}
+    <tr>
+      <td class="{{ 'ok' if c.ok else ('bad' if c.required else 'warn') }}">{{ '✔' if c.ok else ('✖' if c.required else '!') }}</td>
+      <td>{{ c.name }}</td>
+      <td class="muted">{{ c.detail }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}
