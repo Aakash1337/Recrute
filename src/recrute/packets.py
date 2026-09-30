@@ -185,12 +185,45 @@ def edit(session: Session, job_id: int, rev: str, answers: dict[str, str | list[
     return new_rev
 
 
+_TRUE_FORM = {"true", "yes", "on", "1"}
+_FALSE_FORM = {"false", "no", "off", "0"}
+
+
+def _as_submitted(old, value):
+    """The submitted form value in the answer's own type: an HTML form sends True as "True"."""
+    if isinstance(old, bool) and isinstance(value, str):
+        low = value.strip().lower()
+        if low in _TRUE_FORM:
+            return True
+        if low in _FALSE_FORM:
+            return False
+    return value
+
+
+def _as_list(v) -> list[str]:
+    items = v if isinstance(v, list | tuple) else ([] if v is None else [v])
+    return sorted(str(x).strip() for x in items if str(x).strip())
+
+
+def _same_answer(old, new) -> bool:
+    """Semantically unchanged (serialization differences are not an edit)."""
+    new = _as_submitted(old, new)
+    if isinstance(old, list | tuple) or isinstance(new, list | tuple):
+        return _as_list(old) == _as_list(new)
+    if isinstance(old, bool) or isinstance(new, bool):
+        return old is new
+    return str(old if old is not None else "").strip() == str(new if new is not None
+                                                               else "").strip()
+
+
 def _set_answer(packet: Packet, qid: str, value) -> None:
     a = packet.answer_for(qid)
     if a is None:
         packet.answers.append(FormAnswer(question_id=qid, value=value, source="user",
                                          confidence=1.0, needs_review=False))
-    elif a.value != value:
+        return
+    value = _as_submitted(a.value, value)
+    if not _same_answer(a.value, value):
         a.value, a.source, a.confidence, a.needs_review = value, "user", 1.0, False
         packet.flags = [f for f in packet.flags if f.where != f"answer:{qid}"]
     else:
@@ -270,7 +303,13 @@ def rebuild(session: Session, job_id: int) -> None:
     of a requested regeneration): try building it again (after fixing the cause, or once quota
     is back). An earlier packet stays for reference but its approval is revoked."""
     app = session.exec(select(Application).where(Application.job_id == job_id)).first()
-    if app is not None and app.packet and not (app.outcome or {}).get("packet_failures"):
+    out = (app.outcome or {}) if app is not None else {}
+    details = out.get("details") or {}
+    # an approved packet whose files went missing / changed before anything was sent: it has
+    # to be rebuilt (and approved again)
+    broken_files = bool(details.get("artifact_integrity")) and not (
+        details.get("submit_attempted") or (app is not None and app.submitted_at))
+    if app is not None and app.packet and not (out.get("packet_failures") or broken_files):
         raise PacketError("this job already has a packet; use Regenerate on its packet page")
     _transition(session, job_id, [JobStatus.NEEDS_HUMAN], JobStatus.SHORTLISTED)
     if app is not None:

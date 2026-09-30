@@ -86,16 +86,23 @@ class AccessMiddleware(BaseHTTPMiddleware):
             if path != "/login" and request.headers.get("hx-request") != "true":
                 return PlainTextResponse("missing HX-Request header", status_code=403)
         response = await call_next(request)
-        return no_framing(response)
+        return no_framing(response, same_origin=path.startswith(FRAMEABLE_PATHS))
 
 
-def no_framing(response):
+# Served artifacts (the resume / cover-letter PDFs) are previewed in an <iframe> on the packet
+# page itself: framable by this UI only.
+FRAMEABLE_PATHS = ("/files/",)
+
+
+def no_framing(response, *, same_origin: bool = False):
     """No page of this UI may be shown inside another site's frame (clickjacking: a disguised
-    "Approve" button would still send a genuine same-origin request)."""
-    response.headers["X-Frame-Options"] = "DENY"
+    "Approve" button would still send a genuine same-origin request). `same_origin`: only
+    this UI's own pages may frame it (artifact previews)."""
+    response.headers["X-Frame-Options"] = "SAMEORIGIN" if same_origin else "DENY"
+    ancestors = "frame-ancestors 'self'" if same_origin else "frame-ancestors 'none'"
     csp = response.headers.get("Content-Security-Policy")
     if csp is None:
-        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+        response.headers["Content-Security-Policy"] = ancestors
     elif "frame-ancestors" not in csp:
-        response.headers["Content-Security-Policy"] = f"{csp}; frame-ancestors 'none'"
+        response.headers["Content-Security-Policy"] = f"{csp}; {ancestors}"
     return response

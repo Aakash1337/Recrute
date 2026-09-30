@@ -126,13 +126,13 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
         # upload something you didn't see.
         return ApplyOutcome(status="needs_human",
                             reason=f"approved files changed or missing: {', '.join(changed)}",
-                            details=details)
+                            details={**details, "artifact_integrity": changed})
 
     file_map = resolve_files(packet, paths, files)
     if bad := unapproved_uploads(packet, paths, file_map):
         return ApplyOutcome(status="needs_human",
                             reason=f"upload file is not the approved one: {', '.join(bad)}",
-                            details=details)
+                            details={**details, "artifact_integrity": bad})
     receipt = Receipt(paths, job.id, now)
     receipt.write_packet(packet)
     receipt.copy_files(file_map)

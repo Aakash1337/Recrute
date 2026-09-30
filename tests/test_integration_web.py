@@ -1,6 +1,7 @@
 """Packets (CP2), applications (CP3), capture API, file serving, inbox sync."""
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from sqlmodel import Session, select
@@ -127,7 +128,11 @@ def test_files_are_confined(client, tmp_path):
     d.mkdir(parents=True)
     (d / "r.pdf").write_bytes(b"%PDF-1.4")
     (get_paths().data / "recrute_secret.txt").write_text("x")
-    assert client.get("/files/packets/1/r.pdf").status_code == 200
+    r = client.get("/files/packets/1/r.pdf")
+    assert r.status_code == 200
+    # previewable in the packet page's own iframe, but by no other site
+    assert r.headers["X-Frame-Options"] == "SAMEORIGIN"
+    assert "frame-ancestors 'self'" in r.headers["Content-Security-Policy"]
     assert client.get("/files/recrute.db").status_code == 404
     assert client.get("/files/packets/../recrute_secret.txt").status_code == 404
     assert client.get("/files/packets/..%2Frecrute_secret.txt").status_code == 404
@@ -798,3 +803,45 @@ def test_linkedin_baseline_contacts_are_answered_and_cover_the_live_form():
     other = [live[0].model_copy(update={"options": ["someone@else.example"],
                                         "current": "someone@else.example"})]
     assert coverage_check(other, packet) == ["email"]
+
+
+def test_unchanged_boolean_resubmitted_as_text_keeps_its_blocking_flag():
+    from recrute.packets import _set_answer
+    from recrute.schemas import FormAnswer, FormQuestion, Packet, VerifierFlag
+
+    packet = Packet(job_id=1, questions=[FormQuestion(id="cert", label="Do you hold the OSCP?",
+                                                      type="checkbox")],
+                    answers=[FormAnswer(question_id="cert", value=True, source="llm_new")],
+                    flags=[VerifierFlag(where="answer:cert", text="OSCP", severity="block",
+                                        reason="not in profile")])
+    _set_answer(packet, "cert", "True")  # what the CP2 form sends back for an untouched box
+    a = packet.answer_for("cert")
+    assert a.value is True and a.source == "llm_new"
+    assert packet.blocking_flags()  # still needs the explicit override
+    _set_answer(packet, "cert", "false")  # a real edit
+    assert packet.answer_for("cert").value is False and not packet.blocking_flags()
+
+
+def test_missing_approved_file_can_be_rebuilt_and_reapproved(engine):
+    from recrute import packets
+    from recrute.models import Application, Job, JobStatus
+    from recrute.packets import revision
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://x", canonical_url="c-art",
+                  status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.commit()
+        data = {"job_id": job.id, "answers": []}
+        s.add(Application(job_id=job.id, channel="greenhouse", packet=data,
+                          packet_rev=revision(data), approved_at=datetime.now(UTC),
+                          outcome={"status": "needs_human",
+                                   "reason": "approved files changed or missing: r.pdf",
+                                   "details": {"artifact_integrity": ["r.pdf"],
+                                               "submit_attempted": False}}))
+        s.commit()
+        packets.rebuild(s, job.id)  # recovery works despite the existing packet
+        s.expire_all()
+        app = s.exec(select(Application)).one()
+        assert s.get(Job, job.id).status == JobStatus.SHORTLISTED
+        assert app.approved_at is None  # the rebuilt packet needs a fresh CP2 approval
