@@ -288,3 +288,16 @@ def test_inline_markup_does_not_split_sentences():
 def test_block_elements_still_split():
     kind, quote = detect_sponsorship("<ul><li>No visa sponsorship</li><li>Remote</li></ul>")
     assert kind == "no_sponsorship" and quote == "No visa sponsorship"
+
+
+def test_caveated_negative_is_not_a_denial():
+    from recrute.badges import detect_sponsorship
+
+    text = ("Visa sponsorship: We do sponsor visas! However, we aren't able to successfully "
+            "sponsor visas for every role and every candidate. But if we make you an offer, we "
+            "will make every reasonable effort to get you a visa.")
+    kind, quote = detect_sponsorship(text)
+    assert kind == "will_sponsor" and "We do sponsor visas" in quote
+    assert detect_sponsorship("We cannot guarantee visa sponsorship.")[0] == "unknown"
+    assert detect_sponsorship("We are unable to sponsor visas for this role.")[0] == \
+        "no_sponsorship"

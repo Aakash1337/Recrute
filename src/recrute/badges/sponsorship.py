@@ -105,6 +105,18 @@ _POS = [re.compile(p, re.I) for p in (
 )]
 
 
+# Qualified negatives ("we can't sponsor for EVERY role", "can't guarantee sponsorship") are
+# caveats on a sponsoring employer, not a denial.
+_CAVEAT = re.compile(
+    r"\bfor\s+(?:every|all|each)\s+(?:role|position|candidate|case|applicant)s?\b"
+    r"|\b(?:every|all)\s+(?:role|position|candidate)s?\s+and\s+(?:every|all)\b"
+    r"|\b(?:cannot|can't|can not|unable to|not able to)\s+guarantee\b"
+    r"|\bnot\s+(?:always|in all cases|every time)\b"
+    r"|\bsuccessfully\s+sponsor\b",
+    re.I,
+)
+
+
 def detect_sponsorship(text: str | None) -> tuple[Sponsorship, str | None]:
     """INFORMATIONAL ONLY (never used for filtering/ranking).
 
@@ -121,6 +133,8 @@ def detect_sponsorship(text: str | None) -> tuple[Sponsorship, str | None]:
         if not _VISA_CONTEXT.search(s):
             continue
         if any(p.search(s) for p in _NEG):
+            if _CAVEAT.search(s):
+                continue  # a caveat, not a policy of not sponsoring
             return "no_sponsorship", _snippet(s)
         if positive is None and any(p.search(s) for p in _POS):
             positive = s
