@@ -1,7 +1,8 @@
 import threading
 from types import SimpleNamespace
 
-from sqlmodel import Session
+import pytest
+from sqlmodel import Session, select
 
 from recrute.applying import LazyBrowser, channel_for, fetch_questions, run_due_task
 from recrute.models import Job
@@ -91,7 +92,7 @@ def test_assisted_fill_reserves_daily_caps_before_browser_work(engine, paths, mo
         s.flush()
         s.add(Application(job_id=job.id, channel="greenhouse",
                           packet=Packet(job_id=job.id).model_dump(mode="json"),
-                          outcome={"assist_requested": "x"}))
+                          approved_at=datetime.now(UTC), outcome={"assist_requested": "x"}))
         s.commit()
 
     seen = {}
@@ -134,7 +135,7 @@ def test_assisted_fill_respects_exhausted_caps(engine, paths, monkeypatch):
         s.add(Application(job_id=done.id, channel="greenhouse", submitted_at=datetime.now(UTC)))
         s.add(Application(job_id=job.id, channel="greenhouse",
                           packet=Packet(job_id=job.id).model_dump(mode="json"),
-                          outcome={"assist_requested": "x"}))
+                          approved_at=datetime.now(UTC), outcome={"assist_requested": "x"}))
         s.commit()
         job_id = job.id
 
@@ -163,3 +164,62 @@ def test_reopened_handoff_counts_on_the_day_it_is_reopened():
         "attempted_at": (today - timedelta(days=1)).isoformat(),
         "last_attempt_at": today.isoformat(), "handoff_reservation": True}})
     assert _attempted_at(app, UTC).date() == today.date()
+
+
+
+def test_assist_needs_an_approved_packet(engine):
+    import pytest
+
+    from recrute.models import Application, Job, JobStatus
+    from recrute.packets import PacketError, request_assist
+    from recrute.schemas import Packet
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="u", canonical_url="c", status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.flush()
+        s.add(Application(job_id=job.id, channel="greenhouse",
+                          packet=Packet(job_id=job.id).model_dump(mode="json")))
+        s.commit()
+        with pytest.raises(PacketError, match="never approved"):
+            request_assist(s, job.id)
+
+
+@pytest.mark.parametrize("change", ["applied", "consumed"])
+def test_assist_request_rechecked_under_the_lease(engine, paths, monkeypatch, change):
+    from datetime import UTC, datetime
+
+    from recrute.apply.state import Lease
+    from recrute.applying import _run_assist_request
+    from recrute.models import Application, Job, JobStatus
+    from recrute.schemas import Packet
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://boards.greenhouse.io/acme/jobs/1",
+                  canonical_url="c", ats="greenhouse", status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.flush()
+        s.add(Application(job_id=job.id, channel="greenhouse", approved_at=datetime.now(UTC),
+                          packet=Packet(job_id=job.id).model_dump(mode="json"),
+                          outcome={"assist_requested": "tok1"}))
+        s.commit()
+        job_id = job.id
+    real_acquire = Lease.acquire
+
+    def acquire(self):  # while this worker waits for the lease...
+        with Session(engine) as other:
+            if change == "applied":
+                other.get(Job, job_id).status = JobStatus.APPLIED
+            else:  # another worker consumed it
+                a = other.exec(select(Application)).one()
+                a.outcome = {}
+                other.add(a)
+            other.commit()
+        return real_acquire(self)
+
+    monkeypatch.setattr(Lease, "acquire", acquire)
+    monkeypatch.setattr("recrute.apply.runner.apply_job",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run")))
+    with Session(engine) as s:
+        assert _run_assist_request(SimpleNamespace(router=None, paths=paths), s,
+                                   SimpleNamespace()) is None

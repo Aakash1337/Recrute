@@ -44,6 +44,7 @@ class Claim:
     cited_ids: list[str] = field(default_factory=list)
     question: str = ""  # for answers: the question label
     affirmative: bool = False  # a Yes/True answer to a yes/no question ("Do you hold X?")
+    detail: str = ""  # for answers: the question's description / help text
 
 
 def collect_claims(profile: Profile, selection: ResumeSelection | None = None, *,
@@ -69,6 +70,9 @@ def collect_claims(profile: Profile, selection: ResumeSelection | None = None, *
             continue
         q = by_id.get(a.question_id)
         label = q.label if q else ""
+        # requirements often sit in the question's help text ("at least 10 years of paid
+        # Python experience"): the verifier judges the answer against the WHOLE question
+        detail = (q.description or "").strip() if q else ""
         if isinstance(a.value, bool):  # a generated Yes/No is a claim too
             text, choice = ("Yes" if a.value else "No"), True
         elif isinstance(a.value, list):
@@ -79,7 +83,7 @@ def collect_claims(profile: Profile, selection: ResumeSelection | None = None, *
                                           and bool(_YES_RE.match(a.value)))
         claims.append(Claim(f"answer:{a.question_id}", f"{label}: {text}" if choice else text,
                             "answer", (cited or {}).get(a.question_id, []), label,
-                            affirmative))
+                            affirmative, detail))
     return claims
 
 
@@ -157,7 +161,7 @@ def deterministic_flags(profile: Profile, claims: list[Claim], *, job: JobContex
         if c.kind != "rewrite":
             texts += [background, *extra]
         if c.kind in ("cover_letter", "answer"):
-            allowed = [*job_names, c.question]
+            allowed = [*job_names, c.question, c.detail]
         misses = find_unsupported(c.text, SupportIndex.of(texts), allowed)
         if not misses:
             continue
@@ -231,7 +235,8 @@ def llm_flags(profile: Profile, claims: list[Claim], router: Completer) -> list[
     cited = [i for c in claims for i in c.cited_ids]
     claim_lines = []
     for c in claims:
-        q = f" (Q: {c.question})" if c.question else ""
+        q = f" (Q: {c.question}" + (f" | details: {c.detail}" if c.detail else "") + ")" \
+            if c.question else ""
         cites = f" cites {','.join(c.cited_ids)}" if c.cited_ids else ""
         claim_lines.append(f"[{c.where}]{q}{cites}: {c.text}")
     prompt = VERIFY_PROMPT.format(background=background_facts(profile),

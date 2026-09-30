@@ -79,3 +79,42 @@ def test_updating_one_site_cap_keeps_linkedin_cap(engine):
         assert caps == {"linkedin_easy_apply": 15, "greenhouse": 10}
         set_setting(s, "site_caps", {"linkedin_easy_apply": 8})
         assert get_setting(s, "site_caps")["linkedin_easy_apply"] == 8
+
+
+def test_concurrent_partial_setting_updates_both_survive(engine, monkeypatch):
+    import threading
+    import time
+
+    from sqlmodel import Session
+
+    from recrute import settings
+    from recrute.settings import get_setting, set_setting
+
+    real_validate = settings._validate
+
+    def slow_validate(key, value):  # widen the read-modify-write window
+        time.sleep(0.2)
+        return real_validate(key, value)
+
+    monkeypatch.setattr(settings, "_validate", slow_validate)
+
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def disable(name):
+        try:
+            with Session(engine) as s:
+                barrier.wait()
+                set_setting(s, "sources_enabled", {name: False})
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=disable, args=(n,)) for n in ("greenhouse", "lever")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    with Session(engine) as s:
+        enabled = get_setting(s, "sources_enabled")
+    assert enabled["greenhouse"] is False and enabled["lever"] is False

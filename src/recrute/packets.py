@@ -329,6 +329,13 @@ def request_assist(session: Session, job_id: int) -> None:
     app = session.exec(select(Application).where(Application.job_id == job_id)).first()
     if job is None or app is None or job.status != JobStatus.NEEDS_HUMAN:
         raise PacketError("only jobs that need you can be opened for assisted filling")
-    app.outcome = {**(app.outcome or {}), "assist_requested": utcnow().isoformat()}
+    if app.approved_at is None or not app.packet or app.submitted_at is not None:
+        # the form is only ever filled from a packet you approved at CP2
+        raise PacketError("this packet was never approved (or was changed since): rebuild it "
+                          "and approve it first")
+    import uuid
+
+    # a unique token: the worker consumes exactly this request, once
+    app.outcome = {**(app.outcome or {}), "assist_requested": uuid.uuid4().hex}
     session.add(app)
     session.commit()

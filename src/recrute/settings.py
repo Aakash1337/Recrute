@@ -65,6 +65,17 @@ def get_setting(session: Session, key: str) -> Any:
 def set_setting(session: Session, key: str, value: Any) -> None:
     if key not in DEFAULTS:
         raise KeyError(f"unknown setting: {key}")
+    if isinstance(value, dict) and (key in _DICT_KEYS or key == "site_caps"):
+        # a partial update is a read-modify-write: take the row's write lock BEFORE reading,
+        # so two concurrent partial updates (e.g. disabling two sources) both survive
+        from sqlalchemy import update
+
+        session.commit()
+        session.execute(insert(Setting).values(key=key, value=DEFAULTS[key], updated_at=utcnow())
+                        .on_conflict_do_nothing(index_elements=["key"]))
+        session.execute(update(Setting).where(Setting.key == key).values(key=Setting.key)
+                        .execution_options(synchronize_session=False))
+        session.expire_all()
     if key in _DICT_KEYS and isinstance(value, dict):
         value = {**get_setting(session, key), **value}  # partial updates keep other fields
     if key == "site_caps" and isinstance(value, dict):

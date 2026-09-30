@@ -175,7 +175,8 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
     from recrute.apply.state import suspension
 
     for app, job in rows:
-        if not (app.outcome or {}).get("assist_requested") or not app.packet:
+        token = (app.outcome or {}).get("assist_requested")
+        if not token or not app.packet:
             continue
         adapter = get_adapter(app.channel, router=ctx.router) if app.channel != "manual" \
             else adapter_for(job, router=ctx.router)
@@ -191,7 +192,21 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
         if not lease.acquire():
             return None  # a scheduled run is in progress; the request is kept
         try:
+            from sqlalchemy import update
+
+            # consume exactly this request, atomically: take the row's write lock first, then
+            # re-read everything (a "mark applied", "give up" or edit may have landed meanwhile)
+            session.commit()
+            session.execute(update(Application).where(Application.id == app.id)
+                            .values(id=Application.id)
+                            .execution_options(synchronize_session=False))
             session.refresh(app)
+            session.refresh(job)
+            if ((app.outcome or {}).get("assist_requested") != token
+                    or job.status != JobStatus.NEEDS_HUMAN or app.submitted_at is not None
+                    or app.approved_at is None or not app.packet):
+                session.rollback()
+                continue  # consumed by another worker, cancelled, sent, or no longer approved
             if reason := cap_block_reason(session, datetime.now().astimezone(), app_id=app.id,
                                           job=job, channel=app.channel):
                 app.outcome = {**app.outcome, "assist_deferred": reason}  # request kept
