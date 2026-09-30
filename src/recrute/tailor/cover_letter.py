@@ -26,14 +26,19 @@ from recrute.tailor.common import (
 )
 from recrute.tailor.ingest import RESUME_SUFFIXES, extract_text
 
-_CL_RE = re.compile(r"cover\s*letter|letter of (interest|motivation)|motivation(al)? letter",
-                    re.IGNORECASE)
+_CL_RE = re.compile(r"cover[\s_-]*letter|letter[\s_-]+of[\s_-]+(interest|motivation)|"
+                    r"motivation(al)?[\s_-]*letter", re.IGNORECASE)
 
 MAX_WORDS = 250
 
 
+def is_cover_letter_field(q: FormQuestion) -> bool:
+    """The single detector for cover-letter fields (label or ATS field id)."""
+    return bool(_CL_RE.search(q.label) or _CL_RE.search(q.id))
+
+
 def cover_letter_questions(questions: list[FormQuestion]) -> list[FormQuestion]:
-    return [q for q in questions if _CL_RE.search(q.label) or _CL_RE.search(q.id)]
+    return [q for q in questions if is_cover_letter_field(q)]
 
 
 def needs_cover_letter(questions: list[FormQuestion], need: bool | None = None) -> bool:

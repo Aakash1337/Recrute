@@ -9,6 +9,7 @@ Flags from both are merged; `block` = unsupported claim, `warn` = stretch / weak
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Literal
@@ -26,6 +27,7 @@ from recrute.tailor.common import (
     enum,
     find_unsupported,
     item_lines,
+    keywords,
     obj,
     parse_llm,
     profile_texts,
@@ -41,6 +43,7 @@ class Claim:
     kind: ClaimKind
     cited_ids: list[str] = field(default_factory=list)
     question: str = ""  # for answers: the question label
+    affirmative: bool = False  # a Yes/True answer to a yes/no question ("Do you hold X?")
 
 
 def collect_claims(profile: Profile, selection: ResumeSelection | None = None, *,
@@ -60,14 +63,48 @@ def collect_claims(profile: Profile, selection: ResumeSelection | None = None, *
     if cover_letter:
         claims.append(Claim("cover_letter", cover_letter, "cover_letter",
                             list(cover_letter_ids) or chosen))
-    labels = {q.id: q.label for q in questions}
+    by_id = {q.id: q for q in questions}
     for a in answers:
-        if a.source != "llm_new" or a.value in (None, "", []) or isinstance(a.value, bool):
+        if a.source != "llm_new" or a.value in (None, "", []):
             continue
-        text = ", ".join(a.value) if isinstance(a.value, list) else str(a.value)
-        claims.append(Claim(f"answer:{a.question_id}", text, "answer",
-                            (cited or {}).get(a.question_id, []), labels.get(a.question_id, "")))
+        q = by_id.get(a.question_id)
+        label = q.label if q else ""
+        if isinstance(a.value, bool):  # a generated Yes/No is a claim too
+            text, choice = ("Yes" if a.value else "No"), True
+        elif isinstance(a.value, list):
+            text, choice = ", ".join(a.value), True
+        else:
+            text, choice = str(a.value), bool(q and q.options)
+        affirmative = a.value is True or (isinstance(a.value, str) and choice
+                                          and bool(_YES_RE.match(a.value)))
+        claims.append(Claim(f"answer:{a.question_id}", f"{label}: {text}" if choice else text,
+                            "answer", (cited or {}).get(a.question_id, []), label,
+                            affirmative))
     return claims
+
+
+_YES_RE = re.compile(r"^\s*(yes|true)\b", re.IGNORECASE)
+_POSSESSION_RE = re.compile(r"\b(have|has|hold|held|possess|earned|completed|obtained|"
+                            r"certified|licensed|cleared)\b", re.IGNORECASE)
+# Words in a yes/no question that carry no factual content.
+_QUESTION_STOP = frozenset("""do does did you your have has hold held possess possessed currently
+current active valid any ever been are is were was able will would can could comfortable
+familiar familiarity experience experienced years year least knowledge proficient proficiency
+working work earned completed obtained certified certification certifications level
+""".split())
+
+
+def _affirmative_flags(c: Claim, whole: SupportIndex) -> list[VerifierFlag]:
+    """A "Yes" to "Do you hold/have X?" claims X: X's content words must be in the profile."""
+    words = [w for w in keywords(c.question) if w not in _QUESTION_STOP
+             and not any(ch.isdigit() for ch in w)]
+    missing = [w for w in words if not whole.has_term(w)]
+    if not missing:
+        return []
+    severity = "block" if _POSSESSION_RE.search(c.question) else "warn"
+    return [VerifierFlag(where=c.where, text=c.text, severity=severity,
+                         reason="answered Yes, but the profile never mentions "
+                                + ", ".join(f"'{w}'" for w in missing))]
 
 
 # --------------------------------------------------------------------------- deterministic
@@ -113,6 +150,8 @@ def deterministic_flags(profile: Profile, claims: list[Claim], *, job: JobContex
     background = background_facts(profile)
     flags: list[VerifierFlag] = []
     for c in claims:
+        if c.affirmative:
+            flags += _affirmative_flags(c, whole)
         texts = [t for cid in c.cited_ids for t in _item_support(profile, cid)]
         allowed: list[str] = []
         if c.kind != "rewrite":

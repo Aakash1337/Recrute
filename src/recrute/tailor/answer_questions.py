@@ -18,6 +18,7 @@ from recrute.tailor.answers import (
     SENSITIVE_KINDS,
     AnswerBank,
     classify_question,
+    field_core,
     format_value,
     match_option,
     match_question,
@@ -34,9 +35,9 @@ from recrute.tailor.common import (
     parse_llm,
     truncate,
 )
+from recrute.tailor.cover_letter import is_cover_letter_field
 
 _RESUME_RE = re.compile(r"resume|résumé|\bcv\b|curriculum", re.IGNORECASE)
-_COVER_RE = re.compile(r"cover\s*letter|letter of (interest|motivation)", re.IGNORECASE)
 _CONSENT_RE = re.compile(r"\b(agree|acknowledge|consent|certify|confirm|attest)\b", re.IGNORECASE)
 
 
@@ -48,15 +49,20 @@ class AnswerSet:
 
 # --------------------------------------------------------------------------- profile facts
 
+# Field requests only: the whole (normalized) label must be the field name, so "Describe a
+# project you completed at university" is not the "school" field.
 _PROFILE_RULES: list[tuple[str, re.Pattern[str]]] = [
-    (k, re.compile(rx, re.IGNORECASE)) for k, rx in [
-        ("gpa", r"\bgpa\b|grade point"),
-        ("grad_date", r"graduat\w* (date|year)|year of graduation|expected graduation"),
-        ("major", r"\bmajor\b|discipline|field of study|area of study"),
-        ("degree", r"\bdegree\b|highest (level of )?education"),
-        ("school", r"school|university|college|institution"),
-        ("current_company", r"current (company|employer)|most recent (company|employer)"),
-        ("current_title", r"current (job )?title|current (position|role)|most recent (job )?title"),
+    (k, re.compile(rx)) for k, rx in [
+        ("gpa", r"(cumulative |overall |undergraduate |graduate )?(gpa|grade point average)"),
+        ("grad_date", r"(expected )?graduation (date|year)|year of graduation|"
+                      r"(expected )?graduation"),
+        ("major", r"(major|discipline|field of study|area of study)"),
+        ("degree", r"(highest )?(degree|degree type|level of education|education level)|"
+                   r"highest level of education( completed)?"),
+        ("school", r"(name of )?(school|university|college|institution)( name| attended)?|"
+                   r"school or university|(most recent|current) (school|university|college)"),
+        ("current_company", r"(current|most recent) (company|employer)( name)?"),
+        ("current_title", r"(current|most recent) (job )?(title|position|role)"),
     ]
 ]
 
@@ -90,7 +96,8 @@ def _profile_value(kind: str, profile: Profile) -> str | None:
 def profile_answer(q: FormQuestion, profile: Profile) -> FormAnswer | None:
     kind = classify_question(q)
     if kind not in CONTACT_KINDS:
-        kind = next((k for k, rx in _PROFILE_RULES if rx.search(q.label)), None)
+        core = field_core(q.label)
+        kind = next((k for k, rx in _PROFILE_RULES if rx.fullmatch(core)), None)
     if kind is None or q.type in ("file", "checkbox"):
         return None
     value = format_value(q, _profile_value(kind, profile))
@@ -223,16 +230,16 @@ def answer_questions(questions: list[FormQuestion], *, profile: Profile, bank: A
     pending: list[FormQuestion] = []
     for q in questions:
         if q.type == "file":
-            if _COVER_RE.search(q.label):
+            if is_cover_letter_field(q):
                 path = cover_letter_pdf
-            elif _RESUME_RE.search(q.label):
+            elif _RESUME_RE.search(q.label) or _RESUME_RE.search(q.id):
                 path = resume_pdf
             else:
                 path = None  # transcripts, work samples, ...: the user attaches those
             done[q.id] = FormAnswer(question_id=q.id, value=path, source="default",
                                     confidence=1.0 if path else 0.0, needs_review=path is None)
             continue
-        if _COVER_RE.search(q.label) and q.type in ("text", "textarea") and cover_letter_text:
+        if is_cover_letter_field(q) and q.type in ("text", "textarea") and cover_letter_text:
             done[q.id] = FormAnswer(question_id=q.id,
                                     value=_fit_length(cover_letter_text, q.max_length),
                                     source="default", confidence=0.8, needs_review=False)

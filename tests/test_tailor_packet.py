@@ -14,7 +14,14 @@ from test_tailor_support import (
 from recrute.models import Job, Priority
 from recrute.schemas import FormQuestion, Packet
 from recrute.tailor.cover_letter import limit_words, needs_cover_letter
-from recrute.tailor.packet import build_packet, packet_dir, packet_file
+from recrute.tailor.packet import (
+    build_packet,
+    latest_packet_version,
+    list_packet_versions,
+    load_packet,
+    packet_dir,
+    packet_file,
+)
 
 ANSWERS_OUT = {"answers": [{"id": "why", "answer": "I enjoy detection engineering, e.g. writing "
                                                    "12 Sigma rules at Northwind Health.",
@@ -55,11 +62,14 @@ def test_full_packet(paths):
     packet, router = _build(paths, _questions(True))
     assert router.keys() == ["select", "cover", "answers", "verify"]
     assert packet.job_id == 7
-    out = packet_dir(paths, 7)
-    assert packet.resume_pdf == "packets/7/Jordan_Lin_Resume.pdf"
+    [version] = list_packet_versions(paths, 7)
+    assert latest_packet_version(paths, 7) == version
+    out = packet_dir(paths, 7) / version
+    assert packet.resume_pdf == f"packets/7/{version}/Jordan_Lin_Resume.pdf"
     assert packet_file(paths, packet.resume_pdf).exists()
-    assert packet.cover_letter_pdf == "packets/7/Jordan_Lin_Cover_Letter.pdf"
+    assert packet.cover_letter_pdf == f"packets/7/{version}/Jordan_Lin_Cover_Letter.pdf"
     assert packet_file(paths, packet.cover_letter_pdf).exists()
+    assert load_packet(paths, 7) == packet
     assert packet.cover_letter.startswith("I am applying for the AI Security Analyst role")
     a = {x.question_id: x for x in packet.answers}
     assert a["resume"].value == packet.resume_pdf
@@ -91,11 +101,51 @@ def test_cover_letter_only_when_asked(paths):
     # Explicitly requested -> generated even without a field.
     packet, router = _build(paths, _questions(None), need_cover_letter=True)
     assert "cover" in router.keys() and packet.cover_letter_pdf is not None
-    # Explicitly declined even though required -> none, and a stale PDF is removed.
+    requested = packet
+    # Explicitly declined even though required -> none (in a new version; the earlier
+    # version keeps its cover letter).
     packet, router = _build(paths, _questions(True), need_cover_letter=False)
     assert "cover" not in router.keys() and packet.cover_letter is None
-    assert not (packet_dir(paths, 7) / "Jordan_Lin_Cover_Letter.pdf").exists()
+    latest = latest_packet_version(paths, 7)
+    assert not (packet_dir(paths, 7) / latest / "Jordan_Lin_Cover_Letter.pdf").exists()
+    assert packet_file(paths, requested.cover_letter_pdf).exists()
     assert any(f.where == "answer:cover_letter" for f in packet.flags)  # required, unanswered
+
+
+def test_regeneration_creates_immutable_versions(paths):
+    first, _ = _build(paths, _questions(True))
+    v1 = latest_packet_version(paths, 7)
+    files = {p: p.read_bytes() for p in (packet_dir(paths, 7) / v1).iterdir()}
+    second, _ = _build(paths, _questions(True), user_note="emphasize PromptGuard")
+    v2 = latest_packet_version(paths, 7)
+    assert v2 != v1 and list_packet_versions(paths, 7) == [v1, v2]
+    assert second.resume_pdf.startswith(f"packets/7/{v2}/")
+    assert {p: p.read_bytes() for p in (packet_dir(paths, 7) / v1).iterdir()} == files
+    assert load_packet(paths, 7, v1) == first and load_packet(paths, 7) == second
+
+
+def test_failed_regeneration_leaves_prior_packet_untouched(paths):
+    from recrute.llm.base import LLMError
+
+    first, _ = _build(paths, _questions(True))
+    v1 = latest_packet_version(paths, 7)
+    before = {p.relative_to(paths.data): p.read_bytes()
+              for p in packet_dir(paths, 7).rglob("*") if p.is_file()}
+
+    router = _router()
+
+    def boom(prompt, schema):
+        raise LLMError("usage limit reached")
+
+    router.responses["verify"] = boom  # fails after the PDFs were rendered
+    with pytest.raises(LLMError):
+        build_packet(_job(), _questions(True), profile=make_profile(), bank=make_bank(),
+                     router=router, paths=paths, company="Contoso Labs")
+    after = {p.relative_to(paths.data): p.read_bytes()
+             for p in packet_dir(paths, 7).rglob("*") if p.is_file()}
+    assert after == before  # no partial version left, pointer and v1 unchanged
+    assert latest_packet_version(paths, 7) == v1 and load_packet(paths, 7) == first
+    assert load_packet(paths, 99) is None
 
 
 def test_needs_cover_letter_rules():

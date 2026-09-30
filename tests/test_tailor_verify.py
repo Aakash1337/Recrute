@@ -128,3 +128,39 @@ def test_no_claims_no_llm_call():
     assert verify(profile, collect_claims(profile, validate_selection(profile, raw)),
                   router=router) == []
     assert router.calls == []
+
+
+def test_generated_boolean_answers_are_claims():
+    profile = make_profile()
+    questions = [
+        FormQuestion(id="clear", label="Do you hold a security clearance?", type="checkbox"),
+        FormQuestion(id="splunk", label="Do you have experience with Splunk?", type="radio",
+                     options=["Yes", "No"]),
+        FormQuestion(id="k8s", label="Have you worked with Kubernetes?", type="select",
+                     options=["Yes", "No"]),
+        FormQuestion(id="relo", label="Do you enjoy travel?", type="checkbox"),
+    ]
+    answers = [
+        FormAnswer(question_id="clear", value=True, source="llm_new"),
+        FormAnswer(question_id="splunk", value="Yes", source="llm_new"),
+        FormAnswer(question_id="k8s", value="No", source="llm_new"),
+        FormAnswer(question_id="relo", value=False, source="llm_new"),
+    ]
+    claims = collect_claims(profile, None, answers=answers, questions=questions,
+                            cited={"splunk": ["exp-northwind-health-b1"]})
+    by_where = {c.where: c for c in claims}
+    assert by_where["answer:clear"].text == "Do you hold a security clearance?: Yes"
+    assert by_where["answer:clear"].affirmative
+    assert by_where["answer:splunk"].cited_ids == ["exp-northwind-health-b1"]
+    assert by_where["answer:relo"].text == "Do you enjoy travel?: No"
+    assert not by_where["answer:k8s"].affirmative
+
+    flags = deterministic_flags(profile, claims, job=make_job())
+    assert [(f.where, f.severity) for f in flags] == [("answer:clear", "block")]
+    assert "clearance" in flags[0].reason
+
+    # The LLM pass sees the boolean claims with their question.
+    router = FakeRouter({"verify": {"flags": []}})
+    verify(profile, claims, router=router)
+    assert "[answer:clear] (Q: Do you hold a security clearance?)" in router.calls[0][1]
+    assert "Do you hold a security clearance?: Yes" in router.calls[0][1]
