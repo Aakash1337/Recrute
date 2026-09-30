@@ -1,0 +1,90 @@
+{
+ "id": "744000152547069",
+ "name": "Head of Autonomous Driving Technology & AI Development",
+ "uuid": "851a29fc-3b94-4b66-83da-e76dbfb229b3",
+ "jobId": "19ccc2c5-3446-40d5-9d4b-1612f90779c4",
+ "jobAdId": "04dfd10f-7c73-496f-8801-9f8f7881ad37",
+ "defaultJobAd": true,
+ "refNumber": "REF258493Y",
+ "company": {
+  "name": "Bosch Group",
+  "identifier": "BoschGroup"
+ },
+ "location": {
+  "city": "Sunnyvale",
+  "region": "CA",
+  "country": "us",
+  "address": "384 Santa Trinita Avenue",
+  "postalCode": "94085",
+  "remote": false,
+  "hybrid": false,
+  "latitude": "37.38195",
+  "longitude": "-121.9994708",
+  "fullLocation": "Sunnyvale, CA, United States"
+ },
+ "customField": [
+  {
+   "fieldId": "5abe2a4ab60a5e486a2d9b1d",
+   "fieldLabel": "Contract type",
+   "valueId": "1e46492b-d24f-460c-b095-38cf08a778d8",
+   "valueLabel": "Unlimited"
+  },
+  {
+   "fieldId": "5abe28e96d8bc56863dd9746",
+   "fieldLabel": "Tariff Area",
+   "valueId": "82f1dd4b-de9d-4134-9f1a-8d315be380ae",
+   "valueLabel": "United States Local Grades"
+  }
+ ],
+ "releasedDate": "2026-09-29T23:18:53.189Z",
+ "creator": {
+  "name": "",
+  "avatarUrl": ""
+ },
+ "postingUrl": "https://jobs.smartrecruiters.com/BoschGroup/744000152547069-head-of-autonomous-driving-technology-ai-development",
+ "applyUrl": "https://jobs.smartrecruiters.com/BoschGroup/744000152547069-head-of-autonomous-driving-technology-ai-development?oga=true",
+ "referralUrl": "https://jobs.smartrecruiters.com/external-referrals/company/BoschGroup/publication/851a29fc-3b94-4b66-83da-e76dbfb229b3?dcr_ci=BoschGroup",
+ "jobAd": {
+  "sections": {
+   "companyDescription": {
+    "title": "Company Description",
+    "text": "<p>“Invented for Life” drives us at Bosch and our vision of future mobility. Autonomous vehicles will change the way we move and at Bosch we are working on making this future a reality. We are now growing our team to solve some of the hardest automated driving problems, and are looking for experts for product engineering of AI-based Autonomous Driving systems.</p>"
+   },
+   "jobDescription": {
+    "title": "Job Description",
+    "text": "<p>As The Head&#xa0;of Technology and Development for ADAS in North America, you will lead the technical vision, strategy, and execution for our global advanced driver assistance systems development and deployment. This includes driving innovation, overseeing a high-performing engineering team, and collaborating closely with global counterparts to deliver cutting-edge L2+ and L3 ADAS solutions. While your primary focus is on the overall functional ADAS technology roadmap, you will also play a cr"
+   },
+   "qualifications": {
+    "title": "Qualifications",
+    "text": "<p><strong>Basic Qualifications&#xa0;</strong></p>"
+   },
+   "additionalInformation": {
+    "title": "Additional Information",
+    "text": "<p>The U.S. base salary range for this full-time position is $290,000 - $400,000. Within the range, individual pay is determined based on several factors, including, but not limited to, work experience and job knowledge, complexity of the role, job location, etc. This range does not include annual bonus percentage nor any other monetary considerations for the total compensation package. Your Recruiter can share more details about the specific salary range for this position during the interview process.<br>\n<br>\nIn addition to your base salary, Bosch offers a comprehensive benefits package that includes health, dental, and vision plans; health savings accounts (HSA); flexible spending accounts; 401(K) retirement plan with an attractive employer match; wellness programs; life insurance; long term disability insurance; paid time off; parental leave. Pay ranges included in the postings, when included, generally reflect base salary; certain positions may include bonus, or additional benefits.</p><p><strong><em>Equal Opportunity Employer, including disability / veterans</em> &#xa0;</strong></p><p><em>*Bosch adheres to Federal, State, and Local laws regarding drug-testing. Employment is contingent upon the successful completion of a drug screen and background check. Candidates who have been offered the position must pass both screenings before their start date.</em>&#xa0;</p><p><em>#LI-JM1</em></p>"
+   }
+  }
+ },
+ "active": true,
+ "visibility": "PUBLIC",
+ "industry": {
+  "id": "automotive",
+  "label": "Automotive"
+ },
+ "function": {
+  "id": "engineering",
+  "label": "Engineering"
+ },
+ "experienceLevel": {
+  "id": "director",
+  "label": "Director"
+ },
+ "typeOfEmployment": {
+  "id": "permanent",
+  "label": "Full-time"
+ },
+ "language": {
+  "code": "en",
+  "label": "English",
+  "labelNative": "English (US)"
+ }
+}

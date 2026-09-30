@@ -1,0 +1,42 @@
+{
+ "__comment": "SYNTHESIZED from Adzuna's documented response shape (no API key available to capture live).",
+ "count": 2,
+ "mean": 120000,
+ "results": [
+  {
+   "__CLASS__": "Adzuna::API::Response::Job",
+   "id": "5012345678",
+   "adref": "eyJhbGciOiJIUzI1NiJ9.x.y",
+   "title": "<strong>Security</strong> Analyst - Remote",
+   "description": "Join our SOC team to triage alerts... Apply at https://boards.greenhouse.io/examplecorp/jobs/4455667 ...",
+   "created": "2026-09-28T14:03:11Z",
+   "redirect_url": "https://www.adzuna.com/land/ad/5012345678?se=abc&utm_medium=api",
+   "company": {"__CLASS__": "Adzuna::API::Response::Company", "display_name": "ExampleCorp"},
+   "location": {"__CLASS__": "Adzuna::API::Response::Location", "display_name": "Austin, Travis County",
+                "area": ["US", "Texas", "Travis County", "Austin"]},
+   "category": {"__CLASS__": "Adzuna::API::Response::Category", "label": "IT Jobs", "tag": "it-jobs"},
+   "salary_min": 85000,
+   "salary_max": 110000,
+   "salary_is_predicted": "0",
+   "contract_time": "full_time",
+   "contract_type": "permanent",
+   "latitude": 30.26,
+   "longitude": -97.74
+  },
+  {
+   "__CLASS__": "Adzuna::API::Response::Job",
+   "id": "5012345679",
+   "title": "Machine Learning Engineer",
+   "description": "Build ML pipelines...",
+   "created": "2026-09-27T09:00:00Z",
+   "redirect_url": "https://www.adzuna.com/land/ad/5012345679?se=def",
+   "company": {"display_name": "Gamma AI"},
+   "location": {"display_name": "New York City, New York", "area": ["US", "New York"]},
+   "category": {"label": "IT Jobs"},
+   "salary_min": 140000.5,
+   "salary_max": 140000.5,
+   "salary_is_predicted": "1",
+   "contract_type": "contract"
+  }
+ ]
+}

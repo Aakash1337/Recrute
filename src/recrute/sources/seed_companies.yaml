@@ -1,0 +1,518 @@
+# Seed company registry: companies with verified public ATS job-board tokens.
+# Re-verify with: uv run python tools/verify_seed.py
+# tags: security | security_startup | ai_security | ai_safety | ai_lab | ai | tech | fintech |
+#       infra | appsec | cloud | identity | soc | offsec | grc | ot | data | network | fraud |
+#       supply_chain | services | defense
+# Last verified live: 2026-09-29.
+companies:
+  # --- AI security / AI safety (P0) ---
+  - name: HiddenLayer
+    ats: greenhouse
+    token: hiddenlayer
+    tags: [ai_security, security, security_startup]
+  - name: Irregular
+    ats: ashby
+    token: irregular
+    tags: [ai_security, ai_safety, security, security_startup]
+  - name: Haize Labs
+    ats: greenhouse
+    token: haizelabs
+    tags: [ai_security, security_startup, ai]
+  - name: WitnessAI
+    ats: ashby
+    token: witnessai
+    tags: [ai_security, security, security_startup]
+  - name: Token Security
+    ats: greenhouse
+    token: tokensecurity
+    tags: [ai_security, security, security_startup, identity]
+  - name: Apollo Research
+    ats: lever
+    token: apolloresearch
+    tags: [ai_security, ai_safety]
+  - name: METR
+    ats: lever
+    token: metr
+    tags: [ai_security, ai_safety]
+  - name: Goodfire
+    ats: greenhouse
+    token: goodfire
+    tags: [ai_safety, ai_lab]
+
+  # --- AI-native security startups (P0/P1) ---
+  - name: Dropzone AI
+    ats: greenhouse
+    token: dropzoneai
+    tags: [security, security_startup, ai, soc]
+  - name: 7AI
+    ats: ashby
+    token: sevenai
+    tags: [security, security_startup, ai, soc]
+  - name: Torq
+    ats: greenhouse
+    token: torq
+    tags: [security, security_startup, ai, soc]
+  - name: Tines
+    ats: greenhouse
+    token: tines
+    tags: [security, security_startup, ai, soc]
+  - name: Horizon3.ai
+    ats: ashby
+    token: horizon3ai
+    tags: [security, security_startup, ai, offsec]
+  - name: Abnormal AI
+    ats: greenhouse
+    token: abnormalsecurity
+    tags: [security, security_startup, ai]
+  - name: Nudge Security
+    ats: ashby
+    token: nudgesecurity
+    tags: [security, security_startup, ai_security]
+
+  # --- Cloud / platform security ---
+  - name: Wiz
+    ats: greenhouse
+    token: wizinc
+    tags: [security, cloud]
+  - name: Orca Security
+    ats: greenhouse
+    token: orcasecurity
+    tags: [security, security_startup, cloud]
+  - name: Sysdig
+    ats: lever
+    token: sysdig
+    tags: [security, cloud]
+  - name: Chainguard
+    ats: greenhouse
+    token: chainguard
+    tags: [security, security_startup, supply_chain]
+  - name: Island
+    ats: greenhouse
+    token: island
+    tags: [security, security_startup]
+  - name: Axonius
+    ats: greenhouse
+    token: axonius
+    tags: [security, security_startup]
+  - name: Cyberhaven
+    ats: ashby
+    token: cyberhaven
+    tags: [security, security_startup, data]
+  - name: BigID
+    ats: greenhouse
+    token: bigid
+    tags: [security, data]
+  - name: Rubrik
+    ats: greenhouse
+    token: rubrik
+    tags: [security, data]
+  - name: Cribl
+    ats: greenhouse
+    token: cribl
+    tags: [security, security_startup, infra]
+
+  # --- Application / supply-chain security ---
+  - name: Semgrep
+    ats: ashby
+    token: semgrep
+    tags: [security, security_startup, appsec]
+  - name: Socket
+    ats: ashby
+    token: socket
+    tags: [security, security_startup, appsec, supply_chain]
+  - name: Endor Labs
+    ats: greenhouse
+    token: endorlabs
+    tags: [security, security_startup, appsec, supply_chain]
+  - name: Apiiro
+    ats: greenhouse
+    token: apiiro
+    tags: [security, security_startup, appsec]
+  - name: Veracode
+    ats: greenhouse
+    token: veracode
+    tags: [security, appsec]
+  - name: Sonatype
+    ats: lever
+    token: sonatype
+    tags: [security, appsec, supply_chain]
+  - name: Salt Security
+    ats: greenhouse
+    token: saltsecurity
+    tags: [security, security_startup, appsec]
+  - name: Truffle Security
+    ats: greenhouse
+    token: trufflesecurity
+    tags: [security, security_startup, appsec]
+
+  # --- Identity / access / secrets ---
+  - name: Okta
+    ats: greenhouse
+    token: okta
+    tags: [security, identity]
+  - name: 1Password
+    ats: ashby
+    token: 1password
+    tags: [security, identity]
+  - name: Bitwarden
+    ats: greenhouse
+    token: bitwarden
+    tags: [security, identity]
+  - name: Teleport
+    ats: ashby
+    token: goteleport
+    tags: [security, security_startup, identity, infra]
+  - name: Tailscale
+    ats: greenhouse
+    token: tailscale
+    tags: [security, security_startup, network, infra]
+  - name: Opal Security
+    ats: ashby
+    token: opal
+    tags: [security, security_startup, identity]
+  - name: Saviynt
+    ats: lever
+    token: saviynt
+    tags: [security, identity]
+  - name: Obsidian Security
+    ats: greenhouse
+    token: obsidiansecurity
+    tags: [security, security_startup, identity]
+  - name: Persona
+    ats: ashby
+    token: persona
+    tags: [security, security_startup, identity, fraud]
+  - name: Infisical
+    ats: ashby
+    token: infisical
+    tags: [security, security_startup, infra]
+
+  # --- Detection / response / MDR / endpoint ---
+  - name: SentinelOne
+    ats: greenhouse
+    token: sentinellabs
+    tags: [security, soc]
+  - name: Huntress
+    ats: greenhouse
+    token: huntress
+    tags: [security, security_startup, soc]
+  - name: Expel
+    ats: greenhouse
+    token: expel
+    tags: [security, security_startup, soc]
+  - name: Tanium
+    ats: greenhouse
+    token: tanium
+    tags: [security]
+  - name: Iru (formerly Kandji)
+    ats: lever
+    token: iru
+    tags: [security, security_startup, identity]
+  - name: Corelight
+    ats: greenhouse
+    token: corelight
+    tags: [security, network, soc]
+  - name: Material Security
+    ats: ashby
+    token: materialsecurity
+    tags: [security, security_startup]
+
+  # --- Network / SASE / exposure management ---
+  - name: Cloudflare
+    ats: greenhouse
+    token: cloudflare
+    tags: [security, network, infra]
+  - name: Zscaler
+    ats: greenhouse
+    token: zscaler
+    tags: [security, network]
+  - name: Netskope
+    ats: greenhouse
+    token: netskope
+    tags: [security, network]
+  - name: Illumio
+    ats: ashby
+    token: illumio
+    tags: [security, network]
+  - name: Tenable
+    ats: greenhouse
+    token: tenableinc
+    tags: [security]
+  - name: Censys
+    ats: greenhouse
+    token: censys
+    tags: [security, security_startup]
+  - name: runZero
+    ats: greenhouse
+    token: runzero
+    tags: [security, security_startup]
+
+  # --- Threat intelligence ---
+  - name: Recorded Future
+    ats: greenhouse
+    token: recordedfuture
+    tags: [security]
+  - name: GreyNoise
+    ats: greenhouse
+    token: greynoiseintelligence
+    tags: [security, security_startup]
+  - name: SpyCloud
+    ats: greenhouse
+    token: spycloud
+    tags: [security, security_startup]
+
+  # --- OT / critical infrastructure / defense security ---
+  - name: Dragos
+    ats: greenhouse
+    token: dragos
+    tags: [security, ot]
+  - name: Nozomi Networks
+    ats: greenhouse
+    token: nozominetworks
+    tags: [security, ot]
+  - name: Shift5
+    ats: greenhouse
+    token: shift5
+    tags: [security, security_startup, ot, defense]
+
+  # --- Offensive security / bug bounty / consulting ---
+  - name: HackerOne
+    ats: ashby
+    token: hackerone
+    tags: [security, offsec]
+  - name: Bugcrowd
+    ats: greenhouse
+    token: bugcrowd
+    tags: [security, offsec]
+  - name: Synack
+    ats: greenhouse
+    token: synack
+    tags: [security, offsec]
+  - name: Cobalt
+    ats: greenhouse
+    token: cobaltio
+    tags: [security, offsec]
+  - name: Trail of Bits
+    ats: workable
+    token: trailofbits
+    tags: [security, offsec, services]
+  - name: Bishop Fox
+    ats: greenhouse
+    token: bishopfox
+    tags: [security, offsec, services]
+  - name: Praetorian
+    ats: greenhouse
+    token: praetorian
+    tags: [security, offsec, services]
+  - name: SpecterOps
+    ats: greenhouse
+    token: specterops
+    tags: [security, offsec, services]
+  - name: GuidePoint Security
+    ats: greenhouse
+    token: guidepointsecurity
+    tags: [security, services]
+  - name: Coalfire
+    ats: lever
+    token: coalfire
+    tags: [security, services, grc]
+
+  # --- GRC / compliance / cyber insurance ---
+  - name: Vanta
+    ats: ashby
+    token: vanta
+    tags: [security, security_startup, grc]
+  - name: Drata
+    ats: ashby
+    token: drata
+    tags: [security, security_startup, grc]
+  - name: Secureframe
+    ats: ashby
+    token: secureframe
+    tags: [security, security_startup, grc]
+  - name: A-LIGN
+    ats: greenhouse
+    token: align
+    tags: [security, services, grc]
+  - name: Coalition
+    ats: greenhouse
+    token: coalition
+    tags: [security, security_startup, fintech]
+
+  # --- AI labs (P2) ---
+  - name: Anthropic
+    ats: greenhouse
+    token: anthropic
+    tags: [ai_lab, ai]
+  - name: OpenAI
+    ats: ashby
+    token: openai
+    tags: [ai_lab, ai]
+  - name: xAI
+    ats: greenhouse
+    token: xai
+    tags: [ai_lab, ai]
+  - name: Thinking Machines Lab
+    ats: ashby
+    token: thinkingmachines
+    tags: [ai_lab, ai]
+  - name: Cohere
+    ats: ashby
+    token: cohere
+    tags: [ai_lab, ai]
+  - name: Hugging Face
+    ats: workable
+    token: huggingface
+    tags: [ai_lab, ai]
+  - name: Perplexity
+    ats: ashby
+    token: perplexity
+    tags: [ai]
+  - name: Cognition
+    ats: ashby
+    token: cognition
+    tags: [ai]
+
+  # --- AI-first products (P2) ---
+  - name: Anysphere (Cursor)
+    ats: ashby
+    token: cursor
+    tags: [ai]
+  - name: Replit
+    ats: ashby
+    token: replit
+    tags: [ai]
+  - name: Glean
+    ats: greenhouse
+    token: gleanwork
+    tags: [ai]
+  - name: Harvey
+    ats: ashby
+    token: harvey
+    tags: [ai]
+  - name: Sierra
+    ats: ashby
+    token: sierra
+    tags: [ai]
+  - name: Decagon
+    ats: ashby
+    token: decagon
+    tags: [ai]
+  - name: ElevenLabs
+    ats: ashby
+    token: elevenlabs
+    tags: [ai]
+  - name: Writer
+    ats: ashby
+    token: writer
+    tags: [ai]
+  - name: Scale AI
+    ats: greenhouse
+    token: scaleai
+    tags: [ai]
+  - name: LangChain
+    ats: ashby
+    token: langchain
+    tags: [ai, infra]
+
+  # --- AI infrastructure (P2) ---
+  - name: Databricks
+    ats: greenhouse
+    token: databricks
+    tags: [ai, infra]
+  - name: Together AI
+    ats: greenhouse
+    token: togetherai
+    tags: [ai, infra]
+  - name: Modal
+    ats: ashby
+    token: modal
+    tags: [ai, infra]
+  - name: Baseten
+    ats: ashby
+    token: baseten
+    tags: [ai, infra]
+  - name: Fireworks AI
+    ats: ashby
+    token: fireworks
+    tags: [ai, infra]
+  - name: Cerebras
+    ats: ashby
+    token: cerebras
+    tags: [ai, infra]
+  - name: Lambda
+    ats: ashby
+    token: lambda
+    tags: [ai, infra]
+  - name: CoreWeave
+    ats: greenhouse
+    token: coreweave
+    tags: [ai, infra]
+
+  # --- Tech companies with strong security orgs (P3) ---
+  - name: Datadog
+    ats: greenhouse
+    token: datadog
+    tags: [tech, security, infra]
+  - name: Elastic
+    ats: greenhouse
+    token: elastic
+    tags: [tech, security, infra]
+  - name: GitLab
+    ats: greenhouse
+    token: gitlab
+    tags: [tech, infra]
+  - name: Snowflake
+    ats: ashby
+    token: snowflake
+    tags: [tech, data, infra]
+  - name: Palantir
+    ats: lever
+    token: palantir
+    tags: [tech, defense]
+  - name: Anduril
+    ats: greenhouse
+    token: andurilindustries
+    tags: [tech, defense]
+  - name: Figma
+    ats: greenhouse
+    token: figma
+    tags: [tech]
+  - name: Discord
+    ats: greenhouse
+    token: discord
+    tags: [tech]
+  - name: Dropbox
+    ats: greenhouse
+    token: dropbox
+    tags: [tech]
+  - name: Reddit
+    ats: greenhouse
+    token: reddit
+    tags: [tech]
+
+  # --- Fintech with strong security orgs (P3) ---
+  - name: Stripe
+    ats: greenhouse
+    token: stripe
+    tags: [tech, fintech]
+  - name: Coinbase
+    ats: greenhouse
+    token: coinbase
+    tags: [tech, fintech]
+  - name: Robinhood
+    ats: greenhouse
+    token: robinhood
+    tags: [tech, fintech]
+  - name: Plaid
+    ats: ashby
+    token: plaid
+    tags: [tech, fintech]
+  - name: Ramp
+    ats: ashby
+    token: ramp
+    tags: [tech, fintech]
+  - name: Brex
+    ats: greenhouse
+    token: brex
+    tags: [tech, fintech]
