@@ -164,6 +164,9 @@ class VerifierFlag(BaseModel):
     text: str
     reason: str
     severity: Literal["block", "warn"] = "warn"
+    # Set when you explicitly approved the packet despite this flag (CP2 override); the runner
+    # then accepts it. The flag itself is kept for the audit trail.
+    acknowledged: bool = False
 
 
 class Packet(BaseModel):
@@ -184,7 +187,8 @@ class Packet(BaseModel):
         return next((a for a in self.answers if a.question_id == question_id), None)
 
     def blocking_flags(self) -> list[VerifierFlag]:
-        return [f for f in self.flags if f.severity == "block"]
+        """Unacknowledged blocking flags (these stop approval and submission)."""
+        return [f for f in self.flags if f.severity == "block" and not f.acknowledged]
 
 
 # --------------------------------------------------------------------------- applying (M4)

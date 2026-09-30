@@ -32,6 +32,7 @@
     <ul>{% for f in packet.flags %}<li class="flag-{{ f.severity }}"><b>{{ f.severity }}</b> {{ f.where }}: “{{ f.text }}” <span class="muted">({{ f.reason }})</span></li>{% endfor %}</ul>
     {% endif %}
     <form hx-post="/packets/{{ job.id }}/edit" hx-target="#result">
+      <input type="hidden" name="rev" value="{{ rev }}">
       <h2>Form answers</h2>
       <table>
       {% for q in packet.questions %}
@@ -41,7 +42,9 @@
           <td>
           {% if q.type == 'file' %}<span class="muted">{{ a.value if a else '' }}</span>
           {% elif q.options %}
-            <select name="q__{{ q.id }}" {{ 'multiple' if q.type in ('multiselect', 'checkbox') and q.options | length > 1 }}>
+            {% set multi = q.type in ('multiselect', 'checkbox') and q.options | length > 1 %}
+            {% if multi %}<input type="hidden" name="present__{{ q.id }}" value="1">{% endif %}
+            <select name="q__{{ q.id }}" {{ 'multiple' if multi }}>
               <option value="">(none)</option>
               {% for o in q.options %}<option value="{{ o }}" {{ 'selected' if a and (a.value == o or (a.value is iterable and a.value is not string and o in a.value)) }}>{{ o }}</option>{% endfor %}
             </select>
@@ -64,10 +67,11 @@
       </p>
     </form>
     <form hx-post="/packets/{{ job.id }}/approve" hx-target="#result" class="inline">
-      {% if blocks %}<input type="hidden" name="override" value="">{% endif %}
+      <input type="hidden" name="rev" value="{{ rev }}">
       <button class="primary" {{ 'disabled title="resolve or override blocking flags"' if blocks }}>Go ahead (as is)</button>
     </form>
     <form hx-post="/packets/{{ job.id }}/regenerate" hx-target="#result" class="inline">
+      <input type="hidden" name="rev" value="{{ rev }}">
       <input name="note" placeholder="regenerate with a note, e.g. emphasize the Kafka work" size="36"> <button>Regenerate</button>
     </form>
     <form hx-post="/packets/{{ job.id }}/skip" hx-target="#result" class="inline"><button class="danger">Skip job</button></form>

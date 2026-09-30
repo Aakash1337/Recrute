@@ -77,6 +77,12 @@ class LazyBrowser:
         self._cm = self.context = None
 
 
+def left_open(outcome) -> bool:
+    details = outcome.details or {}
+    return bool(details.get("page_left_open")) or (
+        outcome.status == "needs_human" and details.get("effective_mode") == "fill_and_pause")
+
+
 def run_due_task(ctx) -> dict:
     from recrute.apply.scheduler import run_due
     from recrute.settings import get_setting
@@ -95,9 +101,8 @@ def run_due_task(ctx) -> dict:
                              company_cooldown=timedelta(
                                  days=int(get_setting(s, "company_cooldown_days"))))
         mode = result.mode
-        if result.ran and result.outcome and result.outcome.status == "needs_human" \
-                and mode == "fill_and_pause":
-            browser.wait_for_human()
+        if result.ran and result.outcome and left_open(result.outcome):
+            browser.wait_for_human()  # a filled form is waiting for you (CP3), in any mode
         return {"ran": result.ran, "reason": result.reason[:200] if result.reason else "",
                 "job_id": result.job_id, "mode": mode,
                 "status": result.outcome.status if result.outcome else None,
@@ -128,6 +133,27 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
         outcome = apply_job(job, Packet.model_validate(app.packet), mode="fill_and_pause",
                             page_factory=browser, paths=ctx.paths, adapter=adapter,
                             router=ctx.router, files=files or None)
-        browser.wait_for_human()
+        _record_assist(session, app, outcome)
+        if left_open(outcome):
+            browser.wait_for_human()
         return {"assist": job.id, "status": outcome.status}
     return None
+
+
+def _record_assist(session: Session, app: Application, outcome) -> None:
+    """Persist an assisted attempt like a scheduled one: receipt, reason, and (crucially) the
+    channel suspension when the site showed a security check."""
+    from datetime import UTC, datetime
+
+    from recrute.apply.state import suspend
+
+    details = outcome.details or {}
+    app.outcome = {**outcome.model_dump(mode="json"), "assisted": True}
+    if outcome.receipt_dir:
+        app.receipt_dir = outcome.receipt_dir
+    app.last_error = outcome.reason or app.last_error
+    session.add(app)
+    if details.get("account_security"):
+        suspend(session, app.channel, datetime.now(UTC),
+                f"{outcome.reason} (assisted fill, job {app.job_id})")
+    session.commit()

@@ -36,7 +36,14 @@ def data_file(rel: str):
     allowed = [data / "packets", data / "receipts"]
     if not any(target.is_relative_to(a) for a in allowed) or not target.is_file():
         raise HTTPException(404)
-    return FileResponse(target)
+    headers = {"X-Content-Type-Options": "nosniff"}
+    if target.suffix.lower() != ".pdf":
+        # Receipts contain employer-controlled HTML: never let it run in the app's origin.
+        headers["Content-Security-Policy"] = ("sandbox; default-src 'none'; img-src data:; "
+                                              "style-src 'unsafe-inline'")
+    if target.suffix.lower() in (".html", ".htm", ".svg", ".xml"):
+        return FileResponse(target, media_type="text/plain", headers=headers)
+    return FileResponse(target, headers=headers)
 
 
 # ------------------------------------------------------------------------------ CP2 packets
@@ -76,14 +83,16 @@ def packet_detail(request: Request, job_id: int):
             pass
         return page(request, "packet_detail.html", {
             "job": job, "company": company, "app": app, "packet": packet, "profile": profile,
-            "answers": {a.question_id: a for a in packet.answers}}, s)
+            "answers": {a.question_id: a for a in packet.answers},
+            "rev": packets.current_rev(app)}, s)
 
 
 @router.post("/packets/{job_id}/approve", response_class=HTMLResponse)
-def packet_approve(job_id: int, override: Annotated[str | None, Form()] = None):
+def packet_approve(job_id: int, rev: Annotated[str, Form()],
+                   override: Annotated[str | None, Form()] = None):
     with session_scope() as s:
         try:
-            packets.approve(s, job_id, override_blocks=override == "on")
+            packets.approve(s, job_id, rev, override_blocks=override == "on")
         except packets.PacketError as e:
             return _msg(str(e), False, 409)
     return _msg("Approved. It will be submitted during your active hours.")
@@ -94,14 +103,19 @@ async def packet_edit(request: Request, job_id: int):
     form = await request.form()
     answers: dict = {}
     for key in form:
-        if key.startswith("q__"):
+        if key.startswith("present__"):  # multiselects: no values submitted = cleared
+            qid = key[len("present__"):]
+            answers[qid] = [v for v in form.getlist(f"q__{qid}") if v]
+        elif key.startswith("q__") and f"present__{key[3:]}" not in form:
             vals = form.getlist(key)
             answers[key[3:]] = vals if len(vals) > 1 else vals[0]
+    rev = str(form.get("rev") or "")
     with session_scope() as s:
         try:
-            packets.edit(s, job_id, answers, form.get("cover_letter"))
+            new_rev = packets.edit(s, job_id, rev, answers, form.get("cover_letter"))
             if form.get("then_approve") == "1":
-                packets.approve(s, job_id, override_blocks=form.get("override") == "on")
+                packets.approve(s, job_id, new_rev,
+                                override_blocks=form.get("override") == "on")
                 return _msg("Saved and approved.")
         except packets.PacketError as e:
             return _msg(str(e), False, 409)
@@ -109,10 +123,11 @@ async def packet_edit(request: Request, job_id: int):
 
 
 @router.post("/packets/{job_id}/regenerate", response_class=HTMLResponse)
-def packet_regenerate(job_id: int, note: Annotated[str, Form()] = ""):
+def packet_regenerate(job_id: int, rev: Annotated[str, Form()],
+                      note: Annotated[str, Form()] = ""):
     with session_scope() as s:
         try:
-            packets.regenerate(s, job_id, note)
+            packets.regenerate(s, job_id, rev, note)
         except packets.PacketError as e:
             return _msg(str(e), False, 409)
     return _msg("Regenerating. It will be back in Packets shortly.")

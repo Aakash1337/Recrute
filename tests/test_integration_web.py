@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 HX = {"HX-Request": "true"}
 
@@ -34,10 +34,21 @@ def _seed_packet(flags=None, status=None):
                      FormAnswer(question_id="q2", value="Yes", source="answer_bank",
                                 needs_review=False)],
             flags=[VerifierFlag(**f) for f in (flags or [])])
-        s.add(Application(job_id=job.id, channel="greenhouse",
-                          packet=packet.model_dump(mode="json")))
+        from recrute.packets import revision
+
+        data = packet.model_dump(mode="json")
+        s.add(Application(job_id=job.id, channel="greenhouse", packet=data,
+                          packet_rev=revision(data)))
         s.commit()
         return job.id
+
+
+def _rev(job_id):
+    from recrute.db import get_engine
+    from recrute.models import Application
+
+    with Session(get_engine()) as s:
+        return s.exec(select(Application).where(Application.job_id == job_id)).one().packet_rev
 
 
 def _status(job_id):
@@ -52,17 +63,27 @@ def test_packet_pages_and_approve(client):
     job_id = _seed_packet()
     assert "SOC Analyst" in client.get("/packets").text
     assert "Why us?" in client.get(f"/packets/{job_id}").text
-    r = client.post(f"/packets/{job_id}/approve", headers=HX)
+    r = client.post(f"/packets/{job_id}/approve", data={"rev": _rev(job_id)}, headers=HX)
     assert r.status_code == 200 and _status(job_id) == "approved"
-    assert client.post(f"/packets/{job_id}/approve", headers=HX).status_code == 409
+    r = client.post(f"/packets/{job_id}/approve", data={"rev": _rev(job_id)}, headers=HX)
+    assert r.status_code == 409
 
 
 def test_blocking_flags_need_override(client):
     job_id = _seed_packet(flags=[{"where": "resume.bullet:b1", "text": "led 40 people",
                                   "reason": "not in profile", "severity": "block"}])
-    assert client.post(f"/packets/{job_id}/approve", headers=HX).status_code == 409
-    r = client.post(f"/packets/{job_id}/approve", data={"override": "on"}, headers=HX)
+    rev = _rev(job_id)
+    assert client.post(f"/packets/{job_id}/approve", data={"rev": rev},
+                       headers=HX).status_code == 409
+    r = client.post(f"/packets/{job_id}/approve", data={"rev": rev, "override": "on"},
+                    headers=HX)
     assert r.status_code == 200 and _status(job_id) == "approved"
+    from recrute.db import get_engine
+    from recrute.packets import load
+
+    with Session(get_engine()) as s:
+        _, _, p = load(s, job_id)
+        assert p.blocking_flags() == [] and p.flags[0].acknowledged  # runner will accept it
 
 
 def test_edit_validates_options_and_marks_user(client):
@@ -70,11 +91,12 @@ def test_edit_validates_options_and_marks_user(client):
     from recrute.packets import load
 
     job_id = _seed_packet()
-    r = client.post(f"/packets/{job_id}/edit", data={"q__q2": "Maybe"}, headers=HX)
+    r = client.post(f"/packets/{job_id}/edit", data={"q__q2": "Maybe", "rev": _rev(job_id)},
+                    headers=HX)
     assert r.status_code == 409 and "not one of the options" in r.text
     r = client.post(f"/packets/{job_id}/edit",
-                    data={"q__q1": "I like your SOC.", "q__q2": "No", "then_approve": "1"},
-                    headers=HX)
+                    data={"q__q1": "I like your SOC.", "q__q2": "No", "then_approve": "1",
+                          "rev": _rev(job_id)}, headers=HX)
     assert "approved" in r.text.lower()
     with Session(get_engine()) as s:
         _, _, p = load(s, job_id)
@@ -84,7 +106,8 @@ def test_edit_validates_options_and_marks_user(client):
 
 def test_regenerate_skip_and_mark_applied(client):
     job_id = _seed_packet()
-    client.post(f"/packets/{job_id}/regenerate", data={"note": "emphasize Splunk"}, headers=HX)
+    client.post(f"/packets/{job_id}/regenerate",
+                data={"note": "emphasize Splunk", "rev": _rev(job_id)}, headers=HX)
     assert _status(job_id) == "shortlisted"
     job2 = _seed_packet(flags=[])
     client.post(f"/packets/{job2}/skip", headers=HX)
@@ -233,3 +256,77 @@ def test_channel_suspension_shown_and_cleared(client):
     with Session(get_engine()) as s:
         assert suspension(s, "linkedin_easy_apply", datetime.now(UTC)) is None
     assert "company_cap" in client.get("/settings").text
+
+
+def test_stale_revision_cannot_approve_or_edit(client):
+    job_id = _seed_packet()
+    stale = _rev(job_id)
+    client.post(f"/packets/{job_id}/edit", data={"q__q1": "New text", "rev": stale}, headers=HX)
+    r = client.post(f"/packets/{job_id}/approve", data={"rev": stale}, headers=HX)
+    assert r.status_code == 409 and "changed" in r.text
+    assert _status(job_id) == "packet_ready"
+
+
+def test_edit_after_approval_rejected(client):
+    from recrute.db import get_engine
+    from recrute.packets import PacketError, approve, edit
+
+    job_id = _seed_packet()
+    rev = _rev(job_id)
+    with Session(get_engine()) as a, Session(get_engine()) as b:
+        approve(b, job_id, rev)
+        with pytest.raises(PacketError):
+            edit(a, job_id, rev, {"q1": "sneaky change"})
+
+
+def test_html_receipts_are_sandboxed(client):
+    from recrute.paths import get_paths
+
+    d = get_paths().data / "receipts" / "1-x"
+    d.mkdir(parents=True)
+    (d / "form.html").write_text('<img src=x onerror="alert(1)">', encoding="utf-8")
+    r = client.get("/files/receipts/1-x/form.html")
+    assert r.status_code == 200 and "sandbox" in r.headers["content-security-policy"]
+    assert r.headers["content-type"].startswith("text/plain")
+
+
+def test_clearing_multiselect(client):
+    from recrute.db import get_engine
+    from recrute.packets import load, revision
+    from recrute.schemas import FormAnswer, FormQuestion
+
+    job_id = _seed_packet()
+    with Session(get_engine()) as s:
+        job, app, p = load(s, job_id)
+        p.questions.append(FormQuestion(id="m", label="Tools", type="multiselect",
+                                        options=["A", "B"]))
+        p.answers.append(FormAnswer(question_id="m", value=["A"]))
+        app.packet = p.model_dump(mode="json")
+        app.packet_rev = revision(app.packet)
+        s.add(app)
+        s.commit()
+    client.post(f"/packets/{job_id}/edit", data={"present__m": "1", "rev": _rev(job_id)},
+                headers=HX)
+    with Session(get_engine()) as s:
+        assert load(s, job_id)[2].answer_for("m").value == []
+
+
+def test_failed_instant_alert_is_retried(engine, monkeypatch):
+    from types import SimpleNamespace
+
+    from recrute import tasks
+    from recrute.models import Job, JobStatus, Priority
+    from recrute.settings import get_state, set_setting
+
+    with Session(engine) as s:
+        set_setting(s, "notify", {"backend": "ntfy", "ntfy_url": "https://ntfy.example/x"})
+        s.add(Job(title="Great", apply_url="u", canonical_url="u", score=95,
+                  priority=Priority.P1, status=JobStatus.DISCOVERED))
+        s.commit()
+        monkeypatch.setattr(tasks, "notify",
+                            lambda *a, **k: [SimpleNamespace(ok=False, backend="ntfy")])
+        assert tasks.send_instant_alerts(None, s) == 0
+        assert get_state(s, "alerted_jobs") in (None, [])
+        monkeypatch.setattr(tasks, "notify",
+                            lambda *a, **k: [SimpleNamespace(ok=True, backend="ntfy")])
+        assert tasks.send_instant_alerts(None, s) == 1

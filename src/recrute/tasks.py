@@ -75,9 +75,11 @@ def send_instant_alerts(ctx, session) -> int:
             continue
         title, body = instant_alert(job, company.name if company else None,
                                     base_url=cfg["ui_base_url"] or None)
-        notify(session, title, body, priority="high")
-        alerted.add(job.id)
-        sent += 1
+        results = notify(session, title, body, priority="high")
+        if any(r.ok for r in results):
+            alerted.add(job.id)
+            sent += 1
+        # failed deliveries are retried on the next scoring run
     if sent:
         set_state(session, "alerted_jobs", sorted(alerted)[-5000:])
     return sent
@@ -146,7 +148,10 @@ def build_packet_for(ctx, session, job: Job, profile, bank, build_packet, user_n
                           paths=ctx.paths, user_note=user_note,
                           company=company.name if company else "")
     app = _application(session, job)
+    from recrute.packets import revision
+
     app.packet = packet.model_dump(mode="json")
+    app.packet_rev = revision(app.packet)
     app.resume_path = packet.resume_pdf
     app.cover_letter_path = packet.cover_letter_pdf
     app.approved_at = None
@@ -250,9 +255,14 @@ def daily_digest(ctx) -> dict:
         stats = collect_stats(s, tz=now.tzinfo)
         title, body = build_digest(stats, base_url=cfg["ui_base_url"] or None)
         set_state(s, "last_digest_text", {"date": today, "title": title, "body": body})
-        results = notify(s, title, body) if cfg["backend"] != "ui" else []
-        set_state(s, "last_digest", today)
-        return {"sent": [r.backend for r in results if r.ok]}
+        if cfg["backend"] == "ui":
+            set_state(s, "last_digest", today)
+            return {"sent": ["ui"]}
+        results = notify(s, title, body)
+        if any(r.ok for r in results):
+            set_state(s, "last_digest", today)  # otherwise retried on the next tick today
+        return {"sent": [r.backend for r in results if r.ok],
+                "failed": [r.backend for r in results if not r.ok]}
 
 
 # ------------------------------------------------------------------------------ maintenance
