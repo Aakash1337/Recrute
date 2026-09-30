@@ -1,0 +1,39 @@
+# Fictional answer bank for tests.
+contact:
+  full_name: "Jordan Lin"
+  email: "jordan.lin@example.com"
+  phone: "(555) 010-4477"
+  current_city: "Austin, TX"
+  linkedin: "https://linkedin.com/in/jordan-lin-example"
+  github: "https://github.com/jlin-example"
+  portfolio:
+
+work_authorization:
+  authorized_to_work_in_us: true
+  requires_sponsorship_now: false
+  requires_sponsorship_future: true
+  status_note: "F-1 OPT (fictional)"
+
+logistics:
+  willing_to_relocate: true
+  earliest_start_date: "2 weeks after offer"
+  notice_period: "2 weeks"
+
+salary:
+  free_text: "Negotiable / open to discussing based on the full compensation package"
+  ranges_usd:
+    P0: [110000, 130000]
+    P1: [90000, 110000]
+    P2: [null, null]
+    P3: [null, null]
+
+eeo:
+  gender: "decline"
+  race_ethnicity: "decline"
+  veteran_status: "I am not a protected veteran"
+  disability_status: "decline"
+
+# Reusable answers
+common:
+  why_security: "I like finding how systems fail before attackers do."
+  why_ai:

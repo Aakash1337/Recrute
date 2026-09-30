@@ -1,0 +1,82 @@
+{
+  "name": "Jordan Lin",
+  "headline": "Security Analyst | Applied ML for Threat Detection",
+  "email": "jordan.lin@example.com",
+  "phone": "(555) 010-4477",
+  "location": "Austin, TX",
+  "links": [
+    {"label": "linkedin", "url": "https://linkedin.com/in/jordan-lin-example"},
+    {"label": "github", "url": "https://github.com/jlin-example"}
+  ],
+  "summary": "Security analyst with hands-on SOC experience and graduate research in machine learning for intrusion detection.",
+  "skills": [
+    {"category": "Security", "items": ["Splunk", "Sigma", "Wazuh", "Suricata", "MITRE ATT&CK", "Incident Response", "Vulnerability Scanning"]},
+    {"category": "AI/ML", "items": ["Python", "PyTorch", "scikit-learn", "LLM Security", "Adversarial ML"]},
+    {"category": "Cloud & Tools", "items": ["AWS", "Docker", "Linux", "Git", "FastAPI"]}
+  ],
+  "experience": [
+    {
+      "company": "Northwind Health", "title": "Security Analyst Intern", "location": "Austin, TX",
+      "start": "May 2024", "end": "Aug 2024", "summary": "",
+      "bullets": [
+        {"text": "Triaged 40+ Splunk alerts per shift and escalated confirmed incidents following the IR playbook.", "tags": ["soc", "triage"], "metrics": ["40+"], "context": ""},
+        {"text": "Wrote 12 Sigma detection rules for credential-stuffing and impossible-travel patterns, cutting false positives by 38%.", "tags": ["detection"], "metrics": ["12", "38%"], "context": ""},
+        {"text": "Automated phishing-report enrichment with Python and the VirusTotal API, reducing analyst handling time from 15 to 4 minutes per report.", "tags": ["automation", "phishing"], "metrics": ["15 to 4 minutes"], "context": "The script pulled URL and attachment verdicts and posted a summary to the ServiceNow ticket; the Tier 1 team used it for every reported phish."},
+        {"text": "Documented 5 runbooks for the Tier 1 team.", "tags": ["documentation"], "metrics": ["5"], "context": ""}
+      ]
+    },
+    {
+      "company": "Lakeside State University", "title": "Graduate Research Assistant", "location": "Lakeside, TX",
+      "start": "Jan 2023", "end": "May 2025", "summary": "",
+      "bullets": [
+        {"text": "Trained gradient-boosted and LSTM models on CIC-IDS2017 network flows, reaching 0.97 F1 on held-out traffic.", "tags": ["ml", "detection"], "metrics": ["0.97 F1"], "context": ""},
+        {"text": "Evaluated adversarial evasion attacks against the intrusion-detection models using the Adversarial Robustness Toolbox.", "tags": ["adversarial-ml"], "metrics": [], "context": ""},
+        {"text": "Co-authored a workshop paper on robustness of ML-based intrusion detection.", "tags": ["research"], "metrics": [], "context": ""}
+      ]
+    },
+    {
+      "company": "Lakeside State University Library", "title": "IT Support Technician", "location": "",
+      "start": "Aug 2021", "end": "Dec 2022", "summary": "",
+      "bullets": [
+        {"text": "Resolved 300+ help-desk tickets covering account lockouts, MFA enrollment and printer issues.", "tags": ["it-support"], "metrics": ["300+"], "context": ""},
+        {"text": "Imaged and patched 60 lab workstations each semester using Microsoft Intune.", "tags": ["endpoint"], "metrics": ["60"], "context": ""}
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "name": "PromptGuard", "url": "github.com/jlin-example/promptguard",
+      "summary": "LLM prompt-injection test harness", "tech": ["Python", "FastAPI", "Docker"],
+      "bullets": [
+        {"text": "Built a harness that replays 250 prompt-injection payloads against LLM apps and scores responses for policy violations.", "tags": ["llm-security", "red-team"], "metrics": ["250"], "context": ""},
+        {"text": "Mapped findings to the OWASP Top 10 for LLM Applications.", "tags": ["llm-security"], "metrics": [], "context": ""}
+      ]
+    },
+    {
+      "name": "Home SOC Lab", "url": "", "summary": "", "tech": ["Wazuh", "Suricata", "Proxmox"],
+      "bullets": [
+        {"text": "Deployed Wazuh and Suricata on a Proxmox cluster to practice detection engineering against simulated attacks from Atomic Red Team.", "tags": ["detection", "lab"], "metrics": [], "context": ""}
+      ]
+    },
+    {
+      "name": "PhishNet", "url": "", "summary": "phishing email classifier", "tech": ["Python", "scikit-learn", "PyTorch"],
+      "bullets": [
+        {"text": "Fine-tuned a DistilBERT classifier on 20,000 labeled emails, achieving 94% accuracy.", "tags": ["ml", "phishing"], "metrics": ["20,000", "94%"], "context": ""}
+      ]
+    }
+  ],
+  "education": [
+    {"school": "Lakeside State University", "degree": "M.S.", "field": "Cybersecurity", "start": "2023", "end": "2025", "gpa": "3.8", "details": ["Coursework: Network Security, Machine Learning, Digital Forensics"]},
+    {"school": "Riverbend College", "degree": "B.S.", "field": "Computer Science", "start": "2017", "end": "2021", "gpa": "", "details": []}
+  ],
+  "certifications": [
+    {"name": "CompTIA Security+", "issuer": "CompTIA", "date": "2024", "credential_id": "FAKE-SEC-0001"},
+    {"name": "AWS Certified Cloud Practitioner", "issuer": "", "date": "2023", "credential_id": ""}
+  ],
+  "awards": [
+    {"text": "2nd place, Lakeside CTF 2024 (out of 45 teams)", "tags": ["ctf"], "metrics": ["2nd place"], "context": ""}
+  ],
+  "extra": [
+    {"text": "Taught weekly cyber-hygiene workshops for seniors at the Austin Public Library in 2023.", "tags": ["volunteering"], "metrics": [], "context": ""}
+  ]
+}
