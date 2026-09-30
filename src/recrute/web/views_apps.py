@@ -261,10 +261,13 @@ def profile_page(request: Request):
         diff = "\n".join(difflib.unified_diff(old, new, "profile.yaml", "proposed", lineterm=""))
     files = sorted(p.name for p in (paths.resources / "resume").glob("*")
                    if p.is_file() and p.name != ".gitkeep")
+    from recrute.tailor import read_proposal_flags
+
+    flags = read_proposal_flags(paths) if proposed.exists() else None
     with session_scope() as s:
         return page(request, "profile.html", {
             "current": current.read_text(encoding="utf-8") if current.exists() else "",
-            "proposed": proposed.exists(), "diff": diff, "files": files,
+            "proposed": proposed.exists(), "diff": diff, "files": files, "flags": flags,
             "state": _ingest_state}, s)
 
 
@@ -297,15 +300,18 @@ def profile_ingest():
 
 
 @router.post("/profile/accept", response_class=HTMLResponse)
-def profile_accept():
+def profile_accept(override: Annotated[str | None, Form()] = None):
+    from recrute.tailor import BlockingFlagsError, accept_proposed
+
     paths = get_paths()
-    proposed, current = paths.data / "profile.proposed.yaml", paths.data / "profile.yaml"
-    if not proposed.exists():
+    if not (paths.data / "profile.proposed.yaml").exists():
         return _msg("nothing to accept", False, 409)
-    if current.exists():
-        current.replace(paths.data / "profile.yaml.bak")
-    proposed.replace(current)
-    return _msg("Profile updated.")
+    try:
+        accept_proposed(paths, allow_blocking=override == "on")
+    except BlockingFlagsError as e:
+        return _msg(f"{len(e.flags)} blocking issue(s): fix the proposal or tick 'accept anyway'",
+                    False, 409)
+    return _msg("Profile updated (previous version kept as profile.yaml.bak).")
 
 
 # ------------------------------------------------------------------------------ capture API

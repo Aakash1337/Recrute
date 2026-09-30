@@ -10,6 +10,7 @@ Following patchright's guidance for the least detectable setup: headed, real Goo
 """
 
 import logging
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -20,13 +21,17 @@ from recrute.paths import Paths
 
 log = logging.getLogger(__name__)
 
+# One Chrome profile can only be open once: discovery (LinkedIn session) and the apply worker
+# take turns. Re-entrant so nested helpers in one thread don't deadlock.
+BROWSER_LOCK = threading.RLock()
+
 
 @contextmanager
 def open_context(cfg: BrowserConfig, paths: Paths,
                  headless: bool | None = None) -> Iterator[BrowserContext]:
     paths.browser_profile.mkdir(parents=True, exist_ok=True)
     headless = cfg.headless if headless is None else headless
-    with sync_playwright() as p:
+    with BROWSER_LOCK, sync_playwright() as p:
         kwargs = dict(user_data_dir=str(paths.browser_profile), headless=headless,
                       no_viewport=True)
         try:
