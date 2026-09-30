@@ -431,3 +431,62 @@ def test_confirmed_email_records_manual_submission(engine):
         app = s.exec(select(Application).where(Application.job_id == job.id)).one()
         assert app.submitted_at is not None
         assert any(st.job_id == job.id for st in application_states(s))
+
+
+@pytest.mark.parametrize("subject,text", [
+    ("Your sign-in code", "Use 482913 to sign in to Workday."),
+    ("Reset your password", "Click https://acme.myworkday.com/reset?token=CANARYTOKEN"),
+    ("Verify your email", "Confirm your email address to continue."),
+])
+def test_auth_mail_never_reaches_the_llm(subject, text):
+    from recrute.track.classify import prefilter
+
+    assert not prefilter(msg("a", "no-reply@myworkday.com", subject, text))
+
+
+def test_secrets_are_redacted_from_relevant_mail():
+    router = FakeRouter(lambda p: {"results": []})
+    body = ("Thanks for applying to Security Engineer. Track your application: "
+            "https://acme.greenhouse.io/status?token=CANARY1 . Your candidate PIN: CANARY42 "
+            "Reference 12345678. Session aBcDeFgHiJkLmNoPqRsTuVwXyZ0123")
+    classify_messages(router, [msg("1", "no-reply@greenhouse.io", "Application received", body)])
+    prompt = router.calls[0][1]
+    assert "CANARY" not in prompt and "12345678" not in prompt and "aBcDeFgHiJ" not in prompt
+    assert "Security Engineer" in prompt and "https://acme.greenhouse.io/status?" in prompt
+
+
+def test_old_email_does_not_update_a_newer_application(engine, db):
+    from datetime import timedelta
+
+    from recrute.models import Application
+    from recrute.track.classify import process_messages
+
+    now = datetime.now(UTC)
+    with Session(engine) as s:
+        s.add(Application(job_id=db["ml"], channel="greenhouse",
+                          submitted_at=now - timedelta(days=1)))
+        s.commit()
+        old = MailMessage(message_id="<old>", date=now - timedelta(days=10),
+                          sender="talent@neuralwidgets.example", subject="Update on ML Engineer",
+                          text="We will not be moving forward.")
+        router = FakeRouter(lambda p: {"results": [{
+            "index": 0, "kind": "rejection", "company": "Neural Widgets",
+            "job_title": "ML Engineer", "confidence": 0.99, "summary": "rejected"}]})
+        process_messages(s, router, [old])
+        assert s.get(Job, db["ml"]).status == JobStatus.INTERVIEWING  # unchanged
+        ev = s.exec(select(EmailEvent)).one()
+        assert ev.job_id == db["ml"] and not ev.confirmed  # suggested, for you to confirm
+
+
+@pytest.mark.parametrize("subject,auto", [
+    ("Your application for ML Engineer at Neural Widgets", True),
+    ("Your application for Senior Applied ML Engineer", False),
+    ("Your application for ML Engineer, Robotics Platform", False),
+])
+def test_subject_title_must_be_complete_for_a_confident_match(engine, db, subject, auto):
+    from recrute.track.classify import AUTO_APPLY_THRESHOLD
+
+    with Session(engine) as s:
+        job_id, conf = match_job(s, cls("rejection", "Neural Widgets"),
+                                 "talent@neuralwidgets.example", subject)
+        assert job_id == db["ml"] and (conf >= AUTO_APPLY_THRESHOLD) is auto

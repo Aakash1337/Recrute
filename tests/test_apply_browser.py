@@ -1121,3 +1121,15 @@ def test_gate_is_rechecked_after_submit_pacing(srv, context, paths, human, resum
               if state["prepared"] else None)
     assert state["prepared"] and out.status == "needs_human"
     assert "outside active hours" in out.reason and srv.posts == []
+
+
+@pytest.mark.browser
+def test_real_reload_changes_the_target(context):
+    from recrute import live
+
+    page = context.new_page()
+    page.set_content("<p>hi</p>")
+    before = live.page_target(page)
+    page.reload()
+    assert live.page_target(page) != before
+    page.close()

@@ -26,6 +26,7 @@ from recrute.paths import Paths
 ALLOWED_KEYS = {"Enter", "Tab", "Backspace", "Escape", "ArrowDown", "ArrowUp", "ArrowLeft",
                 "ArrowRight", "Space", "Delete", "Home", "End", "PageDown", "PageUp"}
 
+CLICK_SETTLE = 0.3  # seconds after a replayed click before the next event is checked
 MAX_INPUT_AGE = 15.0  # seconds an input event may wait before it's replayed
 FRESH_SECONDS = 10.0  # a screenshot older than this is not shown / acted on
 NO_LOCAL_WORKER = ("remote input needs the worker in the web server's process: run "
@@ -49,13 +50,38 @@ def _atomic_write(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
+_NAV: dict[int, int] = {}  # id(page) -> main-frame navigations seen (reloads included)
+_WATCHED: set[int] = set()
+
+
+def _watch(page) -> None:
+    """Count the tab's main-frame navigations, so even a same-URL reload is a new target."""
+    key = id(page)
+    if key in _WATCHED or not hasattr(page, "on"):
+        return
+    _WATCHED.add(key)
+
+    def navigated(frame) -> None:
+        if getattr(page, "main_frame", None) is frame:
+            with _LOCK:
+                _NAV[key] = _NAV.get(key, 0) + 1
+
+    try:
+        page.on("framenavigated", navigated)
+    except Exception:  # noqa: BLE001
+        _WATCHED.discard(key)
+
+
 def page_target(page) -> str:
-    """Which tab AND which navigation of it a screenshot or an input is for."""
+    """Which tab AND which navigation of it (reloads included) a screenshot or input is for."""
+    _watch(page)
     try:
         url = page.url
     except Exception:  # noqa: BLE001 - closing page
         url = ""
-    return f"{id(page):x}:{url}"
+    with _LOCK:
+        gen = _NAV.get(id(page), 0)
+    return f"{id(page):x}:{gen}:{url}"
 
 
 # ------------------------------------------------------------------------------ UI side
@@ -154,14 +180,18 @@ def start_session(paths: Paths) -> str:
 
 def publish_frame(paths: Paths, page) -> None:
     """Keep the latest screenshot of `page` (in memory) for the live view."""
+    before = page_target(page)
     try:
         jpg = page.screenshot(type="jpeg", quality=60)
         size = page.viewport_size or page.evaluate(
             "() => ({width: window.innerWidth, height: window.innerHeight})")
     except Exception:  # page navigating/closing: skip this frame
         return
+    target = page_target(page)
+    if target != before:
+        return  # it navigated while the picture was taken: which page is that? next tick
     meta = {"url": page.url, "width": size["width"], "height": size["height"],
-            "at": time.time(), "target": page_target(page)}
+            "at": time.time(), "target": target}
     with _LOCK:
         meta["session"] = _SESSION.get("id")
         _FRAME.clear()
@@ -172,7 +202,6 @@ def apply_inputs(paths: Paths, page) -> bool:
     """Replays queued UI events for the ACTIVE session on `page`, in order, and stops at
     "Done" (anything after it is discarded). Events made on a picture of another tab or of an
     earlier navigation are dropped. Returns True when you pressed "Done"."""
-    target = page_target(page)
     with _LOCK:
         session = _SESSION.get("id")
         queue = _QUEUES.get(session or "")
@@ -185,11 +214,14 @@ def apply_inputs(paths: Paths, page) -> bool:
             continue  # queued too long ago (the page may have changed since): dropped
         if done or not session or ev.get("session") != session:
             continue  # after Done, or meant for another hand-off: dropped, never replayed
-        if ev.get("type") != "done" and ev.get("target") != target:
-            continue  # made on a picture of a different tab / navigation: dropped
+        # re-checked before EVERY event: a click earlier in this batch may have navigated or
+        # reloaded the page; everything queued after that was meant for the old one
+        if ev.get("type") != "done" and ev.get("target") != page_target(page):
+            break
         try:
             if ev.get("type") == "click":
                 page.mouse.click(ev["x"], ev["y"])
+                time.sleep(CLICK_SETTLE)  # let a navigation the click starts register
             elif ev.get("type") == "type":
                 page.keyboard.type(ev["text"], delay=40)
             elif ev.get("type") == "key":
@@ -210,6 +242,8 @@ def clear(paths: Paths) -> None:
         _SESSION.clear()
         _FRAME.clear()
         _QUEUES.clear()
+        _NAV.clear()
+        _WATCHED.clear()
     d = live_dir(paths)
     for f in [d / "session.json", d / "frame.jpg", d / "frame.json",
               *d.glob(".frame.*.tmp"), *(d / "inputs").glob("*.json")]:

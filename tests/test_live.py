@@ -259,3 +259,36 @@ def test_expired_frame_is_not_served(client, monkeypatch):
     monkeypatch.setattr(time, "time", lambda: real() + 60)
     assert client.get("/live/frame").status_code == 404
     live.clear(p)
+
+
+def test_click_that_navigates_stops_the_rest_of_the_batch(paths, monkeypatch):
+    from recrute import live
+
+    monkeypatch.setattr(live, "CLICK_SETTLE", 0)
+    live.start_session(paths)
+    page = fresh_frame(paths, FakePage("https://login.example"))
+    real_click = page.mouse.click
+
+    def navigating_click(x, y):
+        real_click(x, y)
+        page.url = "https://elsewhere.example"  # the click followed a link
+
+    page.mouse.click = navigating_click
+    live.enqueue(paths, ev(page, type="click", x=5, y=5))
+    live.enqueue(paths, ev(page, type="type", text="CANARY-password"))
+    assert live.apply_inputs(paths, page) is False
+    assert page.calls == [("click", 5.0, 5.0)]  # the password was never typed on the new page
+    live.clear(paths)
+
+
+def test_same_url_reload_is_a_new_target(paths):
+    from recrute import live
+
+    live.start_session(paths)
+    page = fresh_frame(paths)
+    live.enqueue(paths, ev(page, type="type", text="CANARY"))
+    with live._LOCK:  # what the framenavigated listener records on a reload
+        live._NAV[id(page)] = live._NAV.get(id(page), 0) + 1
+    assert live.apply_inputs(paths, page) is False and page.calls == []
+    live.clear(paths)
+

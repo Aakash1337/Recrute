@@ -13,6 +13,7 @@ import logging
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from rapidfuzz import fuzz
@@ -104,6 +105,37 @@ def is_alert_mail(msg: MailMessage) -> bool:
                                 "dice.com", "monster.com")))
 
 
+# Account / authentication mail (sign-in codes, password resets, email verification): never
+# about an application's outcome, and it carries secrets: never sent to an LLM.
+_AUTH_MAIL = re.compile(
+    r"\b(?:sign[- ]?in|log[- ]?in|verification|security|one[- ]time|access|confirmation|auth\w*)"
+    r" (?:code|link|pin)\b|\bone[- ]time pass\w*|\botp\b|\bpasscode\b|\bmagic link\b|"
+    r"\b(?:reset|change|set|create|forgot) (?:your |the )?password\b|\bpassword (?:reset|change)|"
+    r"\b(?:verify|confirm|activate) (?:your )?(?:email|e-mail|account|identity)\b|"
+    r"\btwo[- ]factor\b|\b2fa\b|\bnew (?:sign[- ]?in|login|device)\b|"
+    r"\baccount (?:locked|security|verification)\b", re.I)
+
+
+def is_auth_mail(msg: MailMessage) -> bool:
+    return bool(_AUTH_MAIL.search(msg.subject) or _AUTH_MAIL.search(msg.text[:2000]))
+
+
+# credential-bearing parts of an otherwise relevant email, removed before any LLM call
+_URL_SECRETS = re.compile(r"(https?://[^\s?#<>\"')]+)[?#][^\s<>\"')]*")
+_CODE_NEAR = re.compile(r"(?i)\b(code|pin|otp|passcode|token)\b(\W{0,5})([A-Z0-9-]{4,12})\b")
+_LONG_TOKEN = re.compile(r"\b[A-Za-z0-9_\-]{24,}\b")
+_BARE_CODE = re.compile(r"(?<![\d\-+(])\b\d{6,8}\b(?![\d\-)])")
+
+
+def redact_secrets(text: str) -> str:
+    """Links lose their query strings (reset/sign-in tokens), codes and token-like strings are
+    masked. What classification needs (who, which role, what happened) stays."""
+    text = _URL_SECRETS.sub(r"\1?[redacted]", text)
+    text = _CODE_NEAR.sub(r"\1\2[redacted]", text)
+    text = _LONG_TOKEN.sub("[redacted]", text)
+    return _BARE_CODE.sub("[redacted]", text)
+
+
 def prefilter(msg: MailMessage, *, known_companies: Iterable[str] = (),
               known_domains: Iterable[str] = ()) -> bool:
     """True if the message might be about one of the user's applications (worth an LLM call).
@@ -111,8 +143,8 @@ def prefilter(msg: MailMessage, *, known_companies: Iterable[str] = (),
     `known_companies` / `known_domains`: companies the user has applied to, so a recruiter
     writing from acme.com with a vague subject still gets through.
     """
-    if is_alert_mail(msg):
-        return False
+    if is_alert_mail(msg) or is_auth_mail(msg):
+        return False  # (auth mail first: even from an ATS domain it is never sent anywhere)
     domain = msg.sender_domain
     if domain.endswith("linkedin.com"):
         return msg.sender in LINKEDIN_JOB_SENDERS
@@ -182,12 +214,12 @@ PROMPT_HEADER = """For each email below, return one result with the same index:
 
 
 def _render(i: int, m: MailMessage) -> str:
-    body = m.text.strip()
+    body = redact_secrets(m.text.strip())
     if len(body) > MAX_BODY_CHARS:
         body = body[:MAX_BODY_CHARS] + " […]"
     name = f"{m.sender_name} " if m.sender_name else ""
     return (f"### EMAIL {i}\nFrom: {name}<{m.sender}>\nDate: {m.date.isoformat()}\n"
-            f"Subject: {m.subject}\n\n{body}\n")
+            f"Subject: {redact_secrets(m.subject)}\n\n{body}\n")
 
 
 def _clamp(x: Any) -> float:
@@ -352,6 +384,15 @@ def title_parts(title: str) -> tuple[list[str], frozenset[str]]:
     return base, frozenset(levels)
 
 
+# words that separate a job title from the rest of an email subject
+_SUBJECT_GLUE = frozenset("""
+a an the your our my for to at with from of on in re fw fwd regarding about update updates
+application applications applying candidacy position role job opening opportunity
+interview invitation offer status next steps thank thanks you received submission submitted
+confirmation assessment test challenge team is was has been we are and or by as
+""".split())
+
+
 def _find_run(hay: list[str], needle: list[str]) -> int:
     n = len(needle)
     for i in range(len(hay) - n + 1):
@@ -360,9 +401,10 @@ def _find_run(hay: list[str], needle: list[str]) -> int:
     return -1
 
 
-def _title_match(cls: EmailClassification, subject: str,
-                 title: str) -> tuple[float | None, bool]:
+def _title_match(cls: EmailClassification, subject: str, title: str,
+                 company: str = "") -> tuple[float | None, bool]:
     """(title similarity 0-100, or None if the email doesn't say; contradicts?)."""
+    glue = _SUBJECT_GLUE | set(_tokens(company))  # "Acme Security Engineer" names Acme
     job_base, job_levels = title_parts(title)
     if cls.job_title:
         mail_base, mail_levels = title_parts(cls.job_title)
@@ -374,17 +416,29 @@ def _title_match(cls: EmailClassification, subject: str,
         subj = _tokens(subject)
         i = _find_run(subj, job_base)
         if i >= 0:
-            # level tokens right around the title in the subject ("Senior ... II")
+            # the COMPLETE title phrase in the subject: level tokens around the title
+            # ("Senior ... II") and any other word glued to it ("Senior CLOUD Security
+            # Engineer") that isn't subject boilerplate ("application for", "at Acme")
             around: set[str] = set()
+            extra = False
             j = i - 1
-            while j >= 0 and _level(subj[j]) is not None:
-                around.add(_level(subj[j]) or "")
+            while j >= 0 and subj[j] not in glue:
+                if (lv := _level(subj[j])) is not None:
+                    around.add(lv)
+                else:
+                    extra = True
                 j -= 1
             j = i + len(job_base)
-            while j < len(subj) and _level(subj[j]) is not None:
-                around.add(_level(subj[j]) or "")
+            while j < len(subj) and subj[j] not in glue:
+                if (lv := _level(subj[j])) is not None:
+                    around.add(lv)
+                else:
+                    extra = True
                 j += 1
-            around.discard("")
+            if extra:
+                # a different, more specialised title may be meant: never enough to update
+                # an application automatically (you confirm it)
+                return PLAUSIBLE_TITLE - 20, False
             return 95.0, frozenset(around) != job_levels
     return None, False  # unknown
 
@@ -403,6 +457,29 @@ class _Scored:
         return self.company * 0.6 + self.title * 0.4
 
 
+EMAIL_CLOCK_SKEW = timedelta(hours=1)
+
+
+def _predates_application(session: Session, job_id: int, received: datetime | None) -> bool:
+    """Was this email sent before the application it matched was (first) sent?"""
+    from recrute.apply.scheduler import _details, _parse, aware
+    from recrute.models import Application
+
+    if received is None:
+        return False
+    app = session.exec(select(Application).where(Application.job_id == job_id)).first()
+    if app is None:
+        return False
+    d = _details(app)
+    times = [t for t in (aware(app.submitted_at), _parse(d.get("attempted_at")),
+                         _parse(d.get("attempt_started_at")), _parse(d.get("submit_clicked_at")))
+             if t is not None]
+    if not times:
+        return False
+    rec = received if received.tzinfo else received.replace(tzinfo=UTC)
+    return rec < min(times) - EMAIL_CLOCK_SKEW
+
+
 def match_job(session: Session, classification: EmailClassification, sender: str,
               subject: str, *, sender_name: str = "") -> tuple[int | None, float]:
     """Best post-application job (see MATCHABLE_STATUSES) for this email, with a 0-1 match
@@ -413,7 +490,8 @@ def match_job(session: Session, classification: EmailClassification, sender: str
         cs = _company_score(classification, sender, sender_name, subject, cand.company)
         if cs < _COMPANY_MIN:
             continue
-        ts, contra = _title_match(classification, subject, cand.job.title)
+        ts, contra = _title_match(classification, subject, cand.job.title,
+                                  cand.company.name if cand.company else "")
         cands.append(_Scored(cand.job, cs, ts, contra))
     if not cands:
         return None, 0.0
@@ -559,6 +637,10 @@ def apply_events(session: Session,
             job_id, match_conf = match_job(session, cls, msg.sender, msg.subject,
                                            sender_name=msg.sender_name)
             conf = min(match_conf, cls.confidence) if job_id is not None else 0.0
+            if job_id is not None and _predates_application(session, job_id, msg.date):
+                # older than this application (e.g. the first sync reads 14 days back): it's
+                # about an earlier one; you confirm it, it never updates this one by itself
+                conf = min(conf, 0.5)
         ev = EmailEvent(message_id=msg.message_id, job_id=job_id, received_at=msg.date,
                         sender=msg.sender, subject=msg.subject[:500], kind=cls.kind,
                         confidence=round(conf, 3), summary=cls.summary[:1000], confirmed=False)
