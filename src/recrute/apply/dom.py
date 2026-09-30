@@ -203,16 +203,18 @@ EXTRACT_JS = load_js("extract_fields.js")
 def extract_fields(root: Page | Frame, *, scope: str | None = None,
                    prefer: Sequence[str] = ("id", "name"), container_key_attr: str | None = None,
                    include_hidden: bool = False, form_index: int | None = None,
-                   transport: Sequence[str] = (),
+                   transport: Sequence[str] = (), ignore: str = "",
                    ) -> list[LiveField]:
     """Read the fields currently in the DOM under `scope` (or document.forms[form_index])
     without touching them. `transport`: regexes (full match) for the names of hidden inputs
-    that are known site metadata, not answers (adapter-specific)."""
+    that are known site metadata, not answers (adapter-specific). `ignore`: a CSS selector of
+    custom controls the adapter verifies itself (e.g. LinkedIn's resume picker cards)."""
     from recrute.apply.base import LiveField
 
     raw = root.evaluate(EXTRACT_JS, {"scope": scope, "prefer": list(prefer),
                                      "containerKeyAttr": container_key_attr,
-                                     "formIndex": form_index, "transport": list(transport)})
+                                     "formIndex": form_index, "transport": list(transport),
+                                     "ignore": ignore})
     fields: list[LiveField] = []
     seen: dict[str, int] = {}
     for i, r in enumerate(raw):
@@ -289,11 +291,14 @@ SECRET_FIELDS = ('input[type="password" i], input[autocomplete~="current-passwor
                  'input[autocomplete~="new-password"], input[autocomplete~="one-time-code"], '
                  'input[name*="password" i], input[id*="password" i], input[name*="passcode" i], '
                  'input[name*="otp" i], input[id*="otp" i], input[name*="code" i], '
-                 'input[id*="code" i], input[name*="verification" i], input[name*="token" i]')
+                 'input[id*="code" i], input[name*="verification" i], input[name*="token" i], '
+                 'input[name*="csrf" i], input[name*="xsrf" i], input[name*="nonce" i], '
+                 'input[name*="session" i], input[name*="secret" i]')
 
 
 def serialize_html(root: Page | Frame) -> str:
-    return root.evaluate(SERIALIZE_JS)
+    """The page's HTML with live values, minus secrets (the SAME policy as screenshots)."""
+    return root.evaluate(SERIALIZE_JS, SECRET_FIELDS)
 
 
 # --------------------------------------------------------------------------- static HTML parsing

@@ -74,12 +74,15 @@ class LazyBrowser:
                 if not pages:
                     return
                 page = pages[-1]
-                if live.apply_inputs(self.ctx.paths, page):
+                if live.apply_inputs(self.ctx.paths, page, tabs=self._open_tabs):
                     return  # you pressed "Done" in the live view
                 live.publish_frame(self.ctx.paths, page)
                 time.sleep(1)
         finally:
             live.clear(self.ctx.paths)
+
+    def _open_tabs(self) -> list:
+        return [p for p in (self.context.pages if self.context else []) if not p.is_closed()]
 
     def close(self) -> None:
         if self._cm is not None:

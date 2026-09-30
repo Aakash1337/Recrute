@@ -37,40 +37,11 @@ async function setBadge(tabId, text, color, title) {
 }
 
 async function capturePage(tabId) {
+  // capture.js defines recruteCapture() in the page (see there for what is and isn't sent)
+  await chrome.scripting.executeScript({ target: { tabId }, files: ["capture.js"] });
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
-    func: () => {
-      // Two structural reductions, never an arbitrary cut: (1) the page without scripts,
-      // styles and media, keeping JSON-LD (JobPosting metadata); (2) only the head's metadata
-      // plus the main job content.
-      const strip = (root) => {
-        root.querySelectorAll(
-          'script:not([type="application/ld+json"]), style, noscript, svg, canvas, iframe, ' +
-          'video, audio, picture source, link, template'
-        ).forEach((e) => e.remove());
-        root.querySelectorAll("[style]").forEach((e) => e.removeAttribute("style"));
-        // never send secrets: password / one-time-code fields lose any value attribute
-        root.querySelectorAll(
-          'input[type="password" i], input[autocomplete~="current-password"], ' +
-          'input[autocomplete~="new-password"], input[autocomplete~="one-time-code"]'
-        ).forEach((e) => { e.removeAttribute("value"); e.value = ""; });
-        return root;
-      };
-      const full = strip(document.documentElement.cloneNode(true)).outerHTML;
-      const head = [...document.head.querySelectorAll(
-        'title, meta, script[type="application/ld+json"], link[rel="canonical"]'
-      )].map((e) => e.outerHTML).join("");
-      const main = document.querySelector(
-        'main, article, [role="main"], [class*="job-description"], [class*="jobDescription"], ' +
-        '[id*="job"], #content'
-      ) || document.body;
-      const core = strip(main.cloneNode(true)).outerHTML;
-      return {
-        url: location.href,
-        title: document.title,
-        candidates: [full, `<html><head>${head}</head><body>${core}</body></html>`],
-      };
-    },
+    func: () => globalThis.recruteCapture(),
   });
   return result && result.result;
 }

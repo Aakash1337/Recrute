@@ -187,8 +187,9 @@
   const groups = new Map();
   for (const el of all('input[type="radio"], input[type="checkbox"]')) {
     if (used.has(el)) continue;  // aria-hidden ones too: checked ones are still submitted
-    const gk = ckey(el) || el.getAttribute('name') || el.id;
-    if (!gk) continue;
+    // nameless ones too (a script can still send them): each is its own field, keyed by its
+    // selector, so a checked one without an approved answer is never invisible
+    const gk = ckey(el) || el.getAttribute('name') || el.id || `sel:${sel(el)}`;
     if (!groups.has(gk)) groups.set(gk, []);
     groups.get(gk).push(el);
   }
@@ -328,12 +329,26 @@
   // never be invisible: a required one, or one holding a value, forces CP3.
   const NATIVE = 'input, select, textarea';
   const customs = scope.querySelectorAll('[role="combobox"], [role="listbox"], [role="radiogroup"], ' +
-    '[role="spinbutton"], [role="textbox"], [contenteditable="true"]');
+    '[role="spinbutton"], [role="textbox"], [contenteditable="true"], [role="checkbox"], ' +
+    '[role="radio"], [role="switch"]');
   for (const el of customs) {
     if (el.matches(NATIVE) || used.has(el)) continue;
     // wrappers around native controls (react-select shells, native radio groups) are handled above
     if (el.querySelector(NATIVE)) continue;
     if (el.closest('[role="listbox"]') && el.getAttribute('role') !== 'listbox') continue;
+    const role = el.getAttribute('role');
+    if (args.ignore && el.closest(args.ignore)) continue;  // verified by the adapter itself
+    if (['checkbox', 'radio', 'switch'].includes(role)) {
+      if (role === 'radio' && el.closest('[role="radiogroup"]')) continue;  // via its group
+      if (!visible(el) && el.getAttribute('aria-checked') !== 'true') continue;
+      const labc = labelOf(el);
+      const on = el.getAttribute('aria-checked') === 'true';
+      push({key: keyOf(el) || `sel:${sel(el)}`, label: clean(labc.text), type: 'checkbox',
+            widget: 'custom', required: el.getAttribute('aria-required') === 'true' || reqOf(el, labc),
+            selector: sel(el), options: [], option_selectors: [], current: on ? 'true' : null,
+            visible: visible(el), trigger: '', max_length: null});
+      continue;
+    }
     if (el.getAttribute('role') === 'listbox' && el.closest('[role="combobox"]')) continue;
     if (!visible(el)) continue;
     const lab = labelOf(el);

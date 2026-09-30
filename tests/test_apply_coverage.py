@@ -407,3 +407,28 @@ def test_empty_form_read_never_passes_presubmit(monkeypatch):
     assert NO_FIELDS in gh.presubmit_problems(None, Packet(job_id=1), {})
     li = LinkedInEasyApplyAdapter()
     assert li.requires_fields is False  # its field-less review step is checked separately
+
+
+def test_generic_mapping_respects_live_descriptions():
+    from recrute.apply.base import LiveField
+    from recrute.schemas import FormAnswer, FormQuestion, Packet
+
+    calls = []
+
+    class Router:
+        def complete(self, task, prompt, **kw):
+            calls.append(prompt)
+            return {"mappings": [{"field_id": "auth", "source": "answer", "answer_id": "q"}]}
+
+    packet = Packet(job_id=1, questions=[FormQuestion(
+        id="q", label="Are you authorized to work?", description="in the United States",
+        type="radio", options=["Yes", "No"])],
+        answers=[FormAnswer(question_id="q", value="Yes")])
+    live = LiveField(id="auth", label="Are you authorized to work?", type="radio",
+                     options=["Yes", "No"], description="in Canada")
+    g = GenericAdapter(router=Router())
+    assert g.map_fields([live], packet, {}) == {}  # a different condition: not reused
+    assert "in Canada" in calls[0]
+    same = live.model_copy(update={"description": "in the United States"})
+    assert g.map_fields([same], packet, {}) == {"auth": ("answer", "q")}
+    assert len(calls) == 2  # the changed description was a new mapping, not a memo hit

@@ -736,3 +736,36 @@ def test_capture_api_returns_job_id_for_identifier_keyed_postings(client):
     assert first["ok"] and first["job_id"] is not None
     again = client.post("/api/capture", json=body, headers=h).json()
     assert again["job_id"] == first["job_id"]
+
+
+def test_unreadable_message_is_retried_not_skipped(engine, monkeypatch):
+    from recrute.settings import get_state
+    from recrute.tasks import sync_inbox
+    from recrute.track import mail
+
+    class Router:
+        def complete(self, task, prompt, **kw):
+            n = prompt.count("### EMAIL")
+            return {"results": [{"index": i, "kind": "other", "company": "", "job_title": "",
+                                 "confidence": 0.9, "summary": ""} for i in range(n)]}
+
+    cfg = {"host": "h", "port": 993, "user": "me@example.com", "folder": "INBOX"}
+    fake = FakeIMAP({100: _mail(100, "Thank you for applying to Acme",
+                                "no-reply@greenhouse-mail.io", "Received."),
+                     101: _mail(101, "Your newsletter", "news@shop.example", "sale")})
+    real, broken = mail.parse_message, {"left": 1}
+
+    def flaky(raw, uid=None, **kw):
+        if uid == 100 and broken["left"]:
+            broken["left"] -= 1
+            raise ValueError("bad INTERNALDATE")
+        return real(raw, uid=uid, **kw)
+
+    monkeypatch.setattr(mail, "parse_message", flaky)
+    with Session(engine) as s:
+        first = sync_inbox(s, Router(), cfg, "pw", connect=lambda c: fake)
+        assert first["messages"] == 1  # only 101 could be read...
+        assert get_state(s, "imap:me@example.com:INBOX")["uid"] == 99  # ...cursor stays before 100
+        second = sync_inbox(s, Router(), cfg, "pw", connect=lambda c: fake)
+        assert second["messages"] == 2  # 100 is read now (101 again, deduplicated by id)
+        assert get_state(s, "imap:me@example.com:INBOX")["uid"] == 101

@@ -1144,7 +1144,9 @@ def test_receipt_screenshots_mask_secret_fields(context, paths):
     page = context.new_page()
     page.set_content("""<input name="user" value="ada">
       <input id="otp" name="otp" value="482913">
-      <input name="new_password" type="text" value="revealed-secret">""")
+      <input name="new_password" type="text" value="revealed-secret">
+      <input name="code" value="CANARY-code">
+      <input type="hidden" name="token" value="CANARY-tok">""")
     seen = {}
     real = page.screenshot
 
@@ -1155,11 +1157,14 @@ def test_receipt_screenshots_mask_secret_fields(context, paths):
     page.screenshot = spy
     receipt = Receipt(paths, 1, datetime.now(UTC))
     receipt.snapshot(page, "error")
-    assert seen["masked"] == 2 and (receipt.dir / "error.png").exists()
-    receipt.snapshot(page, "blocked", screenshot=False)
+    assert seen["masked"] == 4 and (receipt.dir / "error.png").exists()
+    html = (receipt.dir / "error.html").read_text(encoding="utf-8")
+    for secret in ("482913", "revealed-secret", "CANARY"):
+        assert secret not in html
+    assert 'value="ada"' in html
+    receipt.snapshot(page, "blocked", screenshot=False, html=False)
     assert not (receipt.dir / "blocked.png").exists()
-    html = (receipt.dir / "blocked.html").read_text(encoding="utf-8")
-    assert "482913" not in html and "revealed-secret" not in html and 'value="ada"' in html
+    assert not (receipt.dir / "blocked.html").exists()
     page.close()
 
 
@@ -1181,4 +1186,27 @@ def test_hidden_backing_values_of_a_picker_are_recognized(context):
     ids = {f.id for f in dom.extract_fields(page)}
     assert not {"location_latitude", "location_longitude", "selectedLocation"} & ids
     assert "requires_sponsorship" in ids  # next to a plain text box: still verified
+    page.close()
+
+
+@pytest.mark.browser
+def test_nameless_and_aria_checkboxes_are_verified(context):
+    from recrute.apply import dom
+    from recrute.apply.base import coverage_check, verify_fields
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <label><input type="checkbox" checked required> I consent to a background check</label>
+      <div role="checkbox" aria-checked="true" aria-label="Share my profile with partners"
+           tabindex="0" style="width:20px;height:20px"></div>
+      <div role="switch" aria-checked="true" aria-label="Marketing emails"
+           style="width:20px;height:20px"></div>
+    </form>""")
+    fields = dom.extract_fields(page)
+    assert len(fields) == 3
+    assert all(f.current in ("true", True, ["true"]) or f.current for f in fields)
+    packet = Packet(job_id=1)
+    problems = verify_fields(fields, packet, {})
+    uncovered = coverage_check(fields, packet)
+    assert set(problems) | set(uncovered) >= {f.id for f in fields}
     page.close()

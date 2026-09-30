@@ -68,6 +68,8 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
     account_security_kinds: ClassVar[tuple[str, ...]] = ("captcha", "checkpoint", "login_wall")
     form_selector = MODAL
     requires_fields = False  # the final review step has no fields (checked separately)
+    # the resume picker cards (role=radio): the selected resume is checked by _review_problem
+    adapter_verified = ".jobs-document-upload-redesign-card__container"
     submit_selector = SUBMIT
     blocker_patterns: ClassVar[tuple[tuple[str, str], ...]] = (
         ("linkedin: security checkpoint",

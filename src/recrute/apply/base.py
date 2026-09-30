@@ -509,6 +509,8 @@ class BaseAdapter:
     # a single-page ATS form always has fields: reading none means it wasn't verified.
     # (Multi-step flows whose review step has no fields validate that step themselves.)
     requires_fields: ClassVar[bool] = True
+    # CSS selector of custom controls this adapter verifies with its own dedicated check
+    adapter_verified: ClassVar[str] = ""
     # names (regex, full match) of this site's hidden metadata inputs: never answers
     transport_fields: tuple[str, ...] = ()
     aliases: ClassVar[dict[str, list[str]]] = {}
@@ -603,7 +605,8 @@ class BaseAdapter:
         return self.postprocess(dom.extract_fields(root, scope=self.form_selector,
                                                    prefer=self.key_prefer,
                                                    container_key_attr=self.container_key_attr,
-                                                   transport=self.transport_fields))
+                                                   transport=self.transport_fields,
+                                                   ignore=self.adapter_verified))
 
     def postprocess(self, fields: list[LiveField]) -> list[LiveField]:
         return fields

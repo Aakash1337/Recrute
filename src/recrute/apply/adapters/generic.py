@@ -28,6 +28,7 @@ from recrute.apply.base import (
 )
 from recrute.apply.widgets import fill_fields
 from recrute.schemas import FormAnswer, Packet
+from recrute.tailor.answers import is_sensitive_question
 
 if TYPE_CHECKING:
     from patchright.sync_api import Page
@@ -74,7 +75,7 @@ Rules:
 - source "none": no approved answer fits. answer_id = "". Prefer "none" over a stretch.
 - Include every field id exactly once.
 
-FORM FIELDS (id, label, type, required, options):
+FORM FIELDS (id, label, description, type, required, options):
 {fields}
 
 APPROVED ANSWERS (id, question, question description, type). Their values are not shown:
@@ -94,6 +95,10 @@ _BEST_FORM_JS = """() => {
   });
   return best;
 }"""
+
+
+def _norm(text: str | None) -> str:
+    return " ".join((text or "").lower().split())
 
 
 class GenericAdapter(BaseAdapter):
@@ -137,15 +142,17 @@ class GenericAdapter(BaseAdapter):
                    files: Mapping[str, Path]) -> dict[str, tuple[str, str]]:
         """field id -> ("answer", answer_id) | ("file", role). Validated against the packet."""
         answers = {a.question_id: a for a in packet.answers if has_value(a)}
-        key = json.dumps([[f.id, f.label, f.type] for f in fields]
-                         + sorted(answers) + sorted(files))
+        qs = {q.id: q for q in packet.questions}
+        # the WHOLE question on both sides: a changed description / options is a new mapping
+        key = json.dumps([[f.id, f.label, f.type, f.description, f.options] for f in fields]
+                         + [[aid, qs[aid].label, qs[aid].description, qs[aid].options]
+                            if aid in qs else [aid] for aid in sorted(answers)]
+                         + sorted(files))
         if key in self._memo:
             return self._memo[key]
         if self.router is None or not fields:
             self._memo[key] = {}
             return {}
-        qs = {q.id: q for q in packet.questions}
-
         def describe(aid: str) -> list[str]:
             # data minimisation: the question an answer was approved for, never its value
             q = qs.get(aid)
@@ -153,8 +160,9 @@ class GenericAdapter(BaseAdapter):
                     q.type if q else ""]
 
         prompt = PROMPT.format(
-            fields="\n".join(json.dumps([f.id, f.label, f.type, f.required, f.options[:30]],
-                                        ensure_ascii=False) for f in fields),
+            fields="\n".join(json.dumps([f.id, f.label, (f.description or "")[:200], f.type,
+                                         f.required, f.options[:30]], ensure_ascii=False)
+                             for f in fields),
             answers="\n".join(json.dumps(describe(aid), ensure_ascii=False)
                               for aid in answers) or "(none)",
             files=", ".join(sorted(files)) or "(none)")
@@ -172,6 +180,13 @@ class GenericAdapter(BaseAdapter):
             if f is None or fid in mapping:
                 continue
             if src == "answer" and aid in answers and f.type != "file":
+                q = qs.get(aid)
+                # help text carries conditions ("...in Canada"): when it differs from the
+                # approved question's, a sensitive or condition-bearing answer isn't reused
+                if q is not None and _norm(f.description) != _norm(q.description) and (
+                        q.description or is_sensitive_question(q)
+                        or is_sensitive_question(f)):
+                    continue
                 mapping[fid] = ("answer", aid)
             elif src in ("resume_file", "cover_letter_file") and f.type == "file":
                 role = src.removesuffix("_file")

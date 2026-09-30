@@ -199,10 +199,22 @@ def publish_frame(paths: Paths, page) -> None:
         _FRAME.update(jpg=jpg, meta=meta)
 
 
-def apply_inputs(paths: Paths, page) -> bool:
+def apply_inputs(paths: Paths, page, tabs=None) -> bool:
     """Replays queued UI events for the ACTIVE session on `page`, in order, and stops at
     "Done" (anything after it is discarded). Events made on a picture of another tab or of an
-    earlier navigation are dropped. Returns True when you pressed "Done"."""
+    earlier navigation are dropped, and so is everything after a tab opens or closes
+    (`tabs()`: the browser's open tabs). Returns True when you pressed "Done"."""
+    def tab_set() -> frozenset[int]:
+        try:
+            return frozenset(id(p) for p in tabs()) if tabs is not None else frozenset()
+        except Exception:  # noqa: BLE001 - browser closing
+            return frozenset()
+
+    open_tabs = tab_set()
+
+    def unchanged(target: Any) -> bool:
+        return page_target(page) == target and tab_set() == open_tabs
+
     with _LOCK:
         session = _SESSION.get("id")
         queue = _QUEUES.get(session or "")
@@ -220,7 +232,7 @@ def apply_inputs(paths: Paths, page) -> bool:
             continue  # after Done, or meant for another hand-off: dropped, never replayed
         # re-checked before EVERY event: a click earlier in this batch may have navigated or
         # reloaded the page; everything queued after that was meant for the old one
-        if ev.get("type") != "done" and ev.get("target") != page_target(page):
+        if ev.get("type") != "done" and not unchanged(ev.get("target")):
             break
         try:
             if ev.get("type") == "click":
@@ -231,7 +243,7 @@ def apply_inputs(paths: Paths, page) -> bool:
                 # mid-word (Enter in the text, an auto-submitting field), the rest of the text
                 # is discarded rather than typed into a page you haven't seen
                 for ch in ev["text"]:
-                    if page_target(page) != ev.get("target"):
+                    if not unchanged(ev.get("target")):
                         moved = True
                         break
                     page.keyboard.type(ch)

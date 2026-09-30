@@ -312,6 +312,7 @@ def sync_inbox(session, router, cfg: dict, password: str, connect=None) -> dict:
         after = state.get("uid")
         since = None if after else datetime.now(UTC) - timedelta(days=14)
         messages = list(box.fetch_new(since=since, after_uid=after))
+        failed = list(getattr(box, "failed_uids", []))
     alerts = [m for m in messages if is_alert_mail(m)]
     raws = [job for m in alerts for job in parse_alert(m)]
     ingested = ingest(session, raws).as_dict() if raws else {}
@@ -321,10 +322,24 @@ def sync_inbox(session, router, cfg: dict, password: str, connect=None) -> dict:
                               unresolved=unresolved)
     uids = [m.uid for m in messages if m.uid is not None]
     stuck = [m.uid for m in unresolved if m.uid is not None]
-    if stuck:  # keep the cursor before the first unclassified email so it's retried
+    # messages that couldn't be read are retried at the next sync (up to 3 times; then
+    # they're skipped with a warning rather than holding the inbox back forever)
+    tries = {int(k): v for k, v in (state.get("read_failures") or {}).items()}
+    for uid in failed:
+        tries[uid] = tries.get(uid, 0) + 1
+    given_up = [u for u in failed if tries[u] >= 3]
+    for u in given_up:
+        log.warning("inbox: giving up on unreadable message uid=%s", u)
+    stuck += [u for u in failed if tries[u] < 3]
+    if stuck:  # keep the cursor before the first unclassified/unread email so it's retried
         state["uid"] = max(min(stuck) - 1, after or 0)
-    elif uids:
-        state["uid"] = max(uids + [after or 0])
+    elif uids or given_up:
+        state["uid"] = max(uids + given_up + [after or 0])
+    pending = {str(u): n for u, n in tries.items() if u > state.get("uid", 0)}
+    if pending:
+        state["read_failures"] = pending
+    else:
+        state.pop("read_failures", None)
     set_state(session, state_key, state)
     return {"messages": len(messages), "alert_jobs": len(raws), "ingested": ingested,
             "events": len(events), "unresolved": len(unresolved)}
