@@ -18,6 +18,7 @@ from recrute.tailor.answers import (
     SENSITIVE_KINDS,
     AnswerBank,
     classify_question,
+    drafting_context,
     field_core,
     format_value,
     is_sensitive_question,
@@ -300,7 +301,7 @@ def _llm_answers(pending: list[FormQuestion], *, profile: Profile, bank: AnswerB
         ids = [i for e in selection.experience + selection.projects for i in (e.id, *e.bullet_ids)]
     else:
         ids = list(profile.all_items())[:25]
-    common = "\n".join(f"- {k}: {truncate(v, 400)}" for k, v in list(bank.common.items())[:8])
+    common = "\n".join(f"- {k}: {truncate(v, 400)}" for k, v in drafting_context(bank, pending))
     note = f"USER NOTE (follow it): {user_note.strip()}\n" if user_note.strip() else ""
     prompt = ANSWER_PROMPT.format(
         note=note, title=job.title if job else "", company=f" @ {job.company}" if job and

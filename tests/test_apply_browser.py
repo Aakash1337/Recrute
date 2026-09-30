@@ -974,3 +974,37 @@ def test_native_hidden_answer_is_verified(context):
                              {})
     assert "requires_sponsorship" in problems
     page.close()
+
+
+@pytest.mark.browser
+def test_form_associated_external_controls_are_verified(context):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    page = context.new_page()
+    page.set_content("""<form id="application-form">
+      <label for="n">Name</label><input id="n" name="n" value="Ada">
+    </form>
+    <input form="application-form" name="requires_sponsorship" value="Yes" style="display:none">
+    <label><input type="checkbox" form="application-form" name="consent" checked>
+      I agree to be contacted</label>
+    <input form="other-form" name="unrelated" value="x">""")
+    fields = {f.id: f for f in dom.extract_fields(page, form_index=0)}
+    assert "requires_sponsorship" in fields and "consent" in fields
+    assert "unrelated" not in fields
+    problems = verify_fields(list(fields.values()),
+                             Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")]),
+                             {})
+    assert "requires_sponsorship" in problems and "consent" in problems and "n" not in problems
+    page.close()
+
+
+def test_static_form_includes_form_associated_controls():
+    from recrute.apply import dom
+
+    qs = dom.parse_static_form("""<html><body><form id="f">
+      <label for="n">Name</label><input id="n" name="n"></form>
+      <label for="s">Need sponsorship?</label>
+      <select id="s" name="sponsor" form="f"><option>Yes</option><option>No</option></select>
+      <input name="elsewhere" form="g"></body></html>""")
+    assert {q.id for q in qs} == {"n", "sponsor"}

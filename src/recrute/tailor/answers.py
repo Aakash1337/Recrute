@@ -342,6 +342,30 @@ def is_sensitive_question(q: FormQuestion) -> bool:
     return bool(_SENSITIVE_TEXT.search(f"{q.label} {q.description}"))
 
 
+def is_sensitive_text(text: str) -> bool:
+    """True when free text (a saved answer's key or value) touches a sensitive subject."""
+    return bool(_SENSITIVE_TEXT.search(text.replace("_", " ")))
+
+
+def drafting_context(bank: AnswerBank, pending: list[FormQuestion],
+                     limit: int = 8) -> list[tuple[str, str]]:
+    """Saved answers worth showing the LLM while drafting `pending`: only entries RELATED to one
+    of the pending questions, and never anything touching a sensitive subject (its key or its
+    text): those stay on this machine."""
+    scored: list[tuple[float, str, str]] = []
+    labels = [clean_label(q.label) for q in pending if q.label.strip()]
+    for key, value in bank.common.items():
+        if is_sensitive_text(key) or is_sensitive_text(value):
+            continue
+        topic = key.replace("_", " ")
+        best = max((fuzz.token_set_ratio(topic, lab, processor=utils.default_process)
+                    for lab in labels), default=0.0)
+        if best >= 60:
+            scored.append((best, key, value))
+    scored.sort(key=lambda t: -t[0])
+    return [(k, v) for _, k, v in scored[:limit]]
+
+
 def classify_question(q: FormQuestion) -> str | None:
     """The bank/profile field a question asks for, or None (-> grounded LLM drafting)."""
     if q.type == "file":
@@ -408,6 +432,17 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
     # unrestricted status, any employer
     if re.search(r"permanent|indefinite|unrestricted|any employer|without (any )?restrictions?",
                  t):
+        return None
+    # history ("have you ever required", "in the past") and durations ("for at least five
+    # years", "for the next 3 years") are facts the bank's now/future flags don't establish
+    if re.search(r"\b(have|has|had)\s+(you\s+)?(ever\s+)?(been\s+)?(requir|need|sponsor|us|"
+                 r"receiv|obtain|held)\w*|\bdid you\b|\bin the past\b|\bpreviously\b|"
+                 r"\bprior\b|\bhistor\w*|\bformer\w*|\bbefore\b", t):
+        return None
+    if re.search(r"\bfor (at least |a minimum of |the next |the following |up to |more than )?"
+                 r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten|several|a few)\s+"
+                 r"(years?|months?)\b|\b(years?|months?) from now\b|\bthrough(out)? \d{4}\b|"
+                 r"\buntil\b|\bduration\b|\bentire\b|\bfull term\b|\blong[- ]term\b", t):
         return None
     now, fut = wa.requires_sponsorship_now, wa.requires_sponsorship_future
     has_now, has_fut = bool(_NOW_RE.search(t)), bool(_FUTURE_RE.search(t))

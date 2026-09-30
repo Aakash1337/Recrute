@@ -133,3 +133,26 @@ def test_loop_survives_bookkeeping_errors(engine):
     t.start()
     t.join(timeout=10)
     assert not t.is_alive() and calls["fn"] == 1  # recovered and ran the task
+
+
+def test_debug_traceback_keeps_validation_inputs_out_of_logs(engine, caplog):
+    import logging
+
+    from pydantic import BaseModel
+
+    class P(BaseModel):
+        birth_date: int
+
+    def boom(c):
+        try:
+            P(birth_date="CANARY-1999-01-02")
+        except Exception as e:
+            raise RuntimeError("profile load failed") from e
+
+    with caplog.at_level(logging.DEBUG, logger="recrute.worker"):
+        run_task(FakeCtx(engine), Task("bad", timedelta(minutes=1), boom))
+    text = "\n".join(r.getMessage() + (str(r.exc_info) if r.exc_info else "")
+                     for r in caplog.records)
+    assert "CANARY" not in text
+    assert "birth_date" in text and "test_worker.py" in text and not any(
+        r.exc_info for r in caplog.records)

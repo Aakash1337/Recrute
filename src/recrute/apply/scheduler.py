@@ -723,8 +723,12 @@ def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: d
                          adapter=adapter, router=router, human=human, files=files or None,
                          now=now.astimezone(UTC), pre_submit_check=gate)
     except Exception as e:  # noqa: BLE001 - we can't know how far it got: never retry blindly
-        log.exception("runner crashed for application %s", app_id)
-        outcome = ApplyOutcome(status="needs_human", reason=f"runner crashed: {e}"[:300],
+        from recrute.errors import safe_error, safe_traceback
+
+        log.error("runner crashed for application %s: %s", app_id, safe_error(e))
+        log.debug("runner traceback:\n%s", safe_traceback(e))
+        outcome = ApplyOutcome(status="needs_human",
+                               reason=f"runner crashed: {safe_error(e)}"[:300],
                                details={"mode": mode, "effective_mode": mode,
                                         "submit_attempted": mode == "submit"})
 

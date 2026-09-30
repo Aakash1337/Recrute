@@ -10,35 +10,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from recrute.criteria import Criteria
+from recrute.location import admits_us
 from recrute.models import Job, Priority
 
-US_STATES = {
-    "AL": "alabama", "AK": "alaska", "AZ": "arizona", "AR": "arkansas", "CA": "california",
-    "CO": "colorado", "CT": "connecticut", "DE": "delaware", "FL": "florida", "GA": "georgia",
-    "HI": "hawaii", "ID": "idaho", "IL": "illinois", "IN": "indiana", "IA": "iowa",
-    "KS": "kansas", "KY": "kentucky", "LA": "louisiana", "ME": "maine", "MD": "maryland",
-    "MA": "massachusetts", "MI": "michigan", "MN": "minnesota", "MS": "mississippi",
-    "MO": "missouri", "MT": "montana", "NE": "nebraska", "NV": "nevada", "NH": "new hampshire",
-    "NJ": "new jersey", "NM": "new mexico", "NY": "new york", "NC": "north carolina",
-    "ND": "north dakota", "OH": "ohio", "OK": "oklahoma", "OR": "oregon", "PA": "pennsylvania",
-    "RI": "rhode island", "SC": "south carolina", "SD": "south dakota", "TN": "tennessee",
-    "TX": "texas", "UT": "utah", "VT": "vermont", "VA": "virginia", "WA": "washington",
-    "WV": "west virginia", "WI": "wisconsin", "WY": "wyoming", "DC": "district of columbia",
-}
-US_MARKERS = re.compile(
-    r"\b(united states|usa|u\.s\.a?\.?|us|america|nationwide|"
-    + "|".join(sorted(set(US_STATES.values()), key=len, reverse=True))
-    + r")\b|,\s*(" + "|".join(US_STATES) + r")\b",
-    re.IGNORECASE,
-)
-NON_US = re.compile(
-    r"\b(canada|mexico|brazil|argentina|colombia|united kingdom|uk|england|london|ireland|"
-    r"germany|berlin|france|paris|spain|portugal|netherlands|amsterdam|poland|romania|"
-    r"sweden|norway|denmark|finland|switzerland|austria|italy|israel|tel aviv|india|"
-    r"bangalore|bengaluru|hyderabad|pune|singapore|japan|tokyo|china|australia|sydney|"
-    r"new zealand|philippines|vietnam|emea|apac|latam|europe|toronto|vancouver|montreal)\b",
-    re.IGNORECASE,
-)
 YEARS_RE = re.compile(
     r"(?:at least|minimum(?: of)?|min\.?)?\s*(\d{1,2})\s*(?:\+|plus)?\s*(?:-|–|to)?\s*"
     r"(\d{1,2})?\s*\+?\s*years?(?:'|’)?\s*(?:of\s+)?(?:[a-z/&,\- ]{0,40}?)experience",
@@ -137,14 +111,7 @@ def is_us_location(locations: list[str], remote: str | None) -> bool | None:
     """Per location: True if ANY location admits US candidates, False only if EVERY location
     is explicitly foreign, None (kept; triage checks it) otherwise, e.g. ["San Francisco",
     "London, UK"] stays eligible."""
-    if not locations:
-        return None
-    verdicts = []
-    for loc in locations:
-        if US_MARKERS.search(loc):
-            return True
-        verdicts.append(False if NON_US.search(loc) else None)
-    return False if all(v is False for v in verdicts) else None
+    return admits_us(locations)
 
 
 PREFERRED_RE = re.compile(r"prefer|nice[- ]to[- ]have|\bbonus\b|\ba plus\b|is a plus|"

@@ -651,3 +651,64 @@ def test_work_without_sponsorship_needs_authorization(label, authorized, expecte
     wa = WorkAuthorization(authorized_to_work_in_us=authorized,
                            requires_sponsorship_now=False, requires_sponsorship_future=False)
     assert sponsorship_answer(label, wa) is expected
+
+
+def test_drafting_context_excludes_unrelated_and_sensitive_bank_entries():
+    bank = AnswerBank(common={
+        "date_of_birth": "CANARY-DOB-1999",
+        "notes": "My SSN is CANARY-SSN",
+        "favourite_lunch": "CANARY-LUNCH tacos",
+        "security_work_highlights": "Built a SIEM pipeline.",
+    })
+    questions = [q("What security work are you most proud of?", "textarea", id="proj")]
+    router = FakeRouter({"answers": {"answers": [
+        {"id": "proj", "answer": "A SIEM pipeline.", "cited_ids": []}]}})
+    answer_questions(questions, profile=make_profile(), bank=bank, router=router)
+    prompt = router.calls[0][1]
+    assert "CANARY" not in prompt
+    assert "Built a SIEM pipeline." in prompt
+
+
+def test_sensitive_answers_are_not_saved_to_the_bank(paths, monkeypatch):
+    from recrute import packets
+    from recrute.models import Job
+    from recrute.schemas import FormAnswer, Packet
+    from recrute.tailor.answers import load_answer_bank
+
+    monkeypatch.setattr("recrute.paths.get_paths", lambda: paths)
+    packet = Packet(job_id=1, questions=[
+        q("Anything else?", "textarea", id="a", description="e.g. your date of birth"),
+        q("Preferred work style", "textarea", id="b"),
+    ], answers=[FormAnswer(question_id="a", value="01/02/1999", source="user"),
+                FormAnswer(question_id="b", value="Async, written first.", source="user")])
+    packets._save_to_bank(Job(id=1, title="Analyst", url="u"), packet)
+    assert list(load_answer_bank(paths).common.values()) == ["Async, written first."]
+
+
+@pytest.mark.parametrize("label", [
+    "Have you ever required visa sponsorship?",
+    "Have you previously been sponsored for a work visa?",
+    "Did you require sponsorship at your last employer?",
+    "Are you able to work without visa sponsorship for at least five years?",
+    "Will you be able to work without sponsorship for the next 3 years?",
+    "Can you work without sponsorship for the duration of your employment?",
+])
+def test_sponsorship_history_and_duration_are_not_invented(label):
+    from recrute.tailor.answers import WorkAuthorization, sponsorship_answer
+
+    wa = WorkAuthorization(authorized_to_work_in_us=True, requires_sponsorship_now=False,
+                           requires_sponsorship_future=False)
+    assert sponsorship_answer(label, wa) is None
+    bank = AnswerBank(work_authorization=wa)
+    hit = match_question(q(label, "radio", YES_NO), bank)
+    assert hit is None or hit.needs_review
+
+
+@pytest.mark.parametrize("label", ["Will you ever need visa sponsorship?",
+                                   "Will you now or in the future require sponsorship?"])
+def test_future_ever_still_answered(label):
+    from recrute.tailor.answers import WorkAuthorization, sponsorship_answer
+
+    wa = WorkAuthorization(authorized_to_work_in_us=True, requires_sponsorship_now=False,
+                           requires_sponsorship_future=False)
+    assert sponsorship_answer(label, wa) is False

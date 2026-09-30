@@ -128,6 +128,12 @@ def _save_to_bank(job: Job, packet: Packet) -> None:
         if _JOB_SPECIFIC.search(q.label) or (job.title and job.title.lower() in
                                              a.value.lower()):
             continue
+        from recrute.tailor.answers import is_sensitive_question, is_sensitive_text
+
+        # legal/personal answers (judged on label AND description) are not banked: the bank's
+        # keys can't carry the full question, and banked prose may be shown to the LLM later
+        if is_sensitive_question(q) or is_sensitive_text(a.value):
+            continue
         try:
             from recrute.tailor.answers import question_identity
 

@@ -114,6 +114,15 @@
     }
     return '';
   };
+  // Controls associated with a form through form="..." live OUTSIDE its subtree but are still
+  // submitted with it: include every such control of any form in (or around) the scope.
+  const forms = scope.tagName === 'FORM' ? [scope]
+    : [...scope.querySelectorAll('form'), scope.closest && scope.closest('form')].filter(Boolean);
+  const external = [];
+  for (const f of forms) for (const e of f.elements) {
+    if (!scope.contains(e) && !external.includes(e)) external.push(e);
+  }
+  const all = s => [...scope.querySelectorAll(s), ...external.filter(e => e.matches(s))];
   const out = [];
   const used = new Set();
   // Help/description text attached to a field (aria-describedby, or hint text in its
@@ -150,7 +159,7 @@
 
   // radio/checkbox groups
   const groups = new Map();
-  for (const el of scope.querySelectorAll('input[type="radio"], input[type="checkbox"]')) {
+  for (const el of all('input[type="radio"], input[type="checkbox"]')) {
     if (used.has(el)) continue;  // aria-hidden ones too: checked ones are still submitted
     const gk = ckey(el) || el.getAttribute('name') || el.id;
     if (!gk) continue;
@@ -195,7 +204,7 @@
   }
 
   // everything else
-  for (const el of scope.querySelectorAll('input, textarea, select')) {
+  for (const el of all('input, textarea, select')) {
     if (used.has(el)) continue;
     const t = (el.getAttribute('type') || el.type || '').toLowerCase();
     if (t === 'hidden') {

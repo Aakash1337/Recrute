@@ -317,14 +317,22 @@ def parse_static_form(html: str, *, scope: str | None = None) -> list[FormQuesti
     root = soup.select_one(scope) if scope else (soup.find("form") or soup.body or soup)
     if root is None:
         return []
+    # controls outside the form that join it through form="<id>" are submitted with it too
+    form_ids = {str(f["id"]) for f in ([root] if root.name == "form" else [])
+                + root.find_all("form") if f.get("id")}
+    external = [e for e in soup.find_all(["input", "textarea", "select"])
+                if e.get("form") in form_ids and root not in e.parents]
+    controls = root.find_all(["input", "textarea", "select"]) + external
     out: list[FormQuestion] = []
     groups: dict[str, list[Tag]] = {}
-    for el in root.find_all("input"):
+    for el in controls:
+        if el.name != "input":
+            continue
         t = (el.get("type") or "text").lower()
         if t in ("radio", "checkbox") and el.get("name"):
             groups.setdefault(str(el["name"]), []).append(el)
     done: set[str] = set()
-    for el in root.find_all(["input", "textarea", "select"]):
+    for el in controls:
         t = (el.get("type") or "text").lower() if el.name == "input" else el.name
         if t in ("hidden", "submit", "button", "reset", "image"):
             continue

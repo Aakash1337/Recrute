@@ -30,18 +30,41 @@ in the box to type. Press <b>Done</b> when you've finished (e.g. after submittin
   // to the picture on screen. No fresh frame -> input is ignored.
   window.__frame = null;
   const img = document.getElementById('live-frame');
+  // Each frame is a blob: URL. The one on screen is kept; every superseded or failed one is
+  // revoked, so a long CP3 session doesn't accumulate screenshots in memory.
+  let shownUrl = null, timer = null, stopped = false;
+  function revoke(u) { if (u) URL.revokeObjectURL(u); }
+  function show(url, meta) {
+    return new Promise(done => {
+      img.onload = () => {
+        const old = shownUrl; shownUrl = url; revoke(old);
+        window.__frame = {...meta, shownAt: Date.now()}; done();
+      };
+      img.onerror = () => { revoke(url); window.__frame = null; done(); };
+      img.src = url;
+    });
+  }
   async function loadFrame() {
     try {
       const r = await fetch('/live/frame', {cache: 'no-store'});
       if (!r.ok) { window.__frame = null; return; }
       const meta = {session: r.headers.get('X-Live-Session'),
                     width: +r.headers.get('X-Live-Width'), height: +r.headers.get('X-Live-Height')};
-      const url = URL.createObjectURL(await r.blob());
-      img.onload = () => { window.__frame = {...meta, shownAt: Date.now()}; };
-      img.src = url;
+      const blob = await r.blob();
+      if (stopped) return;
+      await show(URL.createObjectURL(blob), meta);
     } catch (e) { window.__frame = null; }
   }
-  loadFrame(); setInterval(loadFrame, 1000);
+  async function loop() {  // one request at a time: the next starts a second after this one ends
+    await loadFrame();
+    if (!stopped) timer = setTimeout(loop, 1000);
+  }
+  loop();
+  window.addEventListener('pagehide', () => {
+    stopped = true; clearTimeout(timer); img.removeAttribute('src');
+    revoke(shownUrl); shownUrl = null;
+  });
+  window.addEventListener('pageshow', e => { if (e.persisted && stopped) { stopped = false; loop(); } });
   function liveSend(ev) {
     const f = window.__frame;
     if (!f || !f.session || Date.now() - f.shownAt > 5000) return;

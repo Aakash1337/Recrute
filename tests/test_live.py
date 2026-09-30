@@ -134,3 +134,56 @@ def test_frames_only_for_active_session_and_carry_it(client):
     live.clear(paths)
     live.start_session(paths)  # a new hand-off, no frame of its own yet
     assert client.get("/live/frame").status_code == 404
+
+
+@pytest.mark.browser
+def test_live_page_revokes_superseded_frame_urls(client):
+    import base64
+
+    from patchright.sync_api import sync_playwright
+
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8Dw"
+                           "HwAFAAH/q842iQAAAABJRU5ErkJggg==")
+    html = client.get("/live").text
+    frames = {"n": 0}
+
+    def handle(route):
+        path = route.request.url.split("//", 1)[1].split("/", 1)[1].split("?")[0]
+        if path == "live":
+            return route.fulfill(body=html, content_type="text/html")
+        if path == "live/frame":
+            frames["n"] += 1
+            return route.fulfill(body=png, content_type="image/png",
+                                 headers={"X-Live-Session": "s1", "X-Live-Width": "1",
+                                          "X-Live-Height": "1"})
+        if path.startswith("static/"):
+            r = client.get("/" + path)
+            return route.fulfill(body=r.content, content_type=r.headers.get("content-type"))
+        return route.fulfill(body="", content_type="text/html")
+
+    try:
+        pw = sync_playwright().start()
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"playwright unavailable: {e}")
+    try:
+        try:
+            browser = pw.chromium.launch(headless=True)
+        except Exception as e:  # noqa: BLE001
+            pytest.skip(f"chromium not installed: {e}")
+        page = browser.new_page()
+        page.add_init_script("""(() => {
+          window.__urls = {made: 0, revoked: 0};
+          const c = URL.createObjectURL.bind(URL), r = URL.revokeObjectURL.bind(URL);
+          URL.createObjectURL = b => { window.__urls.made++; return c(b); };
+          URL.revokeObjectURL = u => { window.__urls.revoked++; return r(u); };
+        })()""")
+        page.route("http://recrute.test/**", handle)
+        page.goto("http://recrute.test/live")
+        page.wait_for_function("window.__urls.made >= 4", timeout=15000)
+        counts = page.evaluate("window.__urls", isolated_context=False)
+        assert counts["made"] - counts["revoked"] <= 1  # only the frame on screen is alive
+        assert page.evaluate("window.__frame && window.__frame.session",
+                             isolated_context=False) == "s1"
+        browser.close()
+    finally:
+        pw.stop()

@@ -266,8 +266,11 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
         keep_open = mode != "dry_run"
         return blocked(str(e))
     except Exception as e:  # noqa: BLE001
-        log.exception("apply_job %s failed", job.id)
-        details["error"] = f"{type(e).__name__}: {e}"[:500]
+        from recrute.errors import safe_error, safe_traceback
+
+        log.error("apply_job %s failed: %s", job.id, safe_error(e))
+        log.debug("apply_job traceback:\n%s", safe_traceback(e))
+        details["error"] = safe_error(e)
         receipt.snapshot(page, "error")
         if clicked_submit:
             keep_open = True
