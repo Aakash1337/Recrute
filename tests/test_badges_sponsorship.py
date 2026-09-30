@@ -238,3 +238,53 @@ def test_eligibility_empty():
 def test_permanent_residency_alone_is_not_itar():
     flags = eligibility_flags("Candidates must hold US citizenship or permanent residency.")
     assert "itar_us_person" not in flags
+
+
+# --------------------------------------------------------------------------- audit regressions
+
+@pytest.mark.parametrize("text", [
+    "This position does not require US citizenship.",
+    "This role doesn't require U.S. citizenship.",
+    "U.S. citizenship is not required for this position.",
+])
+def test_negated_citizenship(text):
+    assert "citizenship_required" not in eligibility_flags(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "U.S. person status is not required.",
+    "This role is not subject to ITAR restrictions.",
+    "This position is not subject to export control requirements.",
+    "The role is exempt from ITAR.",
+])
+def test_negated_itar(text):
+    assert "itar_us_person" not in eligibility_flags(text), text
+
+
+def test_negated_clearance():
+    assert "clearance_required" not in eligibility_flags(
+        "This position does not require a security clearance.")
+
+
+def test_negation_is_clause_local():
+    # the exemption in one clause must not cancel a requirement in another
+    flags = eligibility_flags("A clearance is not required for this role; however, applicants "
+                              "must be U.S. citizens.")
+    assert flags == {"citizenship_required"}
+
+
+def test_inline_markup_does_not_split_sentences():
+    assert "citizenship_required" in eligibility_flags(
+        "<p>Applicants must be <b>U.S. citizens</b>.</p>")
+    assert detect_sponsorship(
+        "<p>Visa sponsorship is <strong>available</strong> for this role.</p>")[0] == \
+        "will_sponsor"
+    kind, quote = detect_sponsorship(
+        "<div><p>We are <em>unable</em> to <a href='/faq'>sponsor visas</a>.</p><p>Other.</p>"
+        "</div>")
+    assert kind == "no_sponsorship" and quote == "We are unable to sponsor visas."
+
+
+def test_block_elements_still_split():
+    kind, quote = detect_sponsorship("<ul><li>No visa sponsorship</li><li>Remote</li></ul>")
+    assert kind == "no_sponsorship" and quote == "No visa sponsorship"

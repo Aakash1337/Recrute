@@ -1,6 +1,7 @@
 """Notification backends. All network I/O is injectable (httpx client / SMTP factory) for tests."""
 
 import logging
+import re
 import smtplib
 import ssl
 from collections.abc import Callable, Mapping
@@ -14,6 +15,44 @@ import keyring
 from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- log redaction
+
+_BOT_TOKEN_RE = re.compile(r"/bot[^/\s\"']+/")
+
+
+class RedactTelegramToken(logging.Filter):
+    """httpx logs every request URL at INFO ("HTTP Request: POST https://api.telegram.org/
+    bot<TOKEN>/sendMessage ..."). Rewrite /bot<token>/ to /bot***/ in any record passing
+    through the httpx/httpcore loggers, whichever client (ours or the caller's) made it."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:  # malformed record: leave it to logging's own error handling
+            return True
+        if "/bot" in msg:
+            redacted = _BOT_TOKEN_RE.sub("/bot***/", msg)
+            if redacted != msg:
+                record.msg, record.args = redacted, None
+        return True
+
+
+_REDACT_LOGGERS = ("httpx", "httpcore", "httpcore.connection", "httpcore.http11",
+                   "httpcore.http2", "httpcore.proxy", "httpcore.socks")
+_redactor = RedactTelegramToken()
+
+
+def install_log_redaction() -> None:
+    """Idempotent. Logger-level filters don't apply to child loggers, so the httpcore
+    children are listed explicitly."""
+    for name in _REDACT_LOGGERS:
+        lg = logging.getLogger(name)
+        if not any(isinstance(f, RedactTelegramToken) for f in lg.filters):
+            lg.addFilter(_redactor)
+
+
+install_log_redaction()
 
 KEYRING_SERVICE = "recrute"
 TELEGRAM_KEY = "telegram:bot"
@@ -159,7 +198,11 @@ def _send_email(title: str, body: str, cfg: NotifyConfig, *,
             smtp.starttls(context=ssl.create_default_context())
         if cfg.smtp_user and password is not None:
             smtp.login(cfg.smtp_user, password)
-        smtp.send_message(msg)
+        refused = smtp.send_message(msg) or {}
+        if refused:
+            # send_message raises if ALL recipients are refused; a dict means partial delivery
+            bad = ", ".join(sorted(refused))
+            raise NotifyError(f"partially delivered; refused recipients: {bad}")
     finally:
         try:
             smtp.quit()
@@ -171,14 +214,15 @@ def _post(client: httpx.Client | None, url: str, **kw: Any) -> httpx.Response:
     own = client is None
     c = client or httpx.Client(timeout=TIMEOUT)
     try:
-        resp = c.post(url, **kw)
+        # Never follow redirects: a 3xx could forward the token-bearing request elsewhere.
+        resp = c.post(url, follow_redirects=False, **kw)
     except httpx.HTTPError as e:
         # Never leak a Telegram token (it's in the URL) into logs/UI.
         raise NotifyError(f"request failed: {type(e).__name__}") from None
     finally:
         if own:
             c.close()
-    if resp.status_code >= 400:
+    if not 200 <= resp.status_code < 300:
         raise NotifyError(f"HTTP {resp.status_code}")
     return resp
 

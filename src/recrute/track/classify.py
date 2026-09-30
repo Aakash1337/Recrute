@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from rapidfuzz import fuzz
+from sqlalchemy import update
+from sqlalchemy.orm.attributes import set_committed_value
 from sqlmodel import Session, select
 
 from recrute.badges.names import normalize_company
@@ -216,8 +218,12 @@ def classify_messages(router: Router, messages: Sequence[MailMessage], *,
 
 # --------------------------------------------------------------------------- matching
 
+# Every status an application can be in after submission, INCLUDING terminal ones: identity
+# resolution must see a DECLINED "Security Engineer" so a late rejection for it isn't pinned on
+# the still-open "Security Engineer II" at the same company. (Terminal jobs never change status:
+# see can_advance.)
 MATCHABLE_STATUSES = (JobStatus.APPLIED, JobStatus.ACKNOWLEDGED, JobStatus.INTERVIEWING,
-                      JobStatus.GHOSTED)
+                      JobStatus.GHOSTED, JobStatus.OFFER, JobStatus.DECLINED)
 # Senders whose domain says nothing about the hiring company.
 _GENERIC_DOMAINS = set(JOB_SENDER_DOMAINS) | {
     "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com",
@@ -280,43 +286,122 @@ def _company_score(cls: EmailClassification, sender: str, sender_name: str, subj
     return max(scores)
 
 
-def _title_score(cls: EmailClassification, subject: str, title: str) -> float | None:
-    t = title.lower()
+# Seniority / level tokens are identity, not noise: "Security Engineer" != "Security Engineer II".
+_LEVELS = {
+    "i": "", "1": "", "ii": "ii", "2": "ii", "iii": "iii", "3": "iii", "iv": "iv", "4": "iv",
+    "v": "v", "5": "v", "jr": "jr", "junior": "jr", "sr": "sr", "senior": "sr", "staff": "staff",
+    "lead": "lead", "principal": "principal", "associate": "associate", "entry": "entry",
+    "intern": "intern", "mid": "mid", "distinguished": "distinguished",
+}
+_LEVEL_CODE = re.compile(r"^[lt]([1-5])$")  # L2 / T3 (level / tier)
+_ROMAN = {"1": "", "2": "ii", "3": "iii", "4": "iv", "5": "v"}
+PLAUSIBLE_TITLE = 90.0
+CONTRADICT_TITLE = 70.0
+
+
+def _level(tok: str) -> str | None:
+    if tok in _LEVELS:
+        return _LEVELS[tok]
+    m = _LEVEL_CODE.match(tok)
+    return _ROMAN[m.group(1)] if m else None
+
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9+#]+", text.lower())
+
+
+def title_parts(title: str) -> tuple[list[str], frozenset[str]]:
+    """(base tokens, level set): "Sr. Security Engineer II" -> (["security", "engineer"],
+    {"sr", "ii"}). "I" / "1" count as no level."""
+    base: list[str] = []
+    levels: set[str] = set()
+    for tok in _tokens(title):
+        lv = _level(tok)
+        if lv is None:
+            base.append(tok)
+        elif lv:
+            levels.add(lv)
+    return base, frozenset(levels)
+
+
+def _find_run(hay: list[str], needle: list[str]) -> int:
+    n = len(needle)
+    for i in range(len(hay) - n + 1):
+        if hay[i:i + n] == needle:
+            return i
+    return -1
+
+
+def _title_match(cls: EmailClassification, subject: str,
+                 title: str) -> tuple[float | None, bool]:
+    """(title similarity 0-100, or None if the email doesn't say; contradicts?)."""
+    job_base, job_levels = title_parts(title)
     if cls.job_title:
-        return float(fuzz.token_set_ratio(cls.job_title.lower(), t))
-    if subject and fuzz.partial_ratio(t, subject.lower()) >= 90:
-        return 95.0
-    return None  # unknown
+        mail_base, mail_levels = title_parts(cls.job_title)
+        # token_sort, not token_set: a subset ("Security Engineer" in "Cloud Security
+        # Engineer") must not score 100.
+        score = float(fuzz.token_sort_ratio(" ".join(mail_base), " ".join(job_base)))
+        return score, mail_levels != job_levels or score < CONTRADICT_TITLE
+    if subject and job_base:
+        subj = _tokens(subject)
+        i = _find_run(subj, job_base)
+        if i >= 0:
+            # level tokens right around the title in the subject ("Senior ... II")
+            around: set[str] = set()
+            j = i - 1
+            while j >= 0 and _level(subj[j]) is not None:
+                around.add(_level(subj[j]) or "")
+                j -= 1
+            j = i + len(job_base)
+            while j < len(subj) and _level(subj[j]) is not None:
+                around.add(_level(subj[j]) or "")
+                j += 1
+            around.discard("")
+            return 95.0, frozenset(around) != job_levels
+    return None, False  # unknown
+
+
+@dataclass
+class _Scored:
+    job: Job
+    company: float
+    title: float | None
+    contradicts: bool
+
+    @property
+    def total(self) -> float:
+        if self.title is None:
+            return self.company * 0.9  # company-only match: never fully certain
+        return self.company * 0.6 + self.title * 0.4
 
 
 def match_job(session: Session, classification: EmailClassification, sender: str,
               subject: str, *, sender_name: str = "") -> tuple[int | None, float]:
-    """Best job (status APPLIED/ACKNOWLEDGED/INTERVIEWING/GHOSTED) for this email, with a 0-1
-    match confidence. Ambiguity (several open applications at the same company that the title
-    can't tell apart) lowers the confidence so it goes to the user."""
-    scored: list[tuple[float, float, float | None, Job]] = []
+    """Best post-application job (see MATCHABLE_STATUSES) for this email, with a 0-1 match
+    confidence. Confidence is low (so the user confirms) when several applications at the
+    company fit, or when the title contradicts / only weakly matches every application."""
+    cands: list[_Scored] = []
     for cand in _candidates(session):
         cs = _company_score(classification, sender, sender_name, subject, cand.company)
         if cs < _COMPANY_MIN:
             continue
-        ts = _title_score(classification, subject, cand.job.title)
-        if ts is None:
-            total = cs * 0.9  # company-only match: never fully certain
-        else:
-            total = cs * 0.6 + ts * 0.4
-        scored.append((total, cs, ts, cand.job))
-    if not scored:
+        ts, contra = _title_match(classification, subject, cand.job.title)
+        cands.append(_Scored(cand.job, cs, ts, contra))
+    if not cands:
         return None, 0.0
-    scored.sort(key=lambda x: x[0], reverse=True)
-    best_total, _, best_ts, best_job = scored[0]
-    conf = best_total / 100.0
-    if len(scored) > 1:
-        margin = best_total - scored[1][0]
-        if margin < 10:
-            conf *= 0.7  # can't tell the applications apart
-        elif best_ts is None:
-            conf *= 0.85
-    return best_job.id, round(min(conf, 1.0), 3)
+    plausible = [c for c in cands if not c.contradicts
+                 and (c.title is None or c.title >= PLAUSIBLE_TITLE)]
+    if len(plausible) == 1:
+        best = plausible[0]
+        return best.job.id, round(min(best.total / 100.0, 1.0), 3)
+    if len(plausible) > 1:
+        # several applications fit: suggest the best, but the user has to confirm
+        best = max(plausible, key=lambda c: (c.total, c.job.id or 0))
+        return best.job.id, round(min(best.total / 100.0 * 0.7, 0.6), 3)
+    # the company matches but no application's title fits: weak suggestion only
+    best = max(cands, key=lambda c: (not c.contradicts, c.title or 0.0, c.company))
+    cap = 0.4 if best.contradicts else 0.7
+    return best.job.id, round(min(best.total / 100.0, cap), 3)
 
 
 # --------------------------------------------------------------------------- status updates
@@ -345,14 +430,32 @@ def can_advance(current: JobStatus, target: JobStatus) -> bool:
     return _RANK.get(target, 0) > _RANK.get(current, 0)
 
 
-def advance_status(session: Session, job: Job, target: JobStatus, note: str) -> bool:
-    current = JobStatus(job.status)
-    if not can_advance(current, target):
+def allowed_predecessors(target: JobStatus) -> list[JobStatus]:
+    return [s for s in JobStatus if can_advance(s, target)]
+
+
+def transition_status(session: Session, job: Job, target: JobStatus,
+                      allowed: Iterable[JobStatus], note: str) -> bool:
+    """Atomic compare-and-set: UPDATE job SET status=target WHERE id=? AND status IN (allowed).
+    The StatusEvent is written only if that UPDATE hit the row, so a decision made on a stale
+    read can never overwrite a concurrent writer (another session / worker)."""
+    result = session.exec(
+        update(Job)
+        .where(Job.id == job.id, Job.status.in_(list(allowed)))  # type: ignore[attr-defined]
+        .values(status=target)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        session.expire(job, ["status"])  # reload the real current status on next access
         return False
-    job.status = target
-    session.add(job)
+    set_committed_value(job, "status", target)
     session.add(StatusEvent(job_id=job.id, status=target, note=note))
     return True
+
+
+def advance_status(session: Session, job: Job, target: JobStatus, note: str) -> bool:
+    """Forward-only transition (see can_advance), atomic against concurrent updates."""
+    return transition_status(session, job, target, allowed_predecessors(target), note)
 
 
 def known_message_ids(session: Session, message_ids: Iterable[str]) -> set[str]:

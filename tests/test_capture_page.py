@@ -102,6 +102,17 @@ def test_hourly_salary_annualized_and_string_org():
     assert job.locations == ["Remote, US"]
 
 
+def test_description_text_keeps_inline_markup_inline():
+    page = """<script type="application/ld+json">{"@type":"JobPosting","title":"SOC Analyst",
+    "hiringOrganization":"Acme","description":"<p>Applicants must be <b>U.S. citizens</b>.</p>
+    <p>Visa sponsorship is <a href='/x'>not</a>\\n available.</p><ul><li>SIEM</li></ul>"}
+    </script>"""
+    job = raw_job_from_capture("https://acme.example/jobs/1", page)
+    assert job.description_text.split("\n") == [
+        "Applicants must be U.S. citizens.", "", "Visa sponsorship is not available.", "",
+        "SIEM"]
+
+
 @pytest.mark.parametrize("url,expected", [
     ("https://boards.greenhouse.io/acme/jobs/123456", ("greenhouse", "acme", "123456")),
     ("https://jobs.lever.co/acme/0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0/apply",

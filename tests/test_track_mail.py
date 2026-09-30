@@ -1,3 +1,4 @@
+import imaplib
 import re
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -41,7 +42,10 @@ def fake_keyring(monkeypatch):
 
 
 class FakeIMAP:
-    """Minimal imaplib.IMAP4 stand-in that records every command it gets."""
+    """Minimal imaplib.IMAP4 stand-in that records every command it gets. Mirrors stdlib
+    behavior: LOGIN failure raises IMAP4.error; response(code) returns (code, [data|None])."""
+
+    error = imaplib.IMAP4.error
 
     def __init__(self, messages: dict[int, bytes], *, password="app-pw", uidvalidity=7):
         self.messages = messages
@@ -52,15 +56,18 @@ class FakeIMAP:
     def login(self, user, pw):
         self.calls.append(("login", user))
         if pw != self.password:
-            return "NO", [b"auth failed"]
+            raise self.error("[AUTHENTICATIONFAILED] Invalid credentials (Failure)")
         return "OK", [b"logged in"]
 
     def select(self, mailbox, readonly=False):
         self.calls.append(("select", mailbox, readonly))
+        if self.uidvalidity is not None:
+            self._untagged = {"UIDVALIDITY": [str(self.uidvalidity).encode()]}
         return "OK", [str(len(self.messages)).encode()]
 
     def response(self, code):
-        return ("OK", [str(self.uidvalidity).encode()]) if code == "UIDVALIDITY" else ("OK", [None])
+        # imaplib: self._untagged_response(code, [None], code.upper())
+        return code, getattr(self, "_untagged", {}).pop(code.upper(), [None])
 
     def uid(self, command, *args):
         self.calls.append(("uid", command, *args))
@@ -190,14 +197,23 @@ def test_uidvalidity_exposed(fake_keyring):
         assert box.uidvalidity == 7
 
 
+def test_uidvalidity_missing(fake_keyring):
+    server = make_server()
+    server.uidvalidity = None
+    with ImapInbox(CFG, password="app-pw", connect=lambda c: server) as box:
+        assert box.uidvalidity is None
+
+
 def test_missing_password_raises(fake_keyring):
     with pytest.raises(ImapError, match="keyring"):
         list(fetch_messages(CFG, connect=lambda c: make_server()))
 
 
 def test_login_failure(fake_keyring):
+    server = make_server()
     with pytest.raises(ImapError, match="login"):
-        list(fetch_messages(CFG, password="wrong", connect=lambda c: make_server()))
+        list(fetch_messages(CFG, password="wrong", connect=lambda c: server))
+    assert server.calls[-1] == ("logout",)  # connection closed on failure
 
 
 def test_unparseable_message_is_skipped(fake_keyring, monkeypatch):

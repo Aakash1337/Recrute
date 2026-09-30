@@ -23,6 +23,7 @@ from bs4 import BeautifulSoup, Tag
 from dateutil import parser as dateparser
 from markdownify import markdownify
 
+from recrute.capture.htmltext import html_to_text
 from recrute.capture.urls import (
     detect_ats,
     linkedin_job_id,
@@ -115,7 +116,7 @@ def _html_unescape_desc(desc: str) -> str:
 
 
 def _html_to_text(html: str) -> str:
-    return re.sub(r"\n{3,}", "\n\n", BeautifulSoup(html, "lxml").get_text("\n")).strip()
+    return html_to_text(html)
 
 
 def _locations(jp: dict[str, Any]) -> list[str]:

@@ -9,6 +9,7 @@ from recrute.models import Company, EmailEvent, Job, JobStatus, StatusEvent
 from recrute.schemas import EmailClassification
 from recrute.track.classify import (
     CLASSIFY_SCHEMA,
+    advance_status,
     apply_events,
     can_advance,
     classify_messages,
@@ -16,8 +17,10 @@ from recrute.track.classify import (
     match_job,
     prefilter,
     process_messages,
+    title_parts,
 )
 from recrute.track.mail import MailMessage
+from recrute.track.reminders import mark_ghosted
 
 
 def strict(schema):
@@ -289,3 +292,106 @@ def test_process_messages_end_to_end(engine, db):
 def test_prompt_is_json_safe():
     # the schema is passed through as-is to the CLIs; make sure it serializes
     json.dumps(CLASSIFY_SCHEMA)
+
+
+# --------------------------------------------------------------------------- audit regressions
+
+@pytest.mark.parametrize("title,expected", [
+    ("Security Engineer", (["security", "engineer"], frozenset())),
+    ("Security Engineer II", (["security", "engineer"], frozenset({"ii"}))),
+    ("Sr. Security Engineer 2", (["security", "engineer"], frozenset({"sr", "ii"}))),
+    ("Senior Security Engineer", (["security", "engineer"], frozenset({"sr"}))),
+    ("Security Engineer I", (["security", "engineer"], frozenset())),
+    ("SOC Analyst L3", (["soc", "analyst"], frozenset({"iii"}))),
+])
+def test_title_parts(title, expected):
+    assert title_parts(title) == expected
+
+
+@pytest.fixture
+def levels_db(engine):
+    """Same company: a DECLINED "Security Engineer" and an open "Security Engineer II"."""
+    with Session(engine) as s:
+        c = Company(name="Globex", domain="globex.example")
+        s.add(c)
+        s.commit()
+        declined = Job(company_id=c.id, title="Security Engineer", apply_url="g1",
+                       canonical_url="g1", status=JobStatus.DECLINED)
+        open_ii = Job(company_id=c.id, title="Security Engineer II", apply_url="g2",
+                      canonical_url="g2", status=JobStatus.APPLIED)
+        s.add_all([declined, open_ii])
+        s.commit()
+        return {"declined": declined.id, "ii": open_ii.id}
+
+
+def test_late_rejection_maps_to_declined_not_level_ii(engine, levels_db):
+    m = msg("<late-rej@x>", "no-reply@greenhouse-mail.io", "Your application to Globex")
+    with Session(engine) as s:
+        job_id, conf = match_job(s, cls("rejection", "Globex", "Security Engineer"),
+                                 m.sender, m.subject)
+        assert job_id == levels_db["declined"] and conf >= 0.8
+        res = apply_events(s, [(m, cls("rejection", "Globex", "Security Engineer"))])
+        assert res[0].event.job_id == levels_db["declined"] and not res[0].status_changed
+        assert s.get(Job, levels_db["ii"]).status == JobStatus.APPLIED  # untouched
+
+
+def test_level_ii_title_maps_to_level_ii(engine, levels_db):
+    with Session(engine) as s:
+        job_id, conf = match_job(s, cls("interview", "Globex", "Security Engineer II"),
+                                 "no-reply@greenhouse-mail.io", "Interview")
+        assert job_id == levels_db["ii"] and conf >= 0.8
+
+
+def test_level_from_subject(engine, levels_db):
+    with Session(engine) as s:
+        job_id, conf = match_job(s, cls("interview", "Globex"), "no-reply@greenhouse-mail.io",
+                                 "Interview for Security Engineer II at Globex")
+        assert job_id == levels_db["ii"] and conf >= 0.8
+
+
+def test_no_title_with_two_applications_is_low_confidence(engine, levels_db):
+    with Session(engine) as s:
+        job_id, conf = match_job(s, cls("rejection", "Globex"), "no-reply@greenhouse-mail.io",
+                                 "Update on your application")
+        assert job_id in levels_db.values() and conf < 0.8
+
+
+def test_contradicting_title_is_low_confidence(engine, levels_db):
+    with Session(engine) as s:
+        _, conf = match_job(s, cls("rejection", "Globex", "Senior Security Engineer"),
+                            "no-reply@greenhouse-mail.io", "Update")
+        assert conf < 0.8
+        _, conf = match_job(s, cls("rejection", "Globex", "Cloud Security Engineer"),
+                            "no-reply@greenhouse-mail.io", "Update")
+        assert conf < 0.8  # subset title no longer scores 100
+
+
+def test_interleaved_sessions_cannot_regress_status(engine, db):
+    """Session A reads APPLIED, session B moves the job to INTERVIEWING and commits, then A
+    tries to apply a (late) confirmation based on its stale read."""
+    with Session(engine) as a, Session(engine) as b:
+        ja = a.get(Job, db["soc"])
+        jb = b.get(Job, db["soc"])
+        assert ja.status == jb.status == JobStatus.APPLIED
+        assert advance_status(b, jb, JobStatus.INTERVIEWING, "b: interview") is True
+        b.commit()
+        assert advance_status(a, ja, JobStatus.ACKNOWLEDGED, "a: stale confirmation") is False
+        a.commit()
+        assert ja.status == JobStatus.INTERVIEWING  # reloaded, not the stale value
+    with Session(engine) as s:
+        assert s.get(Job, db["soc"]).status == JobStatus.INTERVIEWING
+        events = s.exec(select(StatusEvent).where(StatusEvent.job_id == db["soc"])).all()
+        assert [e.note for e in events] == ["b: interview"]  # no event for the lost update
+
+
+def test_interleaved_mark_ghosted_loses_to_reply(engine, db):
+    with Session(engine) as a, Session(engine) as b:
+        a.get(Job, db["soc"])  # UI session loaded the job (APPLIED)
+        jb = b.get(Job, db["soc"])
+        assert advance_status(b, jb, JobStatus.INTERVIEWING, "reply") is True
+        b.commit()
+        assert mark_ghosted(a, db["soc"]) is False
+    with Session(engine) as s:
+        assert s.get(Job, db["soc"]).status == JobStatus.INTERVIEWING
+        assert not s.exec(select(StatusEvent).where(
+            StatusEvent.status == JobStatus.GHOSTED)).all()

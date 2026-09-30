@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 import pytest
@@ -157,3 +158,80 @@ def test_one_failure_does_not_block_others(kr):
 def test_unknown_backend_rejected_by_config():
     with pytest.raises(ValidationError):
         NotifyConfig(backends=["bogus"])
+
+
+# --------------------------------------------------------------------------- audit regressions
+
+TG_CFG = {"backends": ["telegram"], "telegram_chat_id": "42"}
+
+
+def _all_log_text(caplog) -> str:
+    return "\n".join(r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("status,ok", [(200, True), (401, False), (500, False)])
+def test_telegram_token_redacted_from_httpx_logs(kr, caplog, status, ok):
+    caplog.set_level(logging.DEBUG)
+    set_telegram_token("123456:SECRET-token_x")
+    rec = Recorder(status=status, body={"ok": ok})
+    res = send("t", "b", config=TG_CFG, client=rec.client())  # caller-supplied client
+    assert res[0].ok is ok
+    text = _all_log_text(caplog)
+    assert "HTTP Request: POST https://api.telegram.org/bot***/sendMessage" in text
+    assert "SECRET" not in text and "123456" not in text
+
+
+def test_telegram_token_redacted_with_default_client(kr, caplog, monkeypatch):
+    caplog.set_level(logging.DEBUG)
+    set_telegram_token("999:TOPSECRET")
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, json={"ok": True}))
+    real_client = httpx.Client
+    monkeypatch.setattr(backends.httpx, "Client",
+                        lambda **kw: real_client(transport=transport, **kw))
+    assert send("t", "b", config=TG_CFG)[0].ok
+    text = _all_log_text(caplog)
+    assert "bot***" in text and "TOPSECRET" not in text
+
+
+def test_redaction_filter_on_httpcore_children():
+    record = logging.LogRecord("httpcore.http11", logging.DEBUG, __file__, 1,
+                               "send_request url=%s", ("https://api.telegram.org/bot1:AB/x",),
+                               None)
+    for name in ("httpx", "httpcore", "httpcore.http11", "httpcore.connection"):
+        assert any(isinstance(f, backends.RedactTelegramToken)
+                   for f in logging.getLogger(name).filters)
+    backends.RedactTelegramToken().filter(record)
+    assert record.getMessage() == "send_request url=https://api.telegram.org/bot***/x"
+
+
+def test_redirect_is_failure_and_not_followed(kr):
+    set_telegram_token("1:ABC")
+    seen: list[str] = []
+
+    def handler(req):
+        seen.append(str(req.url))
+        return httpx.Response(302, headers={"location": "https://evil.example/collect"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    res = send("t", "b", config=TG_CFG, client=client)
+    assert not res[0].ok and res[0].error == "HTTP 302"
+    assert seen == ["https://api.telegram.org/bot1:ABC/sendMessage"]  # no second request
+    rec = Recorder(status=204)
+    res = send("t", "b", config={"backends": ["ntfy"], "ntfy_url": "https://n.example/t"},
+               client=rec.client())
+    assert res[0].ok
+
+
+def test_email_partial_refusal_reported(kr):
+    class PartialSMTP(FakeSMTP):
+        def send_message(self, msg):
+            self.sent.append(msg)
+            return {"bad@example.test": (550, b"No such user")}
+
+    set_smtp_password("me@example.test", "pw")
+    cfg = NotifyConfig(backends=["email"], smtp_host="smtp.example.test",
+                       smtp_user="me@example.test",
+                       smtp_to=["me@example.test", "bad@example.test"])
+    res = send("Digest", "Hello", config=cfg, smtp_factory=PartialSMTP)
+    assert not res[0].ok
+    assert "partially delivered" in res[0].error and "bad@example.test" in res[0].error
