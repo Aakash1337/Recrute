@@ -31,6 +31,7 @@ class BoardSource:
             key = f"{self.name}:{company.ats_token}"
             try:
                 payload = self.fetch_board(ctx, company)
+                self.validate_payload(payload)
                 jobs = list(self.parse_board(payload, company, ctx))
             except (HttpError, ValueError, KeyError, TypeError) as e:
                 ctx.errors[key] = str(e)[:500]
@@ -39,6 +40,17 @@ class BoardSource:
             ctx.errors.pop(key, None)
             log.debug("%s %s: %d jobs", self.name, company.ats_token, len(jobs))
             yield from jobs
+
+    # Key that must hold the job list in a valid board response. A 200 response without it
+    # (e.g. {"error": "temporarily unavailable"}) is a failed poll, NOT an empty board: treating
+    # it as empty would close every known posting.
+    jobs_key: str | None = None
+
+    def validate_payload(self, payload: Any) -> None:
+        if self.jobs_key is None:
+            return
+        if not isinstance(payload, dict) or not isinstance(payload.get(self.jobs_key), list):
+            raise ValueError(f"malformed {self.name} board response (no '{self.jobs_key}' list)")
 
     def fetch_board(self, ctx: SourceContext, company: CompanyRef) -> Any:
         raise NotImplementedError

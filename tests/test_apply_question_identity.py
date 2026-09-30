@@ -151,3 +151,18 @@ def test_new_condition_in_live_description_is_a_new_question():
                             type="select", options=["Yes", "No"])
     live = approved.model_copy(update={"description": "Without employer sponsorship"})
     assert not same_question(approved, live)
+
+
+@pytest.mark.parametrize("approved,live", [
+    ("Years of C++ experience", "Years of C# experience"),
+    ("Salary >= 100k acceptable?", "Salary <= 100k acceptable?"),
+    ("Experience with .NET", "Experience with NET"),
+])
+def test_symbols_are_meaningful(approved, live):
+    assert not same_question(q(approved, "text", ()), q(live, "text", ()))
+
+
+def test_added_description_is_a_change():
+    a = q("Please describe your experience", "textarea", ())
+    b = a.model_copy(update={"description": "Professional experience with Kubernetes"})
+    assert not same_question(a, b)

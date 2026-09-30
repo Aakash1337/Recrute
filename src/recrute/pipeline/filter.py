@@ -139,10 +139,15 @@ def years_required(description: str) -> int | None:
             in_preferred = False
         if in_preferred or PREFERRED_RE.search(stripped):
             continue
-        lows = [int(m.group(1)) for m in YEARS_RE.finditer(stripped)
-                if 0 < int(m.group(1)) <= 20]
-        if lows:
-            per_line.append(min(lows))
+        matches = [m for m in YEARS_RE.finditer(stripped) if 0 < int(m.group(1)) <= 20]
+        if not matches:
+            continue
+        lows = [int(m.group(1)) for m in matches]
+        # alternatives ("5 years with a BS OR 3 with an MS") -> the smallest path counts;
+        # conjunctions ("10 years of X AND 2 years of Y") -> every requirement applies
+        between = [stripped[a.end():b.start()] for a, b in zip(matches, matches[1:], strict=False)]
+        alternatives = bool(between) and all(re.search(r"\bor\b", t, re.I) for t in between)
+        per_line.append(min(lows) if alternatives else max(lows))
     return max(per_line) if per_line else None
 
 

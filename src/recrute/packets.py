@@ -129,7 +129,9 @@ def _save_to_bank(job: Job, packet: Packet) -> None:
                                              a.value.lower()):
             continue
         try:
-            add_answer(get_paths(), q.label.strip()[:80], a.value.strip())
+            from recrute.tailor.answers import question_identity
+
+            add_answer(get_paths(), question_identity(q), a.value.strip())
         except Exception as e:  # the bank is a convenience; approval already succeeded
             log.warning("could not save answer to bank: %s", e.__class__.__name__)
 

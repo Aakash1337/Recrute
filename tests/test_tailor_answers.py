@@ -495,3 +495,28 @@ def test_unfinished_degree_not_reported_as_completed():
     only_current = Profile(name="Ada", education=[
         Education(id="e1", school="Tech U", degree="Master of Science", end="Expected 2027")])
     assert highest_completed_degree(only_current) is None
+
+
+@pytest.mark.parametrize("end,done", [
+    ("2020", True), ("2020-05", True), ("05/2020", True), ("May 2020", True),
+    ("2099-12", False), ("Dec 2099", False), ("Expected 2027", False), ("present", False),
+    ("sometime", False),
+])
+def test_completion_date_parsing(end, done):
+    from recrute.schemas import Education
+    from recrute.tailor.answer_questions import _completed
+
+    assert _completed(Education(id="e", school="U", degree="BS", end=end)) is done
+
+
+def test_bank_answer_bound_to_description():
+    from recrute.schemas import FormQuestion
+    from recrute.tailor.answers import AnswerBank, answer_key, match_question, question_identity
+
+    py = FormQuestion(id="e", label="Please describe your experience", type="textarea",
+                      description="Python development")
+    k8s = py.model_copy(update={"description": "Kubernetes operations"})
+    bank = AnswerBank.model_validate({"common": {answer_key(question_identity(py)): "Python!"}})
+    assert match_question(py, bank).value == "Python!"
+    other = match_question(k8s, bank)
+    assert other is None or other.value != "Python!" or other.needs_review

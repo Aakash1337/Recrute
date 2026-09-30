@@ -535,3 +535,10 @@ def test_target_change_voids_unsent_approval(engine):
         app = s.exec(select(Application)).one()
         assert job.ats == "greenhouse" and job.status == JobStatus.SHORTLISTED
         assert app.approved_at is None
+
+
+def test_years_conjunction_vs_alternatives():
+    assert years_required("10 years of security experience and 2 years of Python "
+                          "experience") == 10
+    assert years_required("5 years of experience with a BS or 3 years of experience with an "
+                          "MS") == 3

@@ -39,3 +39,38 @@ def test_run_due_task_does_not_open_browser_when_idle(engine, paths):
     finally:
         LazyBrowser.__call__ = orig  # type: ignore[method-assign]
     assert out["ran"] is False and not opened
+
+
+def test_assist_respects_suspension_and_keeps_evidence(engine, paths):
+    from datetime import UTC, datetime
+
+    from recrute.apply.state import suspend
+    from recrute.applying import _record_assist, _run_assist_request
+    from recrute.models import Application, Job, JobStatus
+    from recrute.schemas import ApplyOutcome, Packet
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://www.linkedin.com/jobs/view/1",
+                  canonical_url="c", ats="linkedin_easy_apply", status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.flush()
+        app = Application(job_id=job.id, channel="linkedin_easy_apply",
+                          packet=Packet(job_id=job.id).model_dump(mode="json"),
+                          outcome={"assist_requested": "x",
+                                   "details": {"submit_attempted": True,
+                                               "attempted_at": "2026-09-01T10:00:00+00:00"}})
+        s.add(app)
+        s.commit()
+        suspend(s, "linkedin_easy_apply", datetime.now(UTC), "checkpoint")
+        s.commit()
+        opened = []
+        ctx = SimpleNamespace(router=None, paths=paths)
+        browser = SimpleNamespace(__call__=lambda: opened.append(1))
+        assert _run_assist_request(ctx, s, browser) is None and not opened
+        s.refresh(app)
+        assert app.outcome.get("assist_requested")  # kept for after the suspension
+        _record_assist(s, app, ApplyOutcome(status="needs_human", reason="new field",
+                                            details={"submit_attempted": False}))
+        s.refresh(app)
+        d = app.outcome["details"]
+        assert d["submit_attempted"] is True and d["attempted_at"].startswith("2026-09-01")

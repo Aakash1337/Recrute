@@ -144,14 +144,20 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
 
     rows = session.exec(select(Application, Job).join(Job, Job.id == Application.job_id)
                         .where(Job.status == JobStatus.NEEDS_HUMAN)).all()
+    from datetime import UTC, datetime
+
+    from recrute.apply.state import suspension
+
     for app, job in rows:
         if not (app.outcome or {}).get("assist_requested") or not app.packet:
             continue
+        adapter = get_adapter(app.channel, router=ctx.router) if app.channel != "manual" \
+            else adapter_for(job, router=ctx.router)
+        if suspension(session, adapter.name, datetime.now(UTC)) is not None:
+            continue  # the account kill switch applies to assisted fills too; request kept
         app.outcome = {k: v for k, v in app.outcome.items() if k != "assist_requested"}
         session.add(app)
         session.commit()
-        adapter = get_adapter(app.channel, router=ctx.router) if app.channel != "manual" \
-            else adapter_for(job, router=ctx.router)
         files = {k: v for k, v in (("resume", app.resume_path),
                                    ("cover_letter", app.cover_letter_path)) if v}
         outcome = apply_job(job, Packet.model_validate(app.packet), mode="fill_and_pause",
@@ -173,7 +179,24 @@ def _record_assist(session: Session, app: Application, outcome) -> None:
     from recrute.apply.state import suspend
 
     details = outcome.details or {}
-    app.outcome = {**outcome.model_dump(mode="json"), "assisted": True}
+    prior = dict(app.outcome or {})
+    new = outcome.model_dump(mode="json")
+    history = list(prior.get("assist_history", []))[-9:] + [
+        {"at": datetime.now(UTC).isoformat(), "status": new.get("status"),
+         "reason": new.get("reason")}]
+    merged = {**prior, **new, "assisted": True, "assist_history": history}
+    # evidence that an earlier attempt may already have reached the employer is never erased by
+    # a later assisted attempt: it keeps counting toward caps/cooldowns until you resolve it
+    prior_details = prior.get("details") or {}
+    if prior_details.get("submit_attempted") or prior_details.get("handoff_reservation"):
+        merged["details"] = {**prior_details, **(new.get("details") or {}),
+                             "submit_attempted": bool(prior_details.get("submit_attempted")
+                                                      or details.get("submit_attempted")),
+                             "handoff_reservation": True}
+        for key in ("attempted_at", "attempt_started_at"):
+            if prior_details.get(key):
+                merged["details"][key] = prior_details[key]
+    app.outcome = merged
     if outcome.receipt_dir:
         app.receipt_dir = outcome.receipt_dir
     app.last_error = outcome.reason or app.last_error

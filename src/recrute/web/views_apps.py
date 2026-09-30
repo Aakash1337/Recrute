@@ -294,27 +294,41 @@ _ingest_state: dict = {"running": False, "error": None}
 
 @router.get("/profile", response_class=HTMLResponse)
 def profile_page(request: Request):
+    import difflib
+    import json
+
+    from recrute.schemas import VerifierFlag
+    from recrute.tailor.answers import _file_lock
+    from recrute.tailor.ingest import _sha, proposal_digest, proposed_flags_path
+
     paths = get_paths()
     current = paths.data / "profile.yaml"
     proposed = paths.data / "profile.proposed.yaml"
-    diff = ""
+    diff, flags, digest, text = "", None, "", None
     if proposed.exists():
-        import difflib
-
-        old = current.read_text(encoding="utf-8").splitlines() if current.exists() else []
-        new = proposed.read_text(encoding="utf-8").splitlines()
-        diff = "\n".join(difflib.unified_diff(old, new, "profile.yaml", "proposed", lineterm=""))
+        # ONE snapshot under the proposal lock: the diff you see, its flags and the digest the
+        # Accept button sends all describe the same bytes
+        with _file_lock(proposed):
+            if proposed.exists():
+                text = proposed.read_text(encoding="utf-8")
+                fp = proposed_flags_path(paths)
+                if fp.exists():
+                    record = json.loads(fp.read_text(encoding="utf-8"))
+                    if record.get("proposal_sha256") == _sha(text):
+                        flags = [VerifierFlag.model_validate(f)
+                                 for f in record.get("flags", [])]
+        if text is not None:
+            old = current.read_text(encoding="utf-8").splitlines() if current.exists() else []
+            diff = "\n".join(difflib.unified_diff(old, text.splitlines(), "profile.yaml",
+                                                  "proposed", lineterm=""))
+            digest = proposal_digest(text)
     files = sorted(p.name for p in (paths.resources / "resume").glob("*")
                    if p.is_file() and p.name != ".gitkeep")
-    from recrute.tailor import read_proposal_flags
-
-    flags = read_proposal_flags(paths) if proposed.exists() else None
     with session_scope() as s:
         return page(request, "profile.html", {
             "current": current.read_text(encoding="utf-8") if current.exists() else "",
-            "proposed": proposed.exists(), "diff": diff, "files": files, "flags": flags,
-            "digest": _proposal_digest(paths),
-            "state": _ingest_state}, s)
+            "proposed": text is not None, "diff": diff, "files": files, "flags": flags,
+            "digest": digest, "state": _ingest_state}, s)
 
 
 @router.post("/profile/ingest", response_class=HTMLResponse)
@@ -343,13 +357,6 @@ def profile_ingest():
 
     threading.Thread(target=run, daemon=True).start()
     return _msg("Structuring your resume files… refresh in a minute.")
-
-
-def _proposal_digest(paths) -> str:
-    import hashlib
-
-    f = paths.data / "profile.proposed.yaml"
-    return hashlib.sha256(f.read_bytes()).hexdigest()[:24] if f.exists() else ""
 
 
 @router.post("/profile/accept", response_class=HTMLResponse)

@@ -597,3 +597,16 @@ def test_receipt_index_and_ghost_button(client):
     idx = client.get("/receipt/receipts/9-x").text
     assert "blocked.png" in idx
     assert client.get("/receipt/../data").status_code == 404
+
+
+def test_crlf_proposal_can_be_accepted(client):
+    import re
+
+    from recrute.paths import get_paths
+
+    prop = get_paths().data / "profile.proposed.yaml"
+    prop.write_bytes(b"name: Ada\r\nheadline: Analyst\r\n")  # as written on Windows
+    page = client.get("/profile").text
+    digest = re.search(r'name="digest" value="([0-9a-f]+)"', page).group(1)
+    r = client.post("/profile/accept", data={"digest": digest, "override": "on"}, headers=HX)
+    assert r.status_code == 200 and "updated" in r.text

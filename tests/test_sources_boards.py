@@ -236,3 +236,19 @@ def test_smartrecruiters_detail_budget_rotates(monkeypatch):
         monkeypatch.setattr(sr.time, "time", lambda w=window: w * 6 * 3600 + 1)
         list(src.parse_board({"content": postings}, company, ctx))
     assert fetched == {str(i) for i in range(31)}
+
+
+@pytest.mark.parametrize("payload", [{"error": "temporarily unavailable"}, {"jobs": None}, []])
+def test_malformed_board_is_an_error_not_an_empty_board(payload):
+    from recrute.criteria import Criteria
+    from recrute.sources.base import CompanyRef, SourceContext
+    from recrute.sources.greenhouse import GreenhouseSource
+
+    class Http:
+        def get_json(self, url):
+            return payload
+
+    ctx = SourceContext(http=Http(), criteria=Criteria(),
+                        companies=[CompanyRef(name="Acme", ats="greenhouse", ats_token="acme")])
+    assert list(GreenhouseSource().fetch(ctx)) == []
+    assert "greenhouse:acme" in ctx.errors  # -> poll error, and no closure

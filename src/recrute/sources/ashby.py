@@ -90,6 +90,7 @@ def parse_board(payload: dict[str, Any], token: str,
 
 
 class AshbySource(BoardSource):
+    jobs_key = "jobs"
     name = "ashby"
 
     def fetch_board(self, ctx: SourceContext, company: CompanyRef) -> Any:

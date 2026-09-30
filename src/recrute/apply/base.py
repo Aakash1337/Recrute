@@ -181,10 +181,7 @@ _COSMETIC = {"please", "optional", "required", "your", "the", "a", "an", "profil
 # Explicit label equivalences (after normalization) that are genuinely the same field.
 _ALIASES = [{"location", "location city", "current location", "city location"},
             {"linkedin", "linkedin profile", "linkedin url", "linkedin profile url"}]
-# Description content that can carry conditions: then it must match exactly.
-_CONDITION_RE = re.compile(
-    r"\d|sponsor|visa|citizen|authori[sz]|clearance|country|countries|canada|kingdom|\buk\b|"
-    r"europe|india|remote|relocat|salary|hour|year|require|must|only|not\b|without", re.I)
+
 
 
 def same_question(approved: FormQuestion, live: FormQuestion) -> bool:
@@ -205,15 +202,19 @@ def same_question(approved: FormQuestion, live: FormQuestion) -> bool:
             pair == {"text", "choice"} and not approved.options and not live.options)
         if not ok:
             return False
-    if not _same_description(approved.description, live.description):
-        return False
     a, b = dom.norm(approved.label), dom.norm(live.label)
+    if not _same_description(approved.description, live.description):
+        # The one tolerated case: the live page shows NO description (the extractor can miss
+        # help text rendered away from the field) while the label is exactly the approved one.
+        # Added or different descriptions always count as a change.
+        if live.description or not a or a != b:
+            return False
     if not a or not b or a == b:
         return True
-    ca, cb = re.sub(r"[^a-z0-9]", "", a), re.sub(r"[^a-z0-9]", "", b)
+    ca, cb = _compact(a), _compact(b)
     if ca == cb:
         return True  # "VeteranStatus" vs "Veteran Status"
-    ta, tb = re.findall(r"[a-z0-9]+", a), re.findall(r"[a-z0-9]+", b)
+    ta, tb = _tokens(a), _tokens(b)
     if any({" ".join(ta), " ".join(tb)} <= group for group in _ALIASES):
         return True
     if [t for t in ta if any(c.isdigit() for c in t)] != \
@@ -224,19 +225,23 @@ def same_question(approved: FormQuestion, live: FormQuestion) -> bool:
         [t for t in ta if t not in _COSMETIC] == [t for t in tb if t not in _COSMETIC]
 
 
+# Symbols that change meaning (C++ vs C#, >= vs <=, .NET) are part of a question's identity.
+_MEANINGFUL = "+#<>=.%$/&"
+
+
+def _compact(s: str) -> str:
+    return re.sub(rf"[^a-z0-9{re.escape(_MEANINGFUL)}]", "", s)
+
+
+def _tokens(s: str) -> list[str]:
+    return re.findall(rf"[a-z0-9{re.escape(_MEANINGFUL)}]+", s)
+
+
 def _same_description(approved: str, live: str) -> bool:
+    """Descriptions must say the same thing. Added or removed help text counts as a change:
+    conditions ("with Kubernetes", "in Canada") often live there."""
     a, b = dom.norm(approved or ""), dom.norm(live or "")
-    if a == b or re.sub(r"[^a-z0-9]", "", a) == re.sub(r"[^a-z0-9]", "", b):
-        return True
-    if not a:
-        # nothing was reviewed at CP2: new help text is only harmless if it can't carry
-        # conditions ("in Canada", "without sponsorship", "3+ years")
-        return not _CONDITION_RE.search(b)
-    if not b:
-        # the live page shows no description where one was approved: can't reconcile unless
-        # the approved one had no conditions in it
-        return not _CONDITION_RE.search(a)
-    return False
+    return a == b or _compact(a) == _compact(b)
 
 
 def resolve_answer(q: FormQuestion, packet: Packet, aliases: Mapping[str, Sequence[str]] = {},

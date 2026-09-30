@@ -60,6 +60,7 @@ def parse_widget(payload: dict[str, Any], token: str,
 
 
 class WorkableSource(BoardSource):
+    jobs_key = "jobs"
     name = "workable"
 
     def fetch_board(self, ctx: SourceContext, company: CompanyRef) -> Any:

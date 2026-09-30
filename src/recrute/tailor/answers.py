@@ -117,6 +117,11 @@ def _full_key(label: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "answer"
 
 
+def question_identity(q: FormQuestion) -> str:
+    """What a reusable answer is bound to: the label AND its description."""
+    return f"{q.label} -- {q.description}".strip() if q.description else q.label
+
+
 def answer_key(label: str) -> str:
     """Stable answers.yaml key for a question label ("Why do you want X?" -> why_do_you_want_x).
     Long labels get a digest suffix so two different questions never share a key."""
@@ -609,12 +614,14 @@ def _common_answer(q: FormQuestion, bank: AnswerBank) -> tuple[str, bool] | None
     """(text, exact) from bank.common for a reusable free-text question."""
     if not bank.common or q.type not in ("text", "textarea"):
         return None
-    key = answer_key(q.label)
+    key = answer_key(question_identity(q))
     if key in bank.common:
         return bank.common[key], True
-    legacy = _full_key(q.label)[:60]  # keys written before digest suffixes existed
-    if legacy != key and legacy in bank.common:
-        return bank.common[legacy], False  # possibly another question's answer: review it
+    # label-only / legacy truncated keys: possibly another question's answer (the description
+    # can change the subject), so only ever offered for review
+    for legacy in {answer_key(q.label), _full_key(q.label)[:60]} - {key}:
+        if legacy in bank.common:
+            return bank.common[legacy], False
     keys = list(bank.common)
     best = process.extractOne(q.label, [k.replace("_", " ") for k in keys],
                               scorer=fuzz.token_set_ratio, processor=utils.default_process,

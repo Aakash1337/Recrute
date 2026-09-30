@@ -72,18 +72,45 @@ _DEGREE_RANK = [(r"ph\.?\s?d|doctor", 5), (r"master|m\.?s\b|m\.?sc|mba|m\.?eng",
                 (r"associate", 2), (r"high school|diploma|ged", 1)]
 
 
-def _completed(ed) -> bool:
-    """Completed only if it has an end year that isn't in the future (and isn't 'present' /
-    'expected'). Anything unclear is not treated as completed."""
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def completion_date(end: str):
+    """The date an education entry was completed, from "2024", "2024-05", "05/2024",
+    "May 2024", "2024-05-17"; None when it's ongoing or can't be parsed. A month means the end
+    of that month; a bare year means the end of that year."""
+    import calendar
     import re
     from datetime import date
 
-    end = (ed.end or "").lower()
-    if not end or any(w in end for w in ("present", "expected", "current", "ongoing")):
-        return False
-    m = re.search(r"(19|20)\d{2}", end)
-    return bool(m) and int(m.group(0)) <= date.today().year and not (
-        int(m.group(0)) == date.today().year and re.search(r"\b(dec|nov|oct|sep)", end))
+    t = (end or "").strip().lower()
+    if not t or any(w in t for w in ("present", "expected", "current", "ongoing", "now")):
+        return None
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", t)
+    if m:
+        return date(int(m[1]), int(m[2]), int(m[3]))
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})", t) or re.fullmatch(r"(\d{1,2})/(\d{4})", t)
+    if m:
+        y, mo = (int(m[1]), int(m[2])) if len(m[1]) == 4 else (int(m[2]), int(m[1]))
+        return date(y, mo, calendar.monthrange(y, mo)[1]) if 1 <= mo <= 12 else None
+    m = re.fullmatch(r"([a-z]{3})[a-z]*\.?,?\s+(\d{4})", t)
+    if m and m[1] in _MONTHS:
+        y, mo = int(m[2]), _MONTHS[m[1]]
+        return date(y, mo, calendar.monthrange(y, mo)[1])
+    m = re.fullmatch(r"(\d{4})", t)
+    if m:
+        return date(int(m[1]), 12, 31)
+    return None
+
+
+def _completed(ed) -> bool:
+    """Completed only when the end date is known and not after today (a bare current year is
+    ambiguous, so it counts as not completed and you answer it at CP2)."""
+    from datetime import date
+
+    done = completion_date(ed.end)
+    return done is not None and done <= date.today()
 
 
 def highest_completed_degree(profile: Profile) -> str | None:
