@@ -144,6 +144,30 @@ def get_state(session: Session, key: str, default: Any = None) -> Any:
     return default if row is None else row.value
 
 
+def update_state(bind: Any, key: str, change: Any) -> Any:
+    """Atomically read-modify-write one state value: `change(current) -> (new, result)`; a
+    `new` of None writes nothing. The row's write lock is taken BEFORE reading (a no-op
+    UPDATE), so concurrent callers (threads or processes) are serialized. Returns `result`."""
+    from sqlalchemy import update
+
+    with Session(bind) as s:
+        if s.get(Setting, STATE_PREFIX + key) is None:
+            try:
+                set_state(s, key, {})
+            except Exception:  # noqa: BLE001 - created concurrently: fine
+                s.rollback()
+        s.commit()
+        s.execute(update(Setting).where(Setting.key == STATE_PREFIX + key)
+                  .values(key=Setting.key).execution_options(synchronize_session=False))
+        s.expire_all()
+        new, result = change(dict(get_state(s, key, {}) or {}))
+        if new is None:
+            s.rollback()
+        else:
+            set_state(s, key, new)
+        return result
+
+
 def set_state(session: Session, key: str, value: Any) -> None:
     now = utcnow()
     stmt = insert(Setting).values(key=STATE_PREFIX + key, value=value, updated_at=now)

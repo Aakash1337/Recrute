@@ -769,3 +769,32 @@ def test_unreadable_message_is_retried_not_skipped(engine, monkeypatch):
         second = sync_inbox(s, Router(), cfg, "pw", connect=lambda c: fake)
         assert second["messages"] == 2  # 100 is read now (101 again, deduplicated by id)
         assert get_state(s, "imap:me@example.com:INBOX")["uid"] == 101
+
+
+def test_linkedin_baseline_contacts_are_answered_and_cover_the_live_form():
+    from recrute.apply.adapters.linkedin_easy_apply import BASELINE_QUESTIONS
+    from recrute.apply.base import LiveField, coverage_check, verify_fields
+    from recrute.schemas import Packet, Profile
+    from recrute.tailor.answer_questions import answer_questions
+    from recrute.tailor.answers import AnswerBank, Contact
+
+    bank = AnswerBank(contact=Contact(full_name="Ada Lovelace", email="ada@example.com",
+                                      phone="+1 415 555 0100"))
+    qs = [q for q in BASELINE_QUESTIONS if q.type != "file"]
+    res = answer_questions(qs, profile=Profile(name="Ada Lovelace"), bank=bank, router=None)
+    answers = {a.question_id: a.value for a in res.answers}
+    assert answers["email"] == "ada@example.com"
+    assert answers["phone_country"] == "United States (+1)"
+    packet = Packet(job_id=1, questions=qs, answers=res.answers)
+    live = [
+        LiveField(id="email", label="Email address", type="select", widget="select",
+                  required=True, options=["ada@example.com"], current="ada@example.com"),
+        LiveField(id="phone_country", label="Phone country code", type="select",
+                  widget="select", required=True,
+                  options=["United States (+1)", "Canada (+1)"], current="United States (+1)"),
+    ]
+    assert coverage_check(live, packet) == [] and verify_fields(live, packet, {}) == {}
+    # a live picker without that exact option is not covered (CP3), never guessed
+    other = [live[0].model_copy(update={"options": ["someone@else.example"],
+                                        "current": "someone@else.example"})]
+    assert coverage_check(other, packet) == ["email"]

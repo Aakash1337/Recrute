@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 from recrute.http import Http, HttpError
 from recrute.models import Company, utcnow
 from recrute.pipeline.ingest import ingest, mark_missing_closed
-from recrute.settings import get_setting, get_state, set_state
+from recrute.settings import get_setting, get_state, set_state, update_state
 from recrute.sources import (
     ATS_BOARD_SOURCES,
     CompanyRef,
@@ -288,9 +288,25 @@ def discover_linkedin(ctx) -> dict:
         if state.get("day") != today:
             state.update(day=today, searches=0, views=0)
         budget_cfg = get_setting(s, "linkedin_session_budget")
-        budget = SessionBudget(max_searches=int(budget_cfg["searches"]),
-                               max_views=int(budget_cfg["views"]),
-                               searches_used=state["searches"], views_used=state["views"])
+        caps = {"searches": int(budget_cfg["searches"]), "views": int(budget_cfg["views"])}
+        bind = s.get_bind()
+
+        def reserve(kind: str) -> bool:
+            """Take one of today's slots in the DB before the page is opened: atomic across
+            overlapping runs, and already counted if this process dies mid-browse."""
+            def take(cur: dict):
+                day = date.today().isoformat()
+                if cur.get("day") != day:
+                    cur.update(day=day, searches=0, views=0)
+                if int(cur.get(kind, 0)) >= caps[kind]:
+                    return None, False
+                cur[kind] = int(cur.get(kind, 0)) + 1
+                return cur, True
+            return update_state(bind, "linkedin_session", take)
+
+        budget = SessionBudget(max_searches=caps["searches"], max_views=caps["views"],
+                               searches_used=state["searches"], views_used=state["views"],
+                               reserve=reserve)
         seen = set(state.get("seen_ids", []))
         hours = get_setting(s, "active_hours")
         kwargs = {}
@@ -323,8 +339,9 @@ def discover_linkedin(ctx) -> dict:
         except _GuardStop as e:
             result["stopped"] = str(e)  # quiet stop: someone else already raised the alarm
         except SourceBlocked as e:
-            until = now + e.backoff
-            state.update(blocked_until=until.isoformat(), block_reason=e.reason)
+            until, why = now + e.backoff, e.reason
+            update_state(bind, "linkedin_session", lambda cur: (
+                {**cur, "blocked_until": until.isoformat(), "block_reason": why}, None))
             result["blocked"] = e.reason
             # ...and a security signal while BROWSING stops automated Easy Apply too.
             suspend(s, LINKEDIN_CHANNEL, now, f"LinkedIn browsing: {e.reason}", e.backoff)
@@ -335,24 +352,26 @@ def discover_linkedin(ctx) -> dict:
                    f"{until:%Y-%m-%d}. Log in manually and check your account.", "high")
         except Exception as e:  # e.g. a navigation timeout: keep what was already collected
             crashed = e
-        finally:
-            # the account budget is spent whatever happens next: persist it right away
-            state["searches"] = src.budget.searches_used
-            state["views"] = src.budget.views_used
-            set_state(s, "linkedin_session", state)
+        # (the budget was reserved in the DB slot by slot, before each page: nothing to save)
         if found:
             result.update(ingest(s, found).as_dict())
         # only now are the postings stored: acknowledge their ids (a failure before this point
         # leaves them unseen, so the next session fetches them again)
-        state["seen_ids"] = sorted(src.seen_ids)[-5000:]
         cursor_after = int(getattr(src, "query_cursor", cursor_before))
-        state["query_cursor"] = cursor_after
         # the queries actually searched this session are now covered up to `now`
         searched = [rotated[i % len(rotated)] for i in range(cursor_after - cursor_before)] \
             if rotated else []
-        state["query_ok"] = {**ok, **{q: now.isoformat() for q in searched}}
-        set_state(s, "linkedin_session", state)
-        result.update(searches=state["searches"], views=state["views"])
+
+        def finish(cur: dict):  # merged into the CURRENT state (another run may have saved)
+            ids = set(cur.get("seen_ids") or []) | set(src.seen_ids)
+            return {**cur, "seen_ids": sorted(ids)[-5000:],
+                    "query_cursor": max(int(cur.get("query_cursor", 0)), cursor_after),
+                    "query_ok": {**(cur.get("query_ok") or {}),
+                                 **{q: now.isoformat() for q in searched}}}, cur
+
+        final = update_state(bind, "linkedin_session", finish)
+        result.update(searches=int(final.get("searches", 0)) if final else 0,
+                      views=int(final.get("views", 0)) if final else 0)
         if crashed is not None:
             raise crashed
         return result

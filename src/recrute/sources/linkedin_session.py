@@ -89,6 +89,21 @@ class SessionBudget:
     max_views: int = 80
     searches_used: int = 0  # already used today (persisted by the caller)
     views_used: int = 0
+    # reserve(kind) -> bool: durably take one "searches"/"views" slot BEFORE the page is
+    # opened (atomic, shared with any other run); False = today's cap is used up
+    reserve: Callable[[str], bool] | None = None
+
+    def take(self, kind: str) -> bool:
+        if self.reserve is not None:
+            if not self.reserve(kind):
+                return False
+        elif (self.searches_left if kind == "searches" else self.views_left) <= 0:
+            return False
+        if kind == "searches":
+            self.searches_used += 1
+        else:
+            self.views_used += 1
+        return True
 
     @property
     def searches_left(self) -> int:
@@ -457,19 +472,17 @@ class LinkedInSessionSource:
         with self.page_factory() as page:
             cards: dict[str, SearchCard] = {}
             for q in self._queries(ctx)[:searches]:
-                if len(cards) >= views * 2:
+                if len(cards) >= views * 2 or not self.budget.take("searches"):
                     break
-                self.budget.searches_used += 1
                 html = self._visit(page, self._search_url(q, ctx))
                 self.query_cursor += 1
                 for c in parse_search_page(html):
                     if c.job_id not in self.seen_ids:
                         cards.setdefault(c.job_id, c)
             for jid, card in cards.items():
-                if views <= 0:
+                if views <= 0 or not self.budget.take("views"):
                     break
                 views -= 1
-                self.budget.views_used += 1
                 html = self._visit(page, VIEW.format(id=jid))
                 self.seen_ids.add(jid)
                 self.new_ids.append(jid)

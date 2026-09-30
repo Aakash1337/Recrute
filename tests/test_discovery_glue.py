@@ -309,7 +309,7 @@ def _linkedin_source(monkeypatch, fetch):
         def __init__(self, **kw):
             from recrute.sources.linkedin_session import SessionBudget
 
-            self.budget = SessionBudget(max_searches=10, max_views=10)
+            self.budget = kw.get("budget") or SessionBudget(max_searches=10, max_views=10)
             self.seen_ids = set(kw.get("seen_ids") or ())
 
         def fetch(self, ctx):
@@ -326,7 +326,7 @@ def test_linkedin_partial_failure_keeps_collected_jobs(engine, monkeypatch):
     from recrute.settings import get_state, set_setting
 
     def fetch(src):
-        src.budget.searches_used, src.budget.views_used = 1, 1
+        assert src.budget.take("searches") and src.budget.take("views")
         src.seen_ids.add("41")
         yield RawJob(source="linkedin_session", url="https://www.linkedin.com/jobs/view/41/",
                      title="Security Engineer", company="Acme", source_job_id="41")
@@ -350,7 +350,7 @@ def test_linkedin_ingest_failure_leaves_ids_unseen(engine, monkeypatch):
     from recrute.settings import get_state, set_setting
 
     def fetch(src):
-        src.budget.searches_used = 2
+        assert src.budget.take("searches") and src.budget.take("searches")
         src.seen_ids.add("42")
         yield RawJob(source="linkedin_session", url="https://www.linkedin.com/jobs/view/42/",
                      title="Security Engineer", company="Acme", source_job_id="42")
@@ -410,3 +410,25 @@ def test_linkedin_session_looks_back_to_each_querys_last_search(engine, monkeypa
     # queries never searched before: a whole rotation back, not just 24 hours
     discovery.discover_linkedin(_ctx(engine))
     assert datetime.now(UTC) - seen["since"] > timedelta(days=2)
+
+
+def test_overlapping_linkedin_runs_cannot_share_the_budget(engine, monkeypatch):
+    from recrute.settings import get_state, set_setting
+
+    with Session(engine) as s:
+        set_setting(s, "sources_enabled", {"linkedin_session": True})
+        set_setting(s, "active_hours", [0, 24])
+        set_setting(s, "linkedin_session_budget", {"searches": 1, "views": 10})
+    got = []
+
+    def fetch(src):
+        got.append(src.budget.take("searches"))
+        if len(got) == 1:  # a second run starts while the first is still browsing
+            discovery.discover_linkedin(_ctx(engine))
+        return iter(())
+
+    _linkedin_source(monkeypatch, fetch)
+    discovery.discover_linkedin(_ctx(engine))
+    assert sorted(got) == [False, True]  # exactly one search for a cap of one
+    with Session(engine) as s:
+        assert get_state(s, "linkedin_session")["searches"] == 1

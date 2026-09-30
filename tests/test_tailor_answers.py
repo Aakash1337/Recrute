@@ -828,3 +828,18 @@ def test_phone_country_is_answered_only_for_us_numbers(phone, expected):
                      options=["United States (+1)", "Canada (+1)", "United Kingdom (+44)"])
     a = profile_answer(q, Profile(name="Ada", phone=phone))
     assert (a.value if a else None) == expected
+
+
+def test_qualified_yes_options_are_not_picked_from_the_bank():
+    from recrute.tailor.answers import WorkAuthorization, match_bool_option
+
+    opts = ["Yes, I am a US citizen or permanent resident",
+            "Yes, I am authorized on a visa", "No"]
+    assert match_bool_option(True, opts) is None
+    assert match_bool_option(False, opts) == "No"
+    assert match_bool_option(True, ["Yes", "No"]) == "Yes"
+    assert match_bool_option(True, ["Yes, I do", "No, I don't"]) == "Yes, I do"
+    bank = AnswerBank(work_authorization=WorkAuthorization(authorized_to_work_in_us=True))
+    hit = match_question(q("Are you legally authorized to work in the United States?", "radio",
+                           ["Yes, I am a US citizen or permanent resident", "No"]), bank)
+    assert hit is None or hit.value != "Yes, I am a US citizen or permanent resident"

@@ -496,10 +496,23 @@ def _norm_option(text: str) -> str:
     return " ".join(t.split())
 
 
+_BARE_REST = re.compile(r"(?:i\s+(?:am|do|will|can|have|would|could|may))?(?:\s+not)?",
+                        re.IGNORECASE)
+
+
 def match_bool_option(value: bool, options: list[str]) -> str | None:
-    """The option that literally starts with Yes/No. No fuzzy matching for booleans."""
+    """The option that is a plain Yes/No. No fuzzy matching for booleans, and nothing added:
+    "Yes, I am a US citizen or permanent resident" claims more than a bare yes, so it is left
+    for you (unless it is the ONLY way the form words it and you pick it at CP2)."""
     rx = _YES_RE if value else _NO_RE
-    hits = [o for o in options if rx.search(o)]
+    hits = []
+    for o in options:
+        m = rx.search(o)
+        if not m:
+            continue
+        rest = re.sub(r"[^\w\s]", " ", o[m.end():]).strip()
+        if _BARE_REST.fullmatch(" ".join(rest.split())):
+            hits.append(o)
     return hits[0] if len(hits) == 1 else None
 
 
@@ -581,6 +594,12 @@ def format_value(q: FormQuestion, value: bool | str | int | None) -> Any:
     """Shape a raw answer for the question type; None when it can't be expressed faithfully."""
     if value is None or value == "":
         return None
+    if not q.options and q.type in ("select", "radio", "multiselect"):
+        # a picker whose options can't be fetched before CP2 (LinkedIn's email / phone
+        # country): keep the grounded value; it must match a live option EXACTLY before it
+        # is selected or submitted (apply.dom.resolve_option), else CP3
+        text = ("Yes" if value else "No") if isinstance(value, bool) else str(value)
+        return [text] if q.type == "multiselect" else text
     if isinstance(value, bool):
         if q.type in ("select", "radio") or q.options:
             return match_bool_option(value, q.options)
