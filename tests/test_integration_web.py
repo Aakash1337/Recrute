@@ -158,7 +158,7 @@ class FakeIMAP:
         return "OK", [b"1"]
 
     def response(self, name):
-        return "OK", [str(self.uidvalidity).encode()]
+        return "UIDVALIDITY", [str(self.uidvalidity).encode()]
 
     def uid(self, cmd, *args):
         if cmd == "SEARCH":
