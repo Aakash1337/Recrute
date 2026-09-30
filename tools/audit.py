@@ -5,7 +5,7 @@ data/audits/, which Claude reads and fixes.
 
     uv run python tools/audit.py                       # whole repo
     uv run python tools/audit.py src/recrute/llm       # specific paths
-    uv run python tools/audit.py --changed             # files changed vs HEAD (+ untracked)
+    uv run python tools/audit.py --changed             # files changed vs origin/main
     uv run python tools/audit.py --model gpt-6.1-sol --effort high
 """
 
@@ -55,21 +55,21 @@ FINDINGS_SCHEMA = {
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
-def changed_files() -> list[str]:
+def changed_files(base: str) -> list[str]:
+    """Files changed on this branch vs `base` (merge-base), plus uncommitted/untracked ones."""
     def git(*args: str) -> list[str]:
         out = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
         return [line for line in out.stdout.splitlines() if line]
 
-    has_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
-                              capture_output=True).returncode == 0
-    files = git("diff", "--name-only", "HEAD") if has_head else []
+    files = git("diff", "--name-only", f"{base}...HEAD")
+    files += git("diff", "--name-only", "HEAD")
     files += git("ls-files", "--others", "--exclude-standard")
-    return sorted(set(files))
+    return sorted({f for f in files if (ROOT / f).exists() and f != "uv.lock"})
 
 
-def build_scope(paths: list[str], changed: bool) -> str:
+def build_scope(paths: list[str], changed: bool, base: str = "origin/main") -> str:
     if changed:
-        files = changed_files()
+        files = changed_files(base)
         if not files:
             return ""
         return "only these changed files (read others just for context):\n" + "\n".join(
@@ -119,13 +119,15 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("paths", nargs="*")
-    ap.add_argument("--changed", action="store_true", help="audit files changed vs HEAD")
+    ap.add_argument("--changed", action="store_true",
+                    help="audit files changed on this branch vs --base")
+    ap.add_argument("--base", default="origin/main")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh"])
     ap.add_argument("--timeout", type=int, default=1800, help="seconds")
     args = ap.parse_args()
 
-    scope = build_scope(args.paths, args.changed)
+    scope = build_scope(args.paths, args.changed, args.base)
     if not scope:
         print("nothing changed; nothing to audit")
         return
