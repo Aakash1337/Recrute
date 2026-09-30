@@ -293,6 +293,17 @@ def _citizenship_required(s: str) -> bool:
 
 
 def _itar_required(s: str) -> bool:
+    """Evaluated per clause: a requirement word in an unrelated clause ("... ITAR experience
+    preferred; candidates must have 2 years of Python") doesn't turn the preference into an
+    eligibility restriction."""
+    clauses = [c for c in _CLEARANCE_CLAUSES.split(s) if c and c.strip()]
+    if len(clauses) > 1:
+        return any(_itar_clause(c) for c in clauses
+                   if _US_PERSON.search(c) or _EXPORT.search(c) or _EXPORT_CI.search(c))
+    return _itar_clause(s)
+
+
+def _itar_clause(s: str) -> bool:
     if _BOILERPLATE.search(s) and not _EXPORT_CI.search(s):
         return False
     has_person = bool(_US_PERSON.search(s))

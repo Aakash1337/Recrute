@@ -327,3 +327,15 @@ def test_export_duties_vs_restrictions(text, flagged):
     from recrute.badges import eligibility_flags
 
     assert ("itar_us_person" in eligibility_flags(text)) is flagged
+
+
+@pytest.mark.parametrize("text,flagged", [
+    ("Experience with ITAR preferred; candidates must have 2 years of Python experience.",
+     False),
+    ("U.S. person status preferred; Python experience is required.", False),
+    ("Python experience preferred; applicants must be U.S. persons under ITAR.", True),
+])
+def test_itar_requirement_bound_to_its_clause(text, flagged):
+    from recrute.badges import eligibility_flags
+
+    assert ("itar_us_person" in eligibility_flags(text)) is flagged

@@ -213,3 +213,31 @@ def test_fill_stops_before_next_field_when_challenge_appears(tmp_path):
         if orig is not None:
             setattr(widgets, names[0], orig)
     assert report.blocker == "captcha" and touched == ["f0"]
+
+
+def test_give_up_after_clicked_submit_keeps_cooldown(engine):
+    from sqlmodel import Session
+
+    from recrute.apply.scheduler import company_events
+    from recrute.models import Application, Company, Job, JobStatus
+    from recrute.packets import skip
+
+    with Session(engine) as s:
+        c = Company(name="Acme")
+        s.add(c)
+        s.flush()
+        clicked = Job(company_id=c.id, title="a", apply_url="u1", canonical_url="u1",
+                      status=JobStatus.NEEDS_HUMAN)
+        never = Job(company_id=c.id, title="b", apply_url="u2", canonical_url="u2",
+                    status=JobStatus.NEEDS_HUMAN)
+        s.add_all([clicked, never])
+        s.flush()
+        s.add(Application(job_id=clicked.id, channel="greenhouse", attempts=1,
+                          outcome={"details": {"submit_attempted": True,
+                                               "attempted_at": "2026-09-30T10:00:00+00:00"}}))
+        s.add(Application(job_id=never.id, channel="greenhouse", attempts=1,
+                          outcome={"details": {"submit_attempted": False}}))
+        s.commit()
+        skip(s, clicked.id, "given up")
+        skip(s, never.id, "given up")
+        assert [cid for cid, _ in company_events(s)] == [c.id]  # only the clicked one counts

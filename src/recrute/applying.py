@@ -67,6 +67,7 @@ class LazyBrowser:
         if self.context is None:
             return
         deadline = time.monotonic() + timeout
+        live.start_session(self.ctx.paths)
         try:
             while time.monotonic() < deadline and not self.ctx.stop.is_set():
                 pages = [p for p in self.context.pages if not p.is_closed()]

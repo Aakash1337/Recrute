@@ -578,3 +578,8 @@ def test_mixed_locations_keep_ambiguous_us_option():
     assert is_us_location(["San Francisco", "London, UK"], None) is None
     assert is_us_location(["London, UK", "Berlin, Germany"], None) is False
     assert is_us_location(["Toronto, Canada", "Austin, TX"], None) is True
+
+
+def test_standalone_plus_is_not_a_preference():
+    assert years_required("Minimum 6 years of experience plus knowledge of Python.") == 6
+    assert years_required("3 years of experience with Splunk is a plus.") is None

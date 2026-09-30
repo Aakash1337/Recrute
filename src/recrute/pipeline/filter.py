@@ -147,8 +147,8 @@ def is_us_location(locations: list[str], remote: str | None) -> bool | None:
     return False if all(v is False for v in verdicts) else None
 
 
-PREFERRED_RE = re.compile(r"prefer|nice[- ]to[- ]have|bonus|a plus|\bplus\b|ideal(ly)?|"
-                          r"desired|desirable|advantage", re.IGNORECASE)
+PREFERRED_RE = re.compile(r"prefer|nice[- ]to[- ]have|\bbonus\b|\ba plus\b|is a plus|"
+                          r"\bplus if\b|ideal(ly)?|desired|desirable|advantage", re.IGNORECASE)
 PREFERRED_HEADER = re.compile(r"^\W*(preferred|nice[- ]to[- ]have|bonus|desired|pluses)",
                               re.IGNORECASE)
 REQUIRED_HEADER = re.compile(r"^\W*(required|requirements|minimum|basic|must[- ]have|"

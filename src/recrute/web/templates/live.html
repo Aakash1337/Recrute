@@ -28,7 +28,14 @@ in the box to type. Press <b>Done</b> when you've finished (e.g. after submittin
 {% block scripts %}
 <script>
   const info = {{ (info or {}) | tojson }};
+  window.__liveInfo = info;
+  async function refreshSession() {
+    try { window.__liveInfo = await (await fetch('/live/session')).json(); } catch (e) {}
+  }
+  refreshSession(); setInterval(refreshSession, 2000);
   function liveSend(ev) {
+    if (!window.__liveInfo || !window.__liveInfo.session) return;  // nothing to control
+    ev.session = window.__liveInfo.session;  // bound to THIS hand-off only
     htmx.ajax('POST', '/live/input', {values: ev, swap: 'none'});
   }
   const img = document.getElementById('live-frame');

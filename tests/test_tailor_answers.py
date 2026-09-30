@@ -585,3 +585,19 @@ def test_relocation_only_plain_question(label, expected):
 
     q = FormQuestion(id="r", label=label, type="select", options=["Yes", "No"])
     assert relocation_answer(q, True) is expected
+
+
+@pytest.mark.parametrize("label", [
+    "Are you permanently authorized to work in the US without sponsorship now?",
+    "Are you authorized to work in the US for any employer without sponsorship?",
+])
+def test_sponsorship_with_authorization_qualifiers_left_for_user(label):
+    from recrute.schemas import FormQuestion
+    from recrute.tailor.answers import AnswerBank, match_question
+
+    bank = AnswerBank.model_validate({"work_authorization": {
+        "authorized_to_work_in_us": True, "requires_sponsorship_now": False,
+        "requires_sponsorship_future": True}})
+    a = match_question(FormQuestion(id="q", label=label, type="select",
+                                    options=["Yes", "No"]), bank)
+    assert a is None or a.value in (None, "")

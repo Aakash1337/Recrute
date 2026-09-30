@@ -351,7 +351,10 @@ def company_events(session: Session) -> list[tuple[int, datetime | None]]:
     """(company_id, when) for applications that went out or may have: SENT statuses,
     in-flight APPLYING, and NEEDS_HUMAN attempts that may have been sent or hold a handoff
     reservation."""
-    statuses = (*SENT_STATUSES, JobStatus.APPLYING, JobStatus.NEEDS_HUMAN)
+    # REJECTED/CLOSED too: "give up" on a hand-off whose submit was clicked (or that may
+    # otherwise have gone out) must keep the company's cooldown
+    statuses = (*SENT_STATUSES, JobStatus.APPLYING, JobStatus.NEEDS_HUMAN, JobStatus.REJECTED,
+                JobStatus.CLOSED)
     rows = session.exec(
         select(Job, Application).join(Application, Application.job_id == Job.id,
                                       isouter=True)
@@ -359,7 +362,11 @@ def company_events(session: Session) -> list[tuple[int, datetime | None]]:
     ).all()
     out: list[tuple[int, datetime | None]] = []
     for job, app in rows:
-        if job.status == JobStatus.NEEDS_HUMAN and (
+        if job.status in (JobStatus.REJECTED, JobStatus.CLOSED):
+            details = (app.outcome or {}).get("details", {}) if app is not None else {}
+            if app is None or not (app.submitted_at or details.get("submit_attempted")):
+                continue  # never (possibly) sent: no cooldown
+        elif job.status == JobStatus.NEEDS_HUMAN and (
                 app is None or not may_have_been_sent(app, job.status)):
             continue
         when = None

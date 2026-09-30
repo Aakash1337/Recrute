@@ -385,6 +385,11 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
             r"your visa (type|status))\b|canada|kingdom|\buk\b|europe|\beu\b|india|mexico|"
             r"australia|germany", t):
         return None
+    # authorization qualifiers the bank doesn't establish: permanent / indefinite /
+    # unrestricted status, any employer
+    if re.search(r"permanent|indefinite|unrestricted|any employer|without (any )?restrictions?",
+                 t):
+        return None
     now, fut = wa.requires_sponsorship_now, wa.requires_sponsorship_future
     has_now, has_fut = bool(_NOW_RE.search(t)), bool(_FUTURE_RE.search(t))
     if has_now and has_fut:

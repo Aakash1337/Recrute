@@ -901,11 +901,12 @@ def test_live_view_frames_and_remote_input(context, paths):
 
     page = context.new_page()
     page.set_content('<input id="q" style="position:absolute;left:10px;top:10px;width:200px">')
+    sid = live.start_session(paths)
     live.publish_frame(paths, page)
     info = live.frame_info(paths)
     assert info and info["fresh"] and (live.live_dir(paths) / "frame.jpg").stat().st_size > 0
-    live.enqueue(paths, {"type": "click", "x": 50, "y": 20})
-    live.enqueue(paths, {"type": "type", "text": "typed remotely"})
+    live.enqueue(paths, {"type": "click", "x": 50, "y": 20, "session": sid})
+    live.enqueue(paths, {"type": "type", "text": "typed remotely", "session": sid})
     assert live.apply_inputs(paths, page) is False
     assert page.input_value("#q") == "typed remotely"
     page.close()

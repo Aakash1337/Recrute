@@ -90,6 +90,16 @@ def live_status():
                         f'{escape(info["url"])}</span>')
 
 
+@router.get("/live/session")
+def live_session():
+    from recrute import live
+
+    info = live.frame_info(get_paths()) or {}
+    return {"session": live.active_session(get_paths()), "url": info.get("url"),
+            "width": info.get("width"), "height": info.get("height"),
+            "fresh": bool(info.get("fresh"))}
+
+
 @router.post("/live/input", response_class=HTMLResponse)
 async def live_input(request: Request):
     from recrute import live

@@ -38,10 +38,22 @@ def _atomic_write(path: Path, data: bytes) -> None:
 # ------------------------------------------------------------------------------ UI side
 
 
+def active_session(paths: Paths) -> str | None:
+    try:
+        return json.loads((live_dir(paths) / "session.json").read_text(encoding="utf-8"))["id"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 def enqueue(paths: Paths, event: dict[str, Any]) -> None:
-    """Validate and queue one input event from the UI."""
+    """Validate and queue one input event from the UI. Every event is bound to the live
+    session (hand-off) it was made for: events for an ended or different session are refused,
+    so a delayed click or typed text can never land on the next page."""
+    session = active_session(paths)
+    if not session or event.get("session") != session:
+        raise ValueError("no matching live session (it ended or changed); reload the page")
     kind = event.get("type")
-    clean: dict[str, Any] = {"type": kind}
+    clean: dict[str, Any] = {"type": kind, "session": session}
     if kind == "click":
         clean["x"], clean["y"] = float(event["x"]), float(event["y"])
     elif kind == "type":
@@ -89,6 +101,14 @@ def take_open_request(paths: Paths) -> str | None:
     return url
 
 
+def start_session(paths: Paths) -> str:
+    clear(paths)
+    sid = uuid.uuid4().hex
+    _atomic_write(live_dir(paths) / "session.json",
+                  json.dumps({"id": sid, "started": time.time()}).encode())
+    return sid
+
+
 def publish_frame(paths: Paths, page) -> None:
     d = live_dir(paths)
     try:
@@ -100,11 +120,13 @@ def publish_frame(paths: Paths, page) -> None:
     _atomic_write(d / "frame.jpg", jpg)
     _atomic_write(d / "frame.json", json.dumps({
         "url": page.url, "width": size["width"], "height": size["height"],
-        "at": time.time()}).encode())
+        "at": time.time(), "session": active_session(paths)}).encode())
 
 
 def apply_inputs(paths: Paths, page) -> bool:
-    """Replays queued UI events on the page. Returns True when you pressed "Done"."""
+    """Replays queued UI events for the ACTIVE session on the page, in order, and stops at
+    "Done" (anything after it is discarded). Returns True when you pressed "Done"."""
+    session = active_session(paths)
     done = False
     for f in sorted((live_dir(paths) / "inputs").glob("*.json")):
         try:
@@ -112,6 +134,8 @@ def apply_inputs(paths: Paths, page) -> bool:
         except (OSError, ValueError):
             ev = {}
         f.unlink(missing_ok=True)
+        if done or not session or ev.get("session") != session:
+            continue  # after Done, or meant for another hand-off: dropped, never replayed
         try:
             if ev.get("type") == "click":
                 page.mouse.click(ev["x"], ev["y"])
@@ -129,6 +153,8 @@ def apply_inputs(paths: Paths, page) -> bool:
 
 
 def clear(paths: Paths) -> None:
+    """Ends the live session: nothing queued for it can run later."""
     d = live_dir(paths)
-    for f in [d / "frame.jpg", d / "frame.json", *(d / "inputs").glob("*.json")]:
+    for f in [d / "session.json", d / "frame.jpg", d / "frame.json",
+              *(d / "inputs").glob("*.json")]:
         f.unlink(missing_ok=True)
