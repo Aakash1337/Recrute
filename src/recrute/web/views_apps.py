@@ -75,12 +75,22 @@ def live_frame():
 
     from recrute import live
 
-    f = live.live_dir(get_paths()) / "frame.jpg"
+    paths = get_paths()
+    info = live.frame_info(paths)
+    session = live.active_session(paths)
+    # only frames of the ACTIVE session; the frame carries its session id + size, so input
+    # the page sends is bound to exactly the picture you're looking at
+    if not info or not session or info.get("session") != session:
+        raise HTTPException(404)
+    f = live.live_dir(paths) / "frame.jpg"
     try:
         data = f.read_bytes()  # read at once: keeps the file open for the shortest time
     except OSError:
         raise HTTPException(404) from None
-    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+    return Response(data, media_type="image/jpeg", headers={
+        "Cache-Control": "no-store", "X-Live-Session": session,
+        "X-Live-Width": str(info.get("width") or ""),
+        "X-Live-Height": str(info.get("height") or "")})
 
 
 @router.get("/live/status", response_class=HTMLResponse)
@@ -285,6 +295,9 @@ def application_action(job_id: int, action: str):
                 return _msg("Opening the form in the automation browser…")
             elif action == "skip":
                 packets.skip(s, job_id, "given up")
+            elif action == "rebuild":
+                packets.rebuild(s, job_id)
+                return _msg("Queued: the packet will be rebuilt shortly.")
             elif action == "ghosted":
                 mark_ghosted(s, job_id)
                 s.commit()

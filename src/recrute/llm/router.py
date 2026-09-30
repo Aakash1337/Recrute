@@ -70,13 +70,17 @@ class LLMRouter:
                 pass  # stale/invalid cache entry: ask again
 
         errors: list[str] = []
+        limited = 0  # providers skipped/failed only because of subscription usage limits
+        tried = 0
         for route in self.config.llm.route(task):
             provider = self.providers.get(route.provider)
             if provider is None:
                 errors.append(f"{route.provider}: not configured")
                 continue
+            tried += 1
             if self._cooling_down(route.provider):
                 errors.append(f"{route.provider}: cooling down after usage limit")
+                limited += 1
                 continue
             req = LLMRequest(prompt=prompt, schema=schema, system=system, model=route.model)
             try:
@@ -91,11 +95,16 @@ class LLMRouter:
                              rate_limited=isinstance(e, RateLimitedError))
                 log.warning("LLM %s failed on %s: %s", task, route.provider, e)
                 errors.append(str(e))
+                limited += isinstance(e, RateLimitedError)
                 continue
             self._record(task, route.provider, key, ok=True, response=result.output,
                          duration_ms=result.duration_ms)
             return result.output
-        raise LLMError(f"all providers failed for task {task!r}: " + " | ".join(errors))
+        message = f"all providers failed for task {task!r}: " + " | ".join(errors)
+        if tried and limited == tried:
+            # only quota is the problem: retryable later, not a failure of the work itself
+            raise RateLimitedError(message)
+        raise LLMError(message)
 
     def _cached(self, key: str) -> Any:
         with self.session_factory() as s:

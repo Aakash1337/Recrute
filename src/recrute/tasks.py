@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlmodel import col, select
 
+from recrute.llm.base import RateLimitedError
 from recrute.models import Application, Company, Job, JobStatus, StatusEvent, utcnow
 from recrute.pipeline.score import score_pending
 from recrute.pipeline.stages import filter_new
@@ -139,6 +140,14 @@ def build_packets(ctx) -> dict:
             except StaleBuild:
                 s.rollback()
                 stale += 1
+            except RateLimitedError:
+                # subscription quota exhausted: release the claim, keep the job waiting, and
+                # stop this round (every other build would hit the same limit)
+                s.rollback()
+                if token is not None:
+                    release_build(s, job.id, token)
+                return {"built": built, "failed": failed, "auto_approved": auto,
+                        "stale": stale, "rate_limited": True}
             except Exception as e:  # one bad posting must not block the rest
                 log.error("packet for job %s failed: %s", job.id, e.__class__.__name__)
                 s.rollback()
@@ -182,6 +191,15 @@ def claim_build(session, job: Job) -> str:
         raise StaleBuild("job is no longer waiting for a packet")
     session.commit()
     return token
+
+
+def release_build(session, job_id: int, token: str) -> None:
+    from sqlalchemy import update
+
+    session.execute(update(Application).where(Application.job_id == job_id,
+                                              Application.build_token == token)
+                    .values(build_token=""))
+    session.commit()
 
 
 def record_build_failure(session, job_id: int, token: str, error: Exception) -> None:

@@ -628,3 +628,32 @@ def test_job_link_from_notification_is_a_full_page(client):
     assert "<nav>" not in frag
     r = client.post(f"/jobs/{job_id}/decide", data={"action": "approve"}, headers=HX)
     assert r.status_code == 200
+
+
+def test_rate_limited_builds_keep_the_job_waiting(engine, monkeypatch, paths):
+    from types import SimpleNamespace
+
+    from recrute import tasks
+    from recrute.llm.base import RateLimitedError
+    from recrute.models import Application, Job, JobStatus
+
+    (paths.data / "profile.yaml").write_text("name: Ada\n", encoding="utf-8")
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="u", canonical_url="u", status=JobStatus.SHORTLISTED)
+        s.add(job)
+        s.commit()
+        job_id = job.id
+
+    def limited(*a, **k):
+        raise RateLimitedError("all providers failed: usage limit")
+
+    monkeypatch.setattr("recrute.tailor.build_packet", limited)
+    monkeypatch.setattr("recrute.applying.fetch_questions", lambda job, p, s=None: [])
+    ctx = SimpleNamespace(session=lambda: Session(engine), paths=paths, router=None)
+    for _ in range(4):
+        out = tasks.build_packets(ctx)
+        assert out.get("rate_limited") is True
+    with Session(engine) as s:
+        assert s.get(Job, job_id).status == JobStatus.SHORTLISTED
+        app = s.exec(select(Application)).one()
+        assert not (app.outcome or {}).get("packet_failures") and app.build_token == ""

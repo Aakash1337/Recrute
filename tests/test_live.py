@@ -111,3 +111,26 @@ def test_publish_frame_survives_sharing_violation(paths, monkeypatch):
     monkeypatch.setattr(live, "_atomic_write", locked)
     live.publish_frame(paths, Page())  # must not raise
     live.clear(paths)
+
+
+def test_frames_only_for_active_session_and_carry_it(client):
+    from recrute import live
+    from recrute.paths import get_paths
+
+    paths = get_paths()
+    sid = live.start_session(paths)
+
+    class Page:
+        url = "https://x"
+        viewport_size = {"width": 800, "height": 600}
+
+        def screenshot(self, **kw):
+            return b"\\xff\\xd8jpg"
+
+    live.publish_frame(paths, Page())
+    r = client.get("/live/frame")
+    assert r.status_code == 200 and r.headers["X-Live-Session"] == sid
+    assert r.headers["X-Live-Width"] == "800"
+    live.clear(paths)
+    live.start_session(paths)  # a new hand-off, no frame of its own yet
+    assert client.get("/live/frame").status_code == 404

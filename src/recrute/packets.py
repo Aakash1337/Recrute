@@ -258,6 +258,22 @@ def mark_applied(session: Session, job_id: int) -> None:
     session.commit()
 
 
+def rebuild(session: Session, job_id: int) -> None:
+    """A job handed to you because its packet couldn't be built (e.g. repeated failures):
+    try building it again (after fixing the cause, or once quota is back)."""
+    app = session.exec(select(Application).where(Application.job_id == job_id)).first()
+    if app is not None and app.packet:
+        raise PacketError("this job already has a packet; use Regenerate on its packet page")
+    _transition(session, job_id, [JobStatus.NEEDS_HUMAN], JobStatus.SHORTLISTED)
+    if app is not None:
+        app.outcome = {k: v for k, v in (app.outcome or {}).items() if k != "packet_failures"}
+        app.build_token = ""
+        session.add(app)
+    session.add(StatusEvent(job_id=job_id, status=JobStatus.SHORTLISTED,
+                            note="packet rebuild requested"))
+    session.commit()
+
+
 def request_assist(session: Session, job_id: int) -> None:
     """Ask the apply worker to open the form, fill what it can from the approved packet and
     leave it open for you (fill-and-pause)."""

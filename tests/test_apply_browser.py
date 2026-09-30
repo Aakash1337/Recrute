@@ -953,3 +953,24 @@ def test_hidden_checked_controls_are_verified(context):
     problems = verify_fields(fields, Packet(job_id=1), {})
     assert "paycut" in problems and "marketing" in problems
     page.close()
+
+
+@pytest.mark.browser
+def test_native_hidden_answer_is_verified(context):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <label for="n">Name</label><input id="n" name="n" value="Ada">
+      <input type="hidden" name="requires_sponsorship" value="No">
+      <input type="hidden" name="csrf_token" value="abc">
+      <input type="hidden" name="gh_src" value="linkedin">
+    </form>""")
+    fields = {f.id: f for f in dom.extract_fields(page)}
+    assert "requires_sponsorship" in fields and "csrf_token" not in fields
+    problems = verify_fields(list(fields.values()),
+                             Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")]),
+                             {})
+    assert "requires_sponsorship" in problems
+    page.close()

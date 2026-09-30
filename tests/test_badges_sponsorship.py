@@ -353,3 +353,16 @@ def test_itar_skills_vs_status(text, flagged):
     from recrute.badges import eligibility_flags
 
     assert ("itar_us_person" in eligibility_flags(text)) is flagged
+
+
+@pytest.mark.parametrize("text,flag", [
+    ("Our customers include U.S. persons.", None),
+    ("We build software for customers with Secret clearance.", None),
+    ("Candidates must be U.S. persons.", "itar_us_person"),
+    ("Must have an active Secret clearance.", "clearance_required"),
+])
+def test_customer_statements_are_not_applicant_restrictions(text, flag):
+    from recrute.badges import eligibility_flags
+
+    flags = eligibility_flags(text)
+    assert (flag in flags) if flag else not flags

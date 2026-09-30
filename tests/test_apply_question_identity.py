@@ -280,3 +280,48 @@ def test_attempt_crossing_midnight_respects_new_days_caps(engine):
     gate = submit_gate(engine, app_id=app_id, job_id=job_id, channel="greenhouse",
                        attempt_id="A1", revision=rev, lease=Lease(), clock=lambda: now)
     assert gate() == "deferred: daily application cap reached"
+
+
+def test_submit_gate_rechecks_company_cooldown(engine):
+    from datetime import UTC, datetime, timedelta
+
+    from sqlmodel import Session
+
+    from recrute.apply.scheduler import packet_revision, submit_gate
+    from recrute.models import Application, Company, Job, JobStatus
+    from recrute.settings import set_setting
+
+    now = datetime.now(UTC)
+    with Session(engine) as s:
+        set_setting(s, "active_hours", [0, 24])
+        set_setting(s, "apps_per_day", 50)
+        c = Company(name="Acme")
+        s.add(c)
+        s.flush()
+        cur = Job(company_id=c.id, title="cur", apply_url="b", canonical_url="b",
+                  status=JobStatus.APPLYING)
+        other = Job(company_id=c.id, title="other", apply_url="a", canonical_url="a",
+                    status=JobStatus.NEEDS_HUMAN)
+        s.add_all([cur, other])
+        s.flush()
+        app = Application(job_id=cur.id, channel="greenhouse", attempts=1,
+                          approved_at=now - timedelta(hours=1), packet={"job_id": cur.id},
+                          outcome={"details": {"attempt_id": "A1",
+                                               "attempt_started_at": now.isoformat()}})
+        s.add(app)
+        s.add(Application(job_id=other.id, channel="greenhouse"))
+        s.commit()
+        rev, app_id, job_id, other_id = packet_revision(app), app.id, cur.id, other.id
+
+    class Lease:
+        def held(self):
+            return True
+
+    gate = submit_gate(engine, app_id=app_id, job_id=job_id, channel="greenhouse",
+                       attempt_id="A1", revision=rev, lease=Lease(), clock=lambda: now)
+    assert gate() is None
+    with Session(engine) as s:  # you mark the other Acme application applied mid-fill
+        from recrute.packets import mark_applied
+
+        mark_applied(s, other_id)
+    assert gate() == "deferred: company cap/cooldown reached"

@@ -198,7 +198,24 @@
   for (const el of scope.querySelectorAll('input, textarea, select')) {
     if (used.has(el)) continue;
     const t = (el.getAttribute('type') || el.type || '').toLowerCase();
-    if (['hidden', 'submit', 'button', 'reset', 'image', 'radio', 'checkbox'].includes(t)) continue;
+    if (t === 'hidden') {
+      // Native hidden inputs are usually transport metadata (CSRF, tracking, requisition ids,
+      // CAPTCHA tokens, serialized form definitions) or back a visible widget. Anything else
+      // with a value may be an applicant answer the form will submit: verify it.
+      const TRANSPORT = /csrf|token|authenticity|nonce|captcha|turnstile|basetemplate|utm_|referr|source|tracking|gh_src|gh_jid|job_?id|posting|requisition|req_?id|board|_method|origin|session|timestamp|form_?id|version|lever-|account_?id|applicationform|fingerprint|locale|lang/i;
+      const v = (el.value || '').trim();
+      if (!el.name || !v || TRANSPORT.test(el.name) || /^[\[{]/.test(v)) continue;
+      const c1 = container(el);
+      const backs1 = c1 && [...c1.box.querySelectorAll('input, select, textarea, [role="combobox"]')]
+        .some(o => o !== el && o.type !== 'hidden' && visible(o));
+      if (backs1) continue;
+      const lab = labelOf(el);
+      push({key: keyOf(el), label: clean(lab.text) || el.name, required: false, selector: sel(el),
+            options: [], option_selectors: [], current: v, visible: false, trigger: '',
+            max_length: null, type: 'text', widget: 'hidden_value'});
+      continue;
+    }
+    if (['submit', 'button', 'reset', 'image', 'radio', 'checkbox'].includes(t)) continue;
     // search inputs ARE form fields (typeahead questions); only a widget's own auxiliary
     // filter box or the site's header/nav search is skipped
     if (t === 'search' && el.closest('[role="listbox"], [role="menu"], header, nav')) continue;

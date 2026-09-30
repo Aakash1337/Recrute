@@ -6,8 +6,7 @@
 in the box to type. Press <b>Done</b> when you've finished (e.g. after submitting).</p>
 <p id="live-status" hx-get="/live/status" hx-trigger="load, every 3s"></p>
 <div style="position:relative;display:inline-block;border:1px solid var(--line)">
-  <img id="live-frame" src="/live/frame?t=0" alt="" style="max-width:100%;cursor:crosshair"
-       onerror="this.style.minHeight='200px'">
+  <img id="live-frame" alt="" style="max-width:100%;min-height:200px;cursor:crosshair">
 </div>
 <p>
   <input id="live-text" placeholder="text to type into the focused field" size="50">
@@ -27,24 +26,33 @@ in the box to type. Press <b>Done</b> when you've finished (e.g. after submittin
 {% endblock %}
 {% block scripts %}
 <script>
-  const info = {{ (info or {}) | tojson }};
-  window.__liveInfo = info;
-  async function refreshSession() {
-    try { window.__liveInfo = await (await fetch('/live/session')).json(); } catch (e) {}
+  // The session id + size come WITH each frame (response headers), so input is always bound
+  // to the picture on screen. No fresh frame -> input is ignored.
+  window.__frame = null;
+  const img = document.getElementById('live-frame');
+  async function loadFrame() {
+    try {
+      const r = await fetch('/live/frame', {cache: 'no-store'});
+      if (!r.ok) { window.__frame = null; return; }
+      const meta = {session: r.headers.get('X-Live-Session'),
+                    width: +r.headers.get('X-Live-Width'), height: +r.headers.get('X-Live-Height')};
+      const url = URL.createObjectURL(await r.blob());
+      img.onload = () => { window.__frame = {...meta, shownAt: Date.now()}; };
+      img.src = url;
+    } catch (e) { window.__frame = null; }
   }
-  refreshSession(); setInterval(refreshSession, 2000);
+  loadFrame(); setInterval(loadFrame, 1000);
   function liveSend(ev) {
-    if (!window.__liveInfo || !window.__liveInfo.session) return;  // nothing to control
-    ev.session = window.__liveInfo.session;  // bound to THIS hand-off only
+    const f = window.__frame;
+    if (!f || !f.session || Date.now() - f.shownAt > 5000) return;
+    ev.session = f.session;
     htmx.ajax('POST', '/live/input', {values: ev, swap: 'none'});
   }
-  const img = document.getElementById('live-frame');
   img.addEventListener('click', e => {
+    const f = window.__frame; if (!f) return;
     const r = img.getBoundingClientRect();
-    const w = (window.__liveInfo || info).width || img.naturalWidth;
-    const h = (window.__liveInfo || info).height || img.naturalHeight;
+    const w = f.width || img.naturalWidth, h = f.height || img.naturalHeight;
     liveSend({type: 'click', x: (e.clientX - r.left) * w / r.width, y: (e.clientY - r.top) * h / r.height});
   });
-  setInterval(() => { img.src = '/live/frame?t=' + Date.now(); }, 1000);
 </script>
 {% endblock %}

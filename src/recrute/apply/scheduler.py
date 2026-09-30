@@ -349,7 +349,8 @@ def supervised_success_count(session: Session, channel: str) -> int:
     return len(rows)
 
 
-def company_events(session: Session) -> list[tuple[int, datetime | None]]:
+def company_events(session: Session, exclude_job_id: int | None = None
+                   ) -> list[tuple[int, datetime | None]]:
     """(company_id, when) for applications that went out or may have: SENT statuses,
     in-flight APPLYING, and NEEDS_HUMAN attempts that may have been sent or hold a handoff
     reservation."""
@@ -364,6 +365,8 @@ def company_events(session: Session) -> list[tuple[int, datetime | None]]:
     ).all()
     out: list[tuple[int, datetime | None]] = []
     for job, app in rows:
+        if exclude_job_id is not None and job.id == exclude_job_id:
+            continue
         if job.status in (JobStatus.REJECTED, JobStatus.CLOSED):
             details = (app.outcome or {}).get("details", {}) if app is not None else {}
             if app is None or not (app.submitted_at or details.get("submit_attempted")):
@@ -513,6 +516,15 @@ def submit_gate(bind: Any, *, app_id: int, job_id: int, channel: str, attempt_id
             cap = (get_setting(s, "site_caps") or {}).get(channel)
             if cap is not None and others.by_channel.get(channel, 0) + 1 > int(cap):
                 return f"deferred: {channel} daily cap reached"
+            # per-company cap/cooldown, with current settings: another application to this
+            # company may have been recorded while this form was being filled
+            if j.company_id is not None:
+                blocked = blocked_companies(
+                    company_events(s, exclude_job_id=job_id), t,
+                    cap=int(get_setting(s, "company_cap")),
+                    cooldown=timedelta(days=int(get_setting(s, "company_cooldown_days"))))
+                if j.company_id in blocked:
+                    return "deferred: company cap/cooldown reached"
         return None
 
     return check

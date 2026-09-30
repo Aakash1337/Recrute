@@ -276,6 +276,8 @@ def _clearance_required(s: str) -> bool:
 def _clearance_clause(s: str) -> bool:
     if not _CLEARANCE.search(s) or _CLEARANCE_NEG.search(s):
         return False
+    if _about_third_parties(s):
+        return False
     if _all_mentions_negated(s, _CLEARANCE):
         return False
     if _mention_required(s, _CLEARANCE):
@@ -306,7 +308,21 @@ def _itar_required(s: str) -> bool:
     return _itar_clause(s)
 
 
+# Sentences about the company's customers/products, not about the applicant.
+_THIRD_PARTY = re.compile(r"\b(?:customers?|clients?|users?|partners?|agencies|missions?|"
+                          r"we (?:build|serve|support|protect|sell|provide|work with)|our "
+                          r"(?:products?|platform|software|solutions?|services?))\b", re.I)
+_APPLICANT_WORDS = re.compile(r"\b(?:applicants?|candidates?|you|your|hires?|employees?|"
+                              r"must|required|requires?|eligib\w*|ability to|able to)\b", re.I)
+
+
+def _about_third_parties(s: str) -> bool:
+    return bool(_THIRD_PARTY.search(s)) and not _APPLICANT_WORDS.search(s)
+
+
 def _itar_clause(s: str) -> bool:
+    if _about_third_parties(s):
+        return False
     if _BOILERPLATE.search(s) and not _EXPORT_CI.search(s):
         return False
     has_person = bool(_US_PERSON.search(s))
