@@ -9,11 +9,13 @@ import json
 import re
 import unicodedata
 from collections.abc import Sequence
+from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from bs4 import BeautifulSoup, Tag
+from dateutil import parser as dateparser
 
 from recrute.schemas import FormQuestion
 
@@ -98,6 +100,62 @@ def resolve_options(value: Any, options: Sequence[str]) -> list[str] | None:
     return out
 
 
+def as_text(value: Any) -> str:
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, list | tuple):
+        return ", ".join(str(v) for v in value)
+    return str(value)
+
+
+# --------------------------------------------------------------------------- dates
+
+
+def _date_order(hint: str) -> str:
+    """'ymd' | 'dmy' | 'mdy' from a placeholder/format hint (default US month-first)."""
+    h = hint.lower()
+    if re.search(r"y{2,4}[-/. ]m{1,2}[-/. ]d{1,2}", h):
+        return "ymd"
+    if re.search(r"d{1,2}[-/. ]m{1,2}[-/. ]y{2,4}", h):
+        return "dmy"
+    return "mdy"
+
+
+def parse_date(value: Any, hint: str = "") -> date | None:
+    """A calendar date from an approved value or a field's displayed text."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    s = str(value or "").strip()
+    if not s or not re.search(r"\d", s):
+        return None
+    try:
+        return date.fromisoformat(s[:10])
+    except ValueError:
+        pass
+    order = _date_order(hint)
+    try:
+        return dateparser.parse(s, dayfirst=order == "dmy", yearfirst=order == "ymd",
+                                default=datetime(2000, 1, 1)).date()
+    except (ValueError, OverflowError):
+        return None
+
+
+def date_text(value: Any, hint: str = "") -> str | None:
+    """What to type into a text date picker for the approved date, per the field's format."""
+    d = parse_date(value)
+    if d is None:
+        return None
+    return {"ymd": d.strftime("%Y-%m-%d"), "dmy": d.strftime("%d/%m/%Y")}.get(
+        _date_order(hint), d.strftime("%m/%d/%Y"))
+
+
+def dates_equal(approved: Any, shown: str, hint: str = "") -> bool:
+    a, b = parse_date(approved), parse_date(shown, hint)
+    return a is not None and a == b
+
+
 def html_to_text(html: str | None) -> str:
     if not html:
         return ""
@@ -143,7 +201,7 @@ def extract_fields(root: Page | Frame, *, scope: str | None = None,
             max_length=r.get("max_length"), selector=r.get("selector") or "",
             widget=r.get("widget") or "text", option_selectors=r.get("option_selectors") or [],
             trigger=r.get("trigger") or "", current=r.get("current"),
-            visible=bool(r.get("visible")),
+            visible=bool(r.get("visible")), hint=r.get("hint") or "",
         ))
     return fields
 

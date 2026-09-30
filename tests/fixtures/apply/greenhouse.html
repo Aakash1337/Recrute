@@ -161,6 +161,13 @@
     </fieldset>
   </div>
 
+  <div id="conditional-slot"></div>
+
+  <div class="field-wrapper"><div class="text-input-wrapper"><div class="input-wrapper">
+    <label class="label" for="question_1007" id="question_1007-label">Earliest start date</label>
+    <input id="question_1007" class="input input__date" type="date" aria-required="false">
+  </div></div></div>
+
   <div id="extra-slot"></div>
 
   <div class="eeoc__container">
@@ -264,6 +271,20 @@
         <label class="label" for="question_1099" id="question_1099-label">What is your favorite security tool?<span aria-hidden="true">*</span></label>
         <input id="question_1099" class="input input__single-line" type="text" aria-required="true">
       </div></div></div>`;
+  }
+
+  // ?conditional=1: ticking "Incident response" reveals a required follow-up question
+  if (params.get('conditional') === '1') {
+    const ir = document.getElementById('question_1004[]_2');
+    const slot = document.getElementById('conditional-slot');
+    const sync = () => {
+      slot.innerHTML = ir.checked ? `
+        <div class="field-wrapper"><div class="text-input-wrapper"><div class="input-wrapper">
+          <label class="label" for="question_1006" id="question_1006-label">Describe an incident you handled.<span aria-hidden="true">*</span></label>
+          <input id="question_1006" class="input input__single-line" type="text" aria-required="true">
+        </div></div></div>` : '';
+    };
+    ir.addEventListener('change', sync);
   }
 
   // --- validation + submission ----------------------------------------------------------------

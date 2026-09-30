@@ -18,7 +18,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recrute.apply import dom
-from recrute.apply.base import BaseAdapter, FillReport, LiveField, coverage_check, has_value
+from recrute.apply.base import (
+    BaseAdapter,
+    FillReport,
+    LiveField,
+    coverage_check,
+    has_value,
+    verify_fields,
+)
 from recrute.apply.widgets import fill_fields
 from recrute.schemas import FormAnswer, Packet
 
@@ -193,6 +200,10 @@ class GenericAdapter(BaseAdapter):
         derived = self._derived_packet(fields, packet, files or {})
         # file fields only count as covered when explicitly mapped
         return coverage_check(fields, derived, files={})
+
+    def verify(self, fields: Sequence[LiveField], packet: Packet,
+               files: Mapping[str, Path]) -> dict[str, str]:
+        return verify_fields(fields, self._derived_packet(fields, packet, files), files)
 
     def fill(self, page: Page, job: Job, packet: Packet, files: Mapping[str, Path], *,
              human: Human, pause_only: bool = True) -> FillReport:

@@ -156,7 +156,8 @@
       const single = {key: gk, label: clean(lab.text) || own, type: 'checkbox', widget: 'checkbox',
         required: reqOf(els[0], lab) || (fs && fs.getAttribute('aria-required') === 'true'),
         selector: sel(els[0]), options: own && c ? [own] : [], option_selectors: own && c ? [sel(els[0])] : [],
-        current: els[0].checked ? 'true' : null, visible: true, trigger: '', max_length: null};
+        current: els[0].checked ? 'true' : null, trigger: '', max_length: null,
+        visible: visible(els[0]) || [...(els[0].labels || [])].some(visible)};
       push(single);
       continue;
     }
@@ -201,7 +202,8 @@
       Object.assign(rec, {type: el.multiple ? 'multiselect' : 'select', widget: 'select',
                           options: opts.map(o => o.text.trim()), current: cur});
     } else if (el.getAttribute('role') === 'combobox') {
-      const shell = el.closest('.select-shell, [class*="container"]') || el.parentElement;
+      const shell = el.closest('.select-shell') || el.closest('[class*="control"]')
+        || el.closest('[class*="inputContainer"]') || el.parentElement;
       const sv = shell && shell.querySelector('[class*="single-value"], [class*="singleValue"]');
       Object.assign(rec, {type: 'select', widget: 'combobox', current: sv ? txt(sv).trim() : (el.value || null)});
     } else if (el.tagName === 'TEXTAREA') {
@@ -211,7 +213,8 @@
       let qt = map[t] || 'text';
       const hint = `${el.className} ${el.placeholder || ''}`;
       if (qt === 'text' && /date/i.test(hint)) qt = 'date';
-      Object.assign(rec, {type: qt, widget: qt === 'date' ? 'date' : 'text', current: el.value || null});
+      Object.assign(rec, {type: qt, widget: qt === 'date' ? 'date' : 'text', current: el.value || null,
+                          hint: el.getAttribute('placeholder') || el.getAttribute('data-date-format') || ''});
     }
     push(rec);
   }

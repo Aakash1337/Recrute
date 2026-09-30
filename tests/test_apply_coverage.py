@@ -302,3 +302,72 @@ def test_generic_mapping_is_validated_against_the_packet(tmp_path):
     assert mapping == {"name": ("answer", "q_name"), "cv2": ("file", "resume")}
     assert g.coverage(fields, pk, files) == ["why"]
     assert Router.calls == 1  # memoized: coverage + fill share one LLM call
+
+
+# --------------------------------------------------------------------------- audit regressions
+
+
+@pytest.mark.parametrize("label, ok", [
+    ("First name", True), ("Last name", True), ("Email address", True),
+    ("Mobile phone number", True), ("Phone country code", True), ("Location (City)", True),
+    ("City", True), ("Do you require visa sponsorship?", False),
+    ("Are you legally authorized to work in the United States?", False),
+    ("Company name you last worked for", False), ("I agree to the privacy policy", False),
+])
+def test_contact_allowlist(label, ok):
+    from recrute.apply.base import is_contact_field
+
+    assert is_contact_field(FormQuestion(id="x", label=label, type="select")) is ok
+
+
+def test_prefilled_screening_question_is_not_covered():
+    sponsor = LiveField(id="s", label="Do you require visa sponsorship?", type="select",
+                        required=True, options=["Yes", "No"], current="No")
+    phone = LiveField(id="p", label="Mobile phone number", type="tel", required=True,
+                      current="4155550100")
+    assert coverage_check([sponsor, phone], packet(), accept_prefilled=True) == ["s"]
+
+
+def test_prefilled_resume_file_is_never_coverage():
+    old = LiveField(id="f", label="Resume", type="file", widget="file", required=True,
+                    current="Old_Resume.pdf")
+    assert coverage_check([old], packet(), accept_prefilled=True, files={}) == ["f"]
+
+
+def test_verify_fields_flags_unapproved_and_wrong_values(tmp_path):
+    from recrute.apply.base import verify_fields
+
+    resume = tmp_path / "resume.pdf"
+    fields = [
+        LiveField(id="name", label="Name", current="Ada"),
+        LiveField(id="gender", label="Gender", type="select", widget="select",
+                  options=["Male", "Female"], current="Male"),  # nobody approved this
+        LiveField(id="sponsor", label="Sponsor?", type="select", widget="select",
+                  options=["Yes", "No"], current="Yes"),  # approved "No"
+        LiveField(id="email", label="Email", current="ada@example.com"),  # contact prefill
+        LiveField(id="agree", label="Agree", type="checkbox", widget="checkbox", current=None),
+        LiveField(id="start", label="Start", type="date", widget="date", current="Nov 2, 2026"),
+        LiveField(id="cv", label="Resume", type="file", widget="file", current="Old.pdf"),
+    ]
+    pk = packet(a("name", "Ada"), a("sponsor", "No"), a("agree", False), a("start", "2026-11-02"))
+    files = {"resume": resume}
+    got = verify_fields(fields, pk, files, accept_prefilled=False)
+    assert set(got) == {"gender", "sponsor", "email", "cv"}
+    got = verify_fields(fields, pk, files, accept_prefilled=True)
+    assert set(got) == {"gender", "sponsor", "cv"}
+
+
+def test_dates_compare_by_calendar_day():
+    from recrute.apply.dom import date_text, dates_equal, parse_date
+
+    assert dates_equal("2026-11-02", "Nov 2, 2026")
+    assert dates_equal("2026-11-02", "11/02/2026")
+    assert dates_equal("2026-11-02", "2026-11-02")
+    assert dates_equal("2026-11-02", "02/11/2026", "DD/MM/YYYY")
+    assert not dates_equal("2026-11-02", "02/11/2026")  # US reading: Feb 11
+    assert not dates_equal("2026-11-02", "Nov 3, 2026")
+    assert not dates_equal("2026-11-02", "")
+    assert parse_date("next week") is None
+    assert date_text("2026-11-02", "") == "11/02/2026"
+    assert date_text("2026-11-02", "YYYY-MM-DD") == "2026-11-02"
+    assert date_text("2026-11-02", "dd/mm/yyyy") == "02/11/2026"

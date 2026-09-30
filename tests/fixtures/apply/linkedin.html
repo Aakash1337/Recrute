@@ -148,6 +148,16 @@
           <input class="artdeco-text-input--input" id="single-line-text-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-299-text" type="text" required value="">
         </div>`;
     }
+    if (params.get('prefilled_sponsor') === '1') {
+      // LinkedIn re-uses answers saved from earlier applications: prefilled, but not approved
+      modal.querySelector('#extra-slot').insertAdjacentHTML('beforeend', `
+        <div class="fb-dash-form-element" data-test-form-element>
+          <label for="text-entity-list-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-298-multipleChoice">Do you require visa sponsorship?</label>
+          <select id="text-entity-list-form-component-formElement-urn-li-jobs-applyformcommon-easyApplyFormElement-4000-298-multipleChoice" required>
+            <option value="">Select an option</option><option>Yes</option><option selected>No</option>
+          </select>
+        </div>`);
+    }
     const file = modal.querySelector('#jobs-document-upload-file-input-upload-resume');
     file.addEventListener('change', () => { modal.querySelector('#uploaded-name').textContent = file.files.length ? file.files[0].name : ''; });
     const next = modal.querySelector('[data-easy-apply-next-button]');

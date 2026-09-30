@@ -132,6 +132,8 @@
       <ul>
         <li class="application-question"><label><div class="application-label">Gender</div>
           <div class="application-field"><select name="eeo[gender]"><option value="">Select ...</option><option value="Male">Male</option><option value="Female">Female</option><option value="Decline to self-identify">Decline to self-identify</option></select></div></label></li>
+        <li class="application-question"><label><div class="application-label">Veteran status</div>
+          <div class="application-field"><select name="eeo[veteran]"><option value="">Select ...</option><option value="I am not a protected veteran">I am not a protected veteran</option><option value="Decline to self-identify">Decline to self-identify</option></select></div></label></li>
       </ul>
     </div>
 
@@ -162,6 +164,19 @@
       <ul><li class="application-question custom-question"><div>
         <div class="application-label full-width text"><div class="text">What is your favorite security tool?<span class="required">✱</span></div></div>
         <div class="application-field full-width"><input class="card-field-input" type="text" name="cards[e0e0e0e0-0000-4000-8000-000000000001][field0]" required></div></div></li></ul>`;
+  }
+  // ?defaults=1: the site pre-selects an optional demographic answer nobody approved
+  // ?defaults=2: an optional screening radio comes with a default choice (can't be un-set)
+  const defaults = new URLSearchParams(location.search).get('defaults');
+  if (defaults === '1') form.querySelector('select[name="eeo[veteran]"]').value = 'I am not a protected veteran';
+  if (defaults === '2') {
+    document.getElementById('extra-slot').innerHTML = `
+      <ul><li class="application-question custom-question"><div>
+        <div class="application-label full-width multiple-choice"><div class="text">Are you open to contract roles?</div></div>
+        <div class="application-field full-width"><ul data-qa="multiple-choice">
+          <li><label><input name="cards[d0d0d0d0-0000-4000-8000-000000000002][field0]" type="radio" value="Yes" checked><span class="application-answer-alternative">Yes</span></label></li>
+          <li><label><input name="cards[d0d0d0d0-0000-4000-8000-000000000002][field0]" type="radio" value="No"><span class="application-answer-alternative">No</span></label></li>
+        </ul></div></div></li></ul>`;
   }
   const resume = document.getElementById('resume-upload-input');
   resume.addEventListener('change', () => {
