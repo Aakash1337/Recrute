@@ -141,7 +141,7 @@ def build_packet_for(ctx, session, job: Job, profile, bank, build_packet, user_n
     from recrute.insights import auto_approve_reason
 
     company = session.get(Company, job.company_id) if job.company_id else None
-    questions = fetch_questions(job, ctx.paths)
+    questions = fetch_questions(job, ctx.paths, session)
     packet = build_packet(job, questions, profile=profile, bank=bank, router=ctx.router,
                           paths=ctx.paths, user_note=user_note,
                           company=company.name if company else "")
