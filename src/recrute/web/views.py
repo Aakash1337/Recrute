@@ -192,3 +192,17 @@ async def settings_update(request: Request, key: str):
             return HTMLResponse('<span class="ok">saved</span>')
         except (ValueError, TypeError) as e:
             return HTMLResponse(f'<span class="bad">{escape(str(e))}</span>', status_code=422)
+
+
+# ------------------------------------------------------------------------------ analytics
+
+
+@router.get("/analytics", response_class=HTMLResponse)
+def analytics_page(request: Request):
+    from recrute.criteria import get_criteria
+    from recrute.insights import analytics, suggest_criteria_changes
+
+    with session_scope() as s:
+        return page(request, "analytics.html", {
+            "groups": analytics(s), "suggestions": suggest_criteria_changes(s, get_criteria()),
+        }, s)

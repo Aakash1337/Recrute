@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Analytics · Recrute{% endblock %}
+{% block content %}
+<h2>Suggested criteria changes</h2>
+<p class="muted">Learned from your review rejections. Nothing changes automatically. Edit <code>resources/criteria.yaml</code> if you agree.</p>
+<ul>
+  {% for sug in suggestions %}<li><b>{{ sug.kind }}</b>: {{ sug.value }} <span class="muted">({{ sug.evidence }})</span></li>
+  {% else %}<li class="muted">No suggestions yet.</li>{% endfor %}
+</ul>
+{% for dim, rows in groups.items() %}
+<h2>By {{ dim }}</h2>
+<table>
+  <tr><th>{{ dim }}</th><th>applied</th><th>responded</th><th>response rate</th><th>interview/offer rate</th></tr>
+  {% for key, r in rows.items() %}
+  <tr><td>{{ key }}</td><td>{{ r.applied }}</td><td>{{ r.responded }}</td>
+      <td>{{ '%.0f' % (r.response_rate * 100) }}%</td><td>{{ '%.0f' % (r.interview_rate * 100) }}%</td></tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="muted">No submitted applications yet.</p>
+{% endfor %}
+{% endblock %}

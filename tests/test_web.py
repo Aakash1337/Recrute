@@ -113,3 +113,7 @@ def test_settings_page_and_dict_update(client):
     assert "saved" in r.text
     r = client.post("/settings/trial_threshold", data={"value": "<script>"}, headers=HX)
     assert r.status_code == 422 and "<script>" not in r.text
+
+
+def test_analytics_page(client):
+    assert "Suggested criteria changes" in client.get("/analytics").text
