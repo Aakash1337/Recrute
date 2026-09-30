@@ -330,3 +330,86 @@ def test_failed_instant_alert_is_retried(engine, monkeypatch):
         monkeypatch.setattr(tasks, "notify",
                             lambda *a, **k: [SimpleNamespace(ok=True, backend="ntfy")])
         assert tasks.send_instant_alerts(None, s) == 1
+
+
+@pytest.mark.parametrize("backend", ["ui", "ntfy", "telegram", "email"])
+def test_notify_config_for_every_backend(engine, backend):
+    from recrute.settings import set_setting
+    from recrute.tasks import notify_config
+
+    with Session(engine) as s:
+        set_setting(s, "notify", {"backend": backend, "email_to": "me@example.com",
+                                  "smtp_host": "smtp.example.com", "smtp_user": "me",
+                                  "ntfy_url": "https://ntfy.example/t",
+                                  "telegram_chat_id": "1"})
+        assert notify_config(s).backends == [backend]
+
+
+def test_refresh_job_badges_keeps_sponsorship(engine):
+    from recrute.models import Company, Job
+    from recrute.tasks import refresh_job_badges
+
+    with Session(engine) as s:
+        c = Company(name="Acme", h1b_recent_approvals=42, e_verify=True)
+        s.add(c)
+        s.flush()
+        s.add(Job(company_id=c.id, title="t", apply_url="u", canonical_url="u",
+                  badges={"sponsorship": "will_sponsor", "h1b": None}))
+        s.commit()
+        assert refresh_job_badges(s) == 1
+        job = s.exec(select(Job)).one()
+        assert job.badges == {"sponsorship": "will_sponsor", "h1b": 42, "e_verify": True,
+                              "cap_exempt": None}
+
+
+def test_stale_packet_builder_cannot_overwrite_skip(engine, monkeypatch, paths):
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from recrute import tasks
+    from recrute.models import Job, JobStatus
+    from recrute.packets import skip
+    from recrute.schemas import Packet
+
+    monkeypatch.setattr("recrute.applying.fetch_questions", lambda job, p, s=None: [])
+    ctx = SimpleNamespace(paths=paths, router=None)
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://x", canonical_url="c",
+                  status=JobStatus.SHORTLISTED)
+        s.add(job)
+        s.commit()
+        job_id = job.id
+
+    def slow_build(job, questions, **kw):
+        with Session(engine) as other:  # the human skips it while the build is running
+            other_job = other.get(Job, job_id)
+            other_job.status = JobStatus.PACKET_READY
+            other.add(other_job)
+            other.commit()
+            skip(other, job_id, "not interested")
+        return Packet(job_id=job_id, generated_at=datetime.now(UTC))
+
+    with Session(engine) as s:
+        job = s.get(Job, job_id)
+        with pytest.raises(tasks.StaleBuild):
+            tasks.build_packet_for(ctx, s, job, None, None, slow_build)
+    with Session(engine) as s:
+        assert s.get(Job, job_id).status == JobStatus.REJECTED
+
+    # overlapping builders: the newer claim wins, the older result is dropped
+    with Session(engine) as s:
+        job = Job(title="t2", apply_url="https://y", canonical_url="c2",
+                  status=JobStatus.SHORTLISTED)
+        s.add(job)
+        s.commit()
+        job_id = job.id
+
+    def overtaken(job, questions, **kw):
+        with Session(engine) as other:
+            tasks.claim_build(other, other.get(Job, job_id))  # a second builder claims it
+        return Packet(job_id=job_id, generated_at=datetime.now(UTC))
+
+    with Session(engine) as s:
+        with pytest.raises(tasks.StaleBuild):
+            tasks.build_packet_for(ctx, s, s.get(Job, job_id), None, None, overtaken)
+        assert s.get(Job, job_id).status == JobStatus.SHORTLISTED

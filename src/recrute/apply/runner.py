@@ -97,6 +97,12 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
         return ApplyOutcome(status="needs_human",
                             reason="packet has blocking truthfulness flags; fix at CP2",
                             details=details)
+    if changed := packet.verify_artifacts(paths.data):
+        # The resume/cover letter bytes differ from what was approved (or are gone): never
+        # upload something you didn't see.
+        return ApplyOutcome(status="needs_human",
+                            reason=f"approved files changed or missing: {', '.join(changed)}",
+                            details=details)
 
     receipt = Receipt(paths, job.id, now)
     receipt.write_packet(packet)

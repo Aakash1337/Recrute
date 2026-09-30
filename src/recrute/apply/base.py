@@ -170,13 +170,63 @@ def prefill_ok(q: FormQuestion, accept_prefilled: bool) -> bool:
             and getattr(q, "current", None) not in (None, "", []))
 
 
+# Words that change what a screening question legally asks. A label that gains or loses one
+# of these is a different question, even if the field id is the same.
+_SENSITIVE = {"not", "no", "never", "without", "non", "citizen", "citizenship", "authorized",
+              "authorised", "authorization", "sponsor", "sponsorship", "visa", "clearance",
+              "require", "requires", "required", "currently", "future", "now", "ever", "felony",
+              "convicted", "disability", "veteran", "gender", "race", "ethnicity", "over", "under",
+              "18", "21", "relocate", "salary", "hourly"}
+_FAMILY = {"text": "text", "textarea": "text", "email": "text", "tel": "text", "url": "text",
+           "number": "text", "date": "date", "select": "choice", "radio": "choice",
+           "multiselect": "multi", "checkbox": "multi", "file": "file"}
+
+
+def same_question(approved: FormQuestion, live: FormQuestion) -> bool:
+    """Whether the live field still asks what was approved at CP2 (same answer family, and a
+    label that is identical or only cosmetically different, with no change in the sensitive
+    words that flip a question's meaning)."""
+    fa = _FAMILY.get(approved.type, approved.type)
+    fl = _FAMILY.get(live.type, live.type)
+    if fa != fl:
+        pair = {fa, fl}
+        small = len(approved.options) <= 2 and len(live.options) <= 2
+        # a single checkbox rendered as a yes/no choice; free text rendered as a typeahead
+        # (autocomplete) with no fixed options
+        ok = (pair == {"multi", "choice"} and small) or (
+            pair == {"text", "choice"} and not approved.options and not live.options)
+        if not ok:
+            return False
+    a, b = dom.norm(approved.label), dom.norm(live.label)
+    if not a or not b or a == b:
+        return True
+    if re.sub(r"[^a-z0-9]", "", a) == re.sub(r"[^a-z0-9]", "", b):
+        return True  # "VeteranStatus" vs "Veteran Status"
+    ta, tb = set(re.findall(r"[a-z0-9]+", a)), set(re.findall(r"[a-z0-9]+", b))
+    if (ta ^ tb) & _SENSITIVE:
+        return False
+    if ta <= tb or tb <= ta:
+        return True  # only non-sensitive qualifiers added, e.g. "Location (City)"
+    import difflib
+
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
+
+
 def resolve_answer(q: FormQuestion, packet: Packet, aliases: Mapping[str, Sequence[str]] = {},
                    ) -> FormAnswer | None:
     """The approved answer for a live question: by id, then adapter aliases (DOM id vs API id),
-    then by an exactly-equal (normalized) label among the packet's pre-fetched questions."""
+    then by an exactly-equal (normalized) label among the packet's pre-fetched questions.
+
+    An id match only counts if the live question is still the question that was approved
+    (`same_question`); a reused id with changed wording gets no answer, which sends a required
+    field to CP3 instead of submitting an answer to a question you never saw."""
+    by_id = {pq.id: pq for pq in packet.questions}
     for qid in (q.id, *aliases.get(q.id, ())):
         a = packet.answer_for(qid)
         if a is not None:
+            approved_q = by_id.get(qid)
+            if approved_q is not None and not same_question(approved_q, q):
+                return None
             return a
     want = dom.norm(q.label)
     if want:

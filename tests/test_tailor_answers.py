@@ -360,3 +360,23 @@ def test_single_cover_letter_detector_used_everywhere():
                            bank=make_bank(), router=None, resume_pdf="r.pdf",
                            cover_letter_pdf="c.pdf")
     assert [a.value for a in res.answers] == ["c.pdf", "c.pdf", "r.pdf"]
+
+
+def test_concurrent_add_answer_keeps_all_entries(tmp_path):
+    import threading
+
+    from recrute.paths import Paths
+    from recrute.tailor.answers import add_answer, load_answer_bank
+
+    paths = Paths(tmp_path)
+    paths.ensure()
+    (paths.resources / "answers.yaml").write_text("common:\n  existing: yes\n", encoding="utf-8")
+    threads = [threading.Thread(target=add_answer, args=(paths, f"Question {i}", f"a{i}"))
+               for i in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    common = load_answer_bank(paths).common
+    assert all(common.get(f"question_{i}") == f"a{i}" for i in range(12))
+    assert not list(paths.resources.glob("*.tmp")) and not list(paths.resources.glob("*.lock"))

@@ -108,6 +108,7 @@ class SmartRecruitersSource(BoardSource):
     def fetch_board(self, ctx: SourceContext, company: CompanyRef) -> Any:
         token = quote(company.ats_token)
         postings: list[dict[str, Any]] = []
+        complete = False
         for page in range(self.max_pages):
             url = LIST.format(token=token, limit=PAGE, offset=page * PAGE)
             if self.country:
@@ -116,7 +117,10 @@ class SmartRecruitersSource(BoardSource):
             content = data.get("content") or []
             postings += content
             if len(content) < PAGE or len(postings) >= (data.get("totalFound") or 0):
+                complete = True
                 break
+        if not complete:
+            ctx.incomplete.add(f"smartrecruiters:{company.ats_token}")
         return {"content": postings}
 
     def parse_board(self, payload: Any, company: CompanyRef,

@@ -177,23 +177,31 @@ def _set_answer(packet: Packet, qid: str, value) -> None:
 
 
 def _rerender_cover_letter(job: Job, packet: Packet) -> Packet:
-    """Edited letters get a NEW file (previously reviewed PDFs stay immutable)."""
+    """Edited letters get a NEW, uniquely named file (never overwriting a file an earlier or
+    concurrent revision points to), and the packet's artifact fingerprints are updated."""
+    import uuid
+
     from recrute.paths import get_paths
     from recrute.tailor import load_profile
+    from recrute.tailor.packet import file_digests
     from recrute.tailor.render import render_cover_letter
 
     if not packet.cover_letter_pdf:
         return packet
     paths = get_paths()
-    old = paths.data / packet.cover_letter_pdf
-    new = old.with_name(f"{old.stem}_edited_{utcnow():%Y%m%d%H%M%S}{old.suffix}")
+    old_rel = packet.cover_letter_pdf
+    old = paths.data / old_rel
+    stem = old.stem.split("_edited_")[0]
+    new = old.with_name(f"{stem}_edited_{uuid.uuid4().hex[:12]}{old.suffix}")
     paragraphs = [p.strip() for p in packet.cover_letter.split("\n\n") if p.strip()]
     render_cover_letter(load_profile(paths), paragraphs, new, job_title=job.title, paths=paths)
     rel = new.relative_to(paths.data).as_posix()
     for a in packet.answers:  # file-upload answers that pointed at the old letter
-        if a.value == packet.cover_letter_pdf:
+        if a.value == old_rel:
             a.value = rel
     packet.cover_letter_pdf = rel
+    packet.artifacts.pop(old_rel, None)
+    packet.artifacts.update(file_digests(paths, [rel]))
     return packet
 
 
@@ -204,7 +212,8 @@ def regenerate(session: Session, job_id: int, rev: str, note: str) -> None:
     packet.user_note = note.strip()
     data = packet.model_dump(mode="json")
     session.execute(update(Application).where(Application.id == app.id)
-                    .values(packet=data, packet_rev=revision(data), approved_at=None))
+                    .values(packet=data, packet_rev=revision(data), approved_at=None,
+                            build_token=""))
     session.add(Decision(job_id=job_id, checkpoint="CP2", action="regenerate", reason=note))
     session.add(StatusEvent(job_id=job_id, status=JobStatus.SHORTLISTED,
                             note=f"regenerate: {note}"))
@@ -215,7 +224,7 @@ def skip(session: Session, job_id: int, reason: str | None = None) -> None:
     _transition(session, job_id, [JobStatus.PACKET_READY, JobStatus.APPROVED,
                                   JobStatus.NEEDS_HUMAN], JobStatus.REJECTED)
     session.execute(update(Application).where(Application.job_id == job_id)
-                    .values(approved_at=None))
+                    .values(approved_at=None, build_token=""))
     session.add(Decision(job_id=job_id, checkpoint="CP2", action="skip", reason=reason))
     session.add(StatusEvent(job_id=job_id, status=JobStatus.REJECTED, note="skipped"))
     session.commit()

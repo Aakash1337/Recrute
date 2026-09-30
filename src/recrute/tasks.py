@@ -43,6 +43,23 @@ def make_badge_fn(paths):
     return badge_fn
 
 
+def refresh_job_badges(session) -> int:
+    """After an H-1B / E-Verify import: copy the company-level badge values onto existing jobs
+    (their posting-specific sponsorship wording is kept). Informational only."""
+    n = 0
+    rows = session.exec(select(Job, Company).join(Company, Company.id == Job.company_id)).all()
+    for job, company in rows:
+        badges = dict(job.badges or {})
+        new = {**badges, "h1b": company.h1b_recent_approvals, "e_verify": company.e_verify,
+               "cap_exempt": company.cap_exempt}
+        if new != badges:
+            job.badges = new
+            session.add(job)
+            n += 1
+    session.commit()
+    return n
+
+
 # ------------------------------------------------------------------------------ pipeline
 
 
@@ -103,13 +120,16 @@ def build_packets(ctx) -> dict:
                     "skipped": "no profile yet: run `recrute profile ingest`"}
         profile = load_profile(ctx.paths)
         bank = load_answer_bank(ctx.paths)
-        built = failed = auto = 0
+        built = failed = auto = stale = 0
         for job in pending:
             try:
                 prior = s.exec(select(Application).where(Application.job_id == job.id)).first()
                 note = ((prior.packet or {}).get("user_note") or "") if prior else ""
                 auto += build_packet_for(ctx, s, job, profile, bank, build_packet, note)
                 built += 1
+            except StaleBuild:
+                s.rollback()
+                stale += 1
             except Exception as e:  # one bad posting must not block the rest
                 log.exception("packet for job %s failed", job.id)
                 s.rollback()
@@ -124,7 +144,7 @@ def build_packets(ctx) -> dict:
                     s.add(job)
                 s.commit()
                 failed += 1
-        return {"built": built, "failed": failed, "auto_approved": auto}
+        return {"built": built, "failed": failed, "auto_approved": auto, "stale": stale}
 
 
 def _application(session, job: Job) -> Application:
@@ -136,36 +156,72 @@ def _application(session, job: Job) -> Application:
     return app
 
 
+class StaleBuild(RuntimeError):
+    """Another builder claimed this job, or a human decided meanwhile: drop the result."""
+
+
+def claim_build(session, job: Job) -> str:
+    """Claims packet generation for `job` (SHORTLISTED) with a fresh token."""
+    import uuid
+
+    from sqlalchemy import update
+
+    app = _application(session, job)
+    if app.id is None:
+        session.add(app)
+        session.flush()
+    token = uuid.uuid4().hex
+    res = session.execute(update(Application).where(
+        Application.id == app.id,
+        select(Job.id).where(Job.id == job.id,
+                             Job.status == JobStatus.SHORTLISTED).exists())
+        .values(build_token=token))
+    if res.rowcount != 1:
+        session.rollback()
+        raise StaleBuild("job is no longer waiting for a packet")
+    session.commit()
+    return token
+
+
 def build_packet_for(ctx, session, job: Job, profile, bank, build_packet, user_note: str = ""
                      ) -> int:
-    """Builds/rebuilds one packet. Returns 1 if the auto-approval rule approved it."""
+    """Builds/rebuilds one packet. Returns 1 if the auto-approval rule approved it.
+
+    Publication is conditional: only if this build still holds the claim and the job is still
+    SHORTLISTED. A slower, overlapping builder (or one racing a human skip/regenerate) can
+    therefore never overwrite a newer decision."""
+    from sqlalchemy import update
+
     from recrute.applying import fetch_questions
     from recrute.insights import auto_approve_reason
+    from recrute.packets import revision
 
+    token = claim_build(session, job)
     company = session.get(Company, job.company_id) if job.company_id else None
     questions = fetch_questions(job, ctx.paths, session)
     packet = build_packet(job, questions, profile=profile, bank=bank, router=ctx.router,
                           paths=ctx.paths, user_note=user_note,
                           company=company.name if company else "")
-    app = _application(session, job)
-    from recrute.packets import revision
-
-    app.packet = packet.model_dump(mode="json")
-    app.packet_rev = revision(app.packet)
-    app.resume_path = packet.resume_pdf
-    app.cover_letter_path = packet.cover_letter_pdf
-    app.approved_at = None
-    app.last_error = None
-    job.status = JobStatus.PACKET_READY
-    session.add(StatusEvent(job_id=job.id, status=job.status,
-                            note="packet built" + (f" ({user_note})" if user_note else "")))
+    session.commit()  # nothing held across the slow build
     reason = auto_approve_reason(job, packet, get_setting(session, "auto_approve"))
+    status = JobStatus.APPROVED if reason else JobStatus.PACKET_READY
+    data = packet.model_dump(mode="json")
+    claimed = select(Application.id).where(Application.job_id == job.id,
+                                           Application.build_token == token).exists()
+    res = session.execute(update(Job).where(Job.id == job.id,
+                                            Job.status == JobStatus.SHORTLISTED, claimed)
+                          .values(status=status))
+    if res.rowcount != 1:
+        session.rollback()
+        raise StaleBuild("superseded while building")
+    session.execute(update(Application).where(Application.job_id == job.id).values(
+        packet=data, packet_rev=revision(data), resume_path=packet.resume_pdf,
+        cover_letter_path=packet.cover_letter_pdf, approved_at=utcnow() if reason else None,
+        last_error=None, build_token=""))
+    session.add(StatusEvent(job_id=job.id, status=JobStatus.PACKET_READY,
+                            note="packet built" + (f" ({user_note})" if user_note else "")))
     if reason:
-        app.approved_at = utcnow()
-        job.status = JobStatus.APPROVED
-        session.add(StatusEvent(job_id=job.id, status=job.status, note=reason))
-    session.add(app)
-    session.add(job)
+        session.add(StatusEvent(job_id=job.id, status=JobStatus.APPROVED, note=reason))
     session.commit()
     return 1 if reason else 0
 
@@ -225,7 +281,7 @@ def notify_config(session):
     cfg = get_setting(session, "notify")
     backend = cfg["backend"]
     return NotifyConfig(
-        backends=[{"email": "smtp"}.get(backend, backend)],
+        backends=[backend],
         ntfy_url=cfg["ntfy_url"] or None, telegram_chat_id=cfg["telegram_chat_id"] or None,
         smtp_host=cfg["smtp_host"] or None, smtp_port=int(cfg["smtp_port"]),
         smtp_user=cfg["smtp_user"] or None, smtp_from=cfg["smtp_from"] or None,

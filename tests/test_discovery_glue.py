@@ -78,3 +78,80 @@ def test_add_company_from_url(engine):
         assert (c.ats, c.ats_token, c.origin) == ("lever", "acme-sec", "manual")
         with pytest.raises(ValueError):
             add_company_from_url(s, "https://example.com/careers")
+
+
+def test_linkedin_kill_switch_is_shared(engine, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.apply.state import suspend, suspension
+    from recrute.settings import set_setting
+    from recrute.sources import SourceBlocked
+
+    with Session(engine) as s:
+        set_setting(s, "sources_enabled", {"linkedin_session": True})
+        suspend(s, "linkedin_easy_apply", datetime.now(UTC), "captcha while applying")
+        s.commit()
+    out = discovery.discover_linkedin(_ctx(engine))
+    assert out["skipped"] == "LinkedIn applying is suspended"
+
+    # and the other direction: browsing hits a checkpoint -> applying is suspended
+    with Session(engine) as s:
+        from recrute.apply.state import clear_suspension
+
+        clear_suspension(s, "linkedin_easy_apply")
+        s.commit()
+
+    class Blocking:
+        def __init__(self, **kw):
+            from recrute.sources.linkedin_session import SessionBudget
+
+            self.budget = SessionBudget()
+            self.seen_ids = set()
+
+        def fetch(self, ctx):
+            raise SourceBlocked("linkedin_session", "checkpoint", "https://x",
+                                backoff=timedelta(days=3))
+            yield
+
+    import recrute.sources.linkedin_session as ls
+
+    monkeypatch.setattr(ls, "LinkedInSessionSource", Blocking)
+    monkeypatch.setattr(discovery, "Http", lambda **kw: None)
+    import recrute.tasks as tasks
+
+    monkeypatch.setattr(tasks, "notify", lambda *a, **k: [])
+    out = discovery.discover_linkedin(_ctx(engine))
+    assert out["blocked"] == "checkpoint"
+    with Session(engine) as s:
+        assert suspension(s, "linkedin_easy_apply", datetime.now(UTC)) is not None
+
+
+def test_truncated_board_does_not_close_jobs(engine, monkeypatch):
+    from recrute.models import JobStatus
+    from recrute.schemas import RawJob
+
+    class Truncating:
+        def __init__(self, urls, incomplete):
+            self.urls, self.incomplete = urls, incomplete
+
+        def fetch(self, sctx):
+            if self.incomplete:
+                sctx.incomplete.add("smartrecruiters:acme")
+            for u in self.urls:
+                yield RawJob(source="smartrecruiters", url=u, title="SOC Analyst",
+                             company="Acme", ats="smartrecruiters", ats_token="acme",
+                             ats_job_id=u[-1], locations=["Austin, TX"])
+
+    with Session(engine) as s:
+        s.add(Company(name="Acme", ats="smartrecruiters", ats_token="acme"))
+        s.commit()
+    monkeypatch.setattr(discovery, "load_seed_companies", lambda: [])
+    monkeypatch.setattr(discovery, "Http", lambda **kw: FakeHttp({}))
+    urls = [f"https://jobs.smartrecruiters.com/acme/{i}" for i in range(3)]
+    monkeypatch.setattr(discovery, "get_source", lambda name: Truncating(urls, False))
+    discovery.discover_boards(_ctx(engine))
+    monkeypatch.setattr(discovery, "get_source", lambda name: Truncating(urls[:1], True))
+    stats = discovery.discover_boards(_ctx(engine))
+    assert stats["closed"] == 0
+    with Session(engine) as s:
+        assert not s.exec(select(Job).where(Job.status == JobStatus.CLOSED)).all()

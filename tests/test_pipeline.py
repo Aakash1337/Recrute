@@ -402,3 +402,26 @@ def test_snooze_then_stale_approve_rejected(engine):
         decide(s, job.id, "snooze")
         with pytest.raises(ReviewError):
             decide(s, job.id, "approve", expected_snooze=seen)
+
+
+def test_multiple_roles_from_one_hn_comment_stay_distinct(engine):
+    comment = "https://news.ycombinator.com/item?id=4242"
+    with Session(engine) as s:
+        ingest(s, [
+            raw(source="hn_whoshiring", url=comment, source_job_id="4242-1", ats=None,
+                ats_token=None, ats_job_id=None, title="Security Engineer",
+                apply_url="https://acme.example/jobs/sec"),
+            raw(source="hn_whoshiring", url=comment, source_job_id="4242-2", ats=None,
+                ats_token=None, ats_job_id=None, title="ML Engineer",
+                apply_url="https://acme.example/jobs/ml"),
+            raw(source="hn_whoshiring", url=comment, source_job_id="4242-3", ats=None,
+                ats_token=None, ats_job_id=None, title="Data Analyst", apply_url=None),
+        ])
+        jobs = {j.title: j for j in s.exec(select(Job)).all()}
+        assert set(jobs) == {"Security Engineer", "ML Engineer", "Data Analyst"}
+        assert jobs["ML Engineer"].apply_url == "https://acme.example/jobs/ml"
+        # re-ingest is an update, not new jobs
+        again = ingest(s, [raw(source="hn_whoshiring", url=comment, source_job_id="4242-2",
+                               ats=None, ats_token=None, ats_job_id=None, title="ML Engineer",
+                               apply_url="https://acme.example/jobs/ml")])
+        assert again.new == 0

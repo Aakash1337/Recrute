@@ -138,6 +138,7 @@ class Application(SQLModel, table=True):
     outcome: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     packet: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     packet_rev: str = ""  # content digest of `packet`; CP2 actions are bound to it
+    build_token: str = ""  # current packet-build claim; stale builders can't publish
     resume_path: str | None = None
     cover_letter_path: str | None = None
     scheduled_for: datetime | None = None  # set by the drip scheduler

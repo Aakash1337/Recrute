@@ -165,6 +165,11 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
         target = [c for n, c, _ in cards if n == name]
         if not target:
             return f"uploaded resume {name!r} is not in the document list"
+        if len(target) > 1:
+            # Packet resumes have version-unique names, so a duplicate means we can't tell which
+            # document LinkedIn would send: never guess.
+            return (f"{len(target)} saved documents are named {name!r}; can't tell which one "
+                    "is the approved resume")
         deadline = time.monotonic() + 4
         while time.monotonic() < deadline:
             selected = [n for n, _, s in self._resume_cards(page) if s]

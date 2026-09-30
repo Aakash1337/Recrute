@@ -6,7 +6,11 @@ by an LLM and never "optimized". If the bank has no value, the question is left 
 
 from __future__ import annotations
 
+import os
 import re
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -114,15 +118,55 @@ def answer_key(label: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:60] or "answer"
 
 
+@contextmanager
+def _file_lock(target: Path, timeout: float = 30.0, stale: float = 120.0):
+    """Cross-process lock (a lock directory; mkdir is atomic on Linux and Windows)."""
+    lock = target.with_name(target.name + ".lock")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.mkdir(lock)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > stale:  # holder died
+                    os.rmdir(lock)
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"could not lock {target.name}") from None
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        try:
+            os.rmdir(lock)
+        except OSError:
+            pass
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)  # readers see the old or the new file, never a partial one
+
+
 def add_answer(paths: Paths, key: str, text: str) -> str:
     """Persist an approved answer under `common` in answers.yaml; returns the key used.
 
     A new key is appended textually to the `common:` block so the user's comments survive;
     anything else (replacing an existing key, unusual layout) rewrites the file via yaml.
+    Serialized across threads/processes, re-read under the lock, and written atomically.
     """
     key = answer_key(key)
     path = answers_path(paths)
     path.parent.mkdir(parents=True, exist_ok=True)
+    with _file_lock(path):
+        return _add_answer_locked(path, key, text)
+
+
+def _add_answer_locked(path: Path, key: str, text: str) -> str:
     original = path.read_text(encoding="utf-8") if path.exists() else ""
     data = (yaml.safe_load(original) or {}) if original else {}
     common = data.get("common") or {}
@@ -152,7 +196,7 @@ def add_answer(paths: Paths, key: str, text: str) -> str:
     if new_text is None:  # fallback: structural rewrite (comments are lost)
         data["common"] = {**common, key: text}
         new_text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=100)
-    path.write_text(new_text, encoding="utf-8")
+    _write_atomic(path, new_text)
     return key
 
 

@@ -181,10 +181,24 @@ class Packet(BaseModel):
     # question_id / "resume" / "cover_letter" -> profile item ids backing it (verifier re-checks)
     citations: dict[str, list[str]] = Field(default_factory=dict)
     user_note: str = ""  # "regenerate with a note" instruction
+    # rel path (under data/) -> sha256 of every generated file; uploads are verified against it
+    artifacts: dict[str, str] = Field(default_factory=dict)
     generated_at: datetime | None = None
 
     def answer_for(self, question_id: str) -> FormAnswer | None:
         return next((a for a in self.answers if a.question_id == question_id), None)
+
+    def verify_artifacts(self, data_dir) -> list[str]:
+        """Files whose bytes no longer match what was approved (or that are missing)."""
+        import hashlib
+        from pathlib import Path
+
+        bad = []
+        for rel, digest in self.artifacts.items():
+            f = Path(data_dir) / rel
+            if not f.is_file() or hashlib.sha256(f.read_bytes()).hexdigest() != digest:
+                bad.append(rel)
+        return bad
 
     def blocking_flags(self) -> list[VerifierFlag]:
         """Unacknowledged blocking flags (these stop approval and submission)."""

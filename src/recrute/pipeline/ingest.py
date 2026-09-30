@@ -72,12 +72,32 @@ def learn_company_board(session: Session, company: Company, raw: RawJob) -> None
         session.add(company)
 
 
+def source_url(raw: RawJob) -> str:
+    """Per-posting identity within a source. Some sources emit several roles from one page
+    (e.g. one HN comment listing three jobs); their role id is folded into the URL fragment so
+    each role stays distinct (the link itself still works)."""
+    sid = raw.source_job_id
+    if sid and sid not in raw.url:
+        return f"{raw.url}#{sid}"
+    return raw.url
+
+
+def job_canonical(raw: RawJob) -> tuple[str, str]:
+    """(apply target, canonical key). Without an apply URL, a multi-role source's role id keeps
+    roles that share a page URL apart."""
+    target = raw.apply_url or raw.url
+    canon = canonical_url(target)
+    if raw.apply_url is None and raw.source_job_id and raw.source_job_id not in canon:
+        canon = f"{canon}#{raw.source_job_id}"
+    return target, canon
+
+
 def _find_existing(session: Session, raw: RawJob, canon: str, fkey: str) -> Job | None:
     job = session.exec(select(Job).where(Job.canonical_url == canon)).first()
     if job:
         return job
     src = session.exec(select(JobSource).where(JobSource.source == raw.source,
-                                               JobSource.url == raw.url)).first()
+                                               JobSource.url == source_url(raw))).first()
     if src:
         return session.get(Job, src.job_id)
     if raw.ats and raw.ats_job_id:
@@ -127,8 +147,7 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
     stats = IngestStats()
     now = utcnow()
     for raw in raws:
-        target = raw.apply_url or raw.url
-        canon = canonical_url(target)
+        target, canon = job_canonical(raw)
         fkey = fuzzy_key(raw.company, raw.title, raw.locations)
         desc = description_markdown(raw.description_html, raw.description_text)
         job = _find_existing(session, raw, canon, fkey)
@@ -206,11 +225,12 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
                     job.priority = job.score = job.filter_reason = None
                     job.years_required = None
             session.add(job)
+        surl = source_url(raw)
         src = session.exec(select(JobSource).where(JobSource.source == raw.source,
-                                                   JobSource.url == raw.url)).first()
+                                                   JobSource.url == surl)).first()
         if src is None:
             session.add(JobSource(job_id=job.id, source=raw.source,
-                                  source_job_id=raw.source_job_id, url=raw.url))
+                                  source_job_id=raw.source_job_id, url=surl))
         else:
             src.seen_at = now
             session.add(src)

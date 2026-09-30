@@ -44,8 +44,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import update
-from sqlmodel import Session, select
+from sqlalchemy import or_, update
+from sqlmodel import Session, col, select
 
 from recrute.apply.state import DEFAULT_SUSPENSION, Lease, suspend, suspension
 from recrute.models import Application, Job, JobStatus, StatusEvent
@@ -318,10 +318,14 @@ def day_counts(session: Session, now: datetime) -> DayCounts:
     total = 0
     by: dict[str, int] = {}
     rows = session.exec(select(Application, Job).join(Job, Application.job_id == Job.id)
-                        .where(Application.attempts > 0)).all()
+                        .where(or_(Application.attempts > 0,
+                                   col(Application.submitted_at).is_not(None)))).all()
     for app, job in rows:
         when = aware(app.submitted_at, tz) or _attempted_at(app, tz)
-        if when is not None and when.date() == today and may_have_been_sent(app, job.status):
+        if when is None or when.date() != today:
+            continue
+        # confirmed submissions count whoever made them (including "I submitted it" by hand)
+        if app.submitted_at is not None or may_have_been_sent(app, job.status):
             total += 1
             by[app.channel] = by.get(app.channel, 0) + 1
     return DayCounts(total=total, by_channel=by)
@@ -520,7 +524,7 @@ def finalize(session: Session, *, app_id: int, job_id: int, attempt_id: str, lea
     if not ours:
         details["previous_outcome"] = before
     if outcome.status == "submitted":
-        app.submitted_at = datetime.now(UTC)  # a fact, whatever the job status says now
+        app.submitted_at = now.astimezone(UTC)  # a fact, whatever the job status says now
         app.last_error = None
     else:
         app.last_error = outcome.reason
@@ -544,7 +548,7 @@ def finalize(session: Session, *, app_id: int, job_id: int, attempt_id: str, lea
     if not ours:
         result = "status_left_unchanged: attempt no longer owns the job (lease lost/recovered)"
     elif not _conditional_status(session, job_id, target, note,
-                                 closed_at=datetime.now(UTC) if target == JobStatus.CLOSED
+                                 closed_at=now.astimezone(UTC) if target == JobStatus.CLOSED
                                  else None):
         result = f"status_left_unchanged: job was {job.status} when the attempt finished"
     if result != "status_updated":
@@ -702,7 +706,7 @@ def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: d
 
     base.finalized = finalize(session, app_id=app_id, job_id=job_id,  # type: ignore[arg-type]
                               attempt_id=attempt_id, lease=lease, outcome=outcome,
-                              adapter_name=adapter.name, max_attempts=max_attempts, now=now)
+                              adapter_name=adapter.name, max_attempts=max_attempts, now=clock())
     if outcome.details.get("account_security"):
         suspend(session, channel, now, f"{outcome.reason} (job {job_id})", suspend_for)
         log.warning("channel %s suspended: %s", channel, outcome.reason)

@@ -21,6 +21,7 @@ from recrute.sources import (
 
 log = logging.getLogger("recrute.discovery")
 
+LINKEDIN_CHANNEL = "linkedin_easy_apply"
 SEARCH_SOURCES = ("remotive", "remoteok", "himalayas", "hn_whoshiring", "adzuna",
                   "linkedin_guest")
 
@@ -56,8 +57,11 @@ def poll_company(session: Session, http: Http, ctx, company: Company) -> dict:
     if error:
         return {"error": 1}
     stats = ingest(session, raws).as_dict()
-    stats["closed"] = mark_missing_closed(session, company.ats, company.id,
-                                          {r.url for r in raws})
+    if sctx.incomplete:  # partial listing: absence proves nothing
+        stats["closed"] = 0
+    else:
+        stats["closed"] = mark_missing_closed(session, company.ats, company.id,
+                                              {r.url for r in raws})
     return stats
 
 
@@ -152,11 +156,17 @@ def discover_linkedin(ctx) -> dict:
     with ctx.session() as s:
         if not _enabled(s, "linkedin_session"):
             return {"skipped": "disabled"}
+        from recrute.apply.state import suspend, suspension
+
         state = get_state(s, "linkedin_session", {}) or {}
         now = datetime.now(UTC)
         if state.get("blocked_until") and datetime.fromisoformat(state["blocked_until"]) > now:
             return {"skipped": f"blocked until {state['blocked_until']}",
                     "reason": state.get("block_reason")}
+        # One LinkedIn account: a security signal while APPLYING also stops browsing.
+        if applying_block := suspension(s, LINKEDIN_CHANNEL, now):
+            return {"skipped": "LinkedIn applying is suspended",
+                    "reason": applying_block.get("reason")}
         today = date.today().isoformat()
         if state.get("day") != today:
             state.update(day=today, searches=0, views=0)
@@ -178,6 +188,8 @@ def discover_linkedin(ctx) -> dict:
             until = now + e.backoff
             state.update(blocked_until=until.isoformat(), block_reason=e.reason)
             result["blocked"] = e.reason
+            # ...and a security signal while BROWSING stops automated Easy Apply too.
+            suspend(s, LINKEDIN_CHANNEL, now, f"LinkedIn browsing: {e.reason}", e.backoff)
             from recrute.tasks import notify
 
             notify(s, "LinkedIn browsing paused",

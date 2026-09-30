@@ -263,10 +263,13 @@ def _import_badges(kind: str, files: list[Path]) -> None:
         index = EVerifyIndex.from_csv(*files)
         index.save(out / "everify.json")
         kwargs = {"everify": index}
+    from recrute.tasks import refresh_job_badges
+
     with session_scope() as s:
         n = update_company_badges(s, **kwargs)
         s.commit()
-    typer.echo(f"imported; {n} companies updated. New jobs get badges automatically.")
+        jobs = refresh_job_badges(s)
+    typer.echo(f"imported; {n} companies and {jobs} jobs updated.")
 
 
 @badges_app.command("import-h1b")
