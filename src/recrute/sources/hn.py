@@ -168,6 +168,12 @@ def heuristic_parse(c: dict[str, Any], title_rx: re.Pattern[str] | None = None) 
     return [_rawjob(c, company, title, locations, remote, None, etype, lo, hi, cur, text)]
 
 
+def _role_slug(title: str) -> str:
+    from recrute.pipeline.normalize import spell_symbols
+
+    return re.sub(r"[^a-z0-9]+", "-", spell_symbols(title).lower()).strip("-")[:60]
+
+
 def _rawjob(c: dict[str, Any], company: str, title: str, locations: list[str],
             remote: str | None, apply_url: str | None, etype: str | None, lo: int | None,
             hi: int | None, cur: str | None, text: str | None = None,
@@ -182,7 +188,7 @@ def _rawjob(c: dict[str, Any], company: str, title: str, locations: list[str],
         ats["apply_url"] = apply_url
     return RawJob(
         source="hn_whoshiring",
-        source_job_id=f"{c['id']}:{re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:60]}",
+        source_job_id=f"{c['id']}:{_role_slug(title)}",
         url=HN_ITEM_URL.format(id=c["id"]),
         title=title.strip()[:300],
         company=company.strip()[:200],
@@ -285,9 +291,17 @@ class HNWhoIsHiringSource:
         self.batch_size = batch_size
         self.max_comments = max_comments
         self.task = task
+        # Progress through the month's thread, kept by the caller between runs:
+        # {"thread": story id, "ids": [comment ids already extracted]}. When set, comments are
+        # selected by "not processed yet" instead of by date, so a backlog beyond max_comments
+        # (or a failed batch) is picked up by later runs instead of being skipped for good.
+        self.done: dict[str, Any] | None = None
+        self.thread_id: str | None = None
+        self.processed: list[int] = []
+        self.backlog = 0
 
     def fetch(self, ctx: SourceContext) -> Iterator[RawJob]:
-        return limited(ctx, self._all(ctx))
+        return limited(ctx, self._all(ctx), apply_since=self.done is None)
 
     def _all(self, ctx: SourceContext) -> Iterator[RawJob]:
         story = latest_thread(ctx.http.get_json(STORY_SEARCH))
@@ -295,15 +309,25 @@ class HNWhoIsHiringSource:
             log.info("hn: no 'Who is hiring?' thread found")
             return
         item = ctx.http.get_json(ITEM.format(id=story["objectID"]))
-        comments = [c for c in top_level_comments(item)
-                    if ctx.is_new(to_utc(c.get("created_at_i")))]
+        self.thread_id, self.processed = str(story["objectID"]), []
+        if self.done is not None:
+            seen = set(self.done.get("ids") or []) \
+                if str(self.done.get("thread")) == self.thread_id else set()
+            comments = [c for c in top_level_comments(item) if int(c["id"]) not in seen]
+        else:
+            comments = [c for c in top_level_comments(item)
+                        if ctx.is_new(to_utc(c.get("created_at_i")))]
         kws = track_keywords(ctx.criteria)
-        comments = prefilter(comments, kws)[: self.max_comments]
-        log.info("hn: %s -> %d candidate comments", story.get("title"), len(comments))
+        matching = prefilter(comments, kws)
+        comments = matching[: self.max_comments]
+        self.backlog = len(matching) - len(comments)
+        log.info("hn: %s -> %d candidate comments (%d left for later runs)",
+                 story.get("title"), len(comments), self.backlog)
         if ctx.router is None:
             title_rx = keyword_regex(track_keywords(ctx.criteria, include_description=False))
             for c in comments:
                 yield from heuristic_parse(c, title_rx)
+                self.processed.append(int(c["id"]))
             return
         for i in range(0, len(comments), self.batch_size):
             batch = comments[i: i + self.batch_size]
@@ -315,3 +339,4 @@ class HNWhoIsHiringSource:
                 log.warning("hn: extraction batch %d failed: %s", i // self.batch_size, e)
                 continue
             yield from jobs_from_extraction(result, batch)
+            self.processed.extend(int(c["id"]) for c in batch)

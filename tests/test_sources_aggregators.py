@@ -358,3 +358,24 @@ def test_hn_overlapping_titles_keep_their_own_sections_and_links():
     jobs = {j.title: j for j in jobs_from_extraction(rows, [c])}
     assert jobs["Senior Security Engineer"].ats_job_id == "111"
     assert jobs["Security Engineer"].ats_job_id == "222"
+
+
+def test_hn_backlog_beyond_max_comments_is_drained_by_later_runs():
+    from recrute.sources.util import track_keywords
+
+    matching = hnmod.prefilter(hnmod.top_level_comments(jfx("hn_item.json")),
+                               track_keywords(Criteria()))
+    assert len(matching) >= 2
+    done = {}
+    seen_ids: set[int] = set()
+    for _ in range(len(matching)):
+        src = hnmod.HNWhoIsHiringSource(max_comments=1)
+        src.done = done
+        list(src.fetch(SourceContext(http=hn_http(), criteria=Criteria())))
+        seen_ids |= set(src.processed)
+        done = {"thread": src.thread_id, "ids": sorted(seen_ids)}
+    assert seen_ids == {int(c["id"]) for c in matching}  # nothing skipped for good
+    src = hnmod.HNWhoIsHiringSource(max_comments=1)
+    src.done = done
+    list(src.fetch(SourceContext(http=hn_http(), criteria=Criteria())))
+    assert src.processed == [] and src.backlog == 0

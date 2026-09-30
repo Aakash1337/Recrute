@@ -325,3 +325,37 @@ def test_submit_gate_rechecks_company_cooldown(engine):
 
         mark_applied(s, other_id)
     assert gate() == "deferred: company cap/cooldown reached"
+
+
+def test_packet_files_resolve_only_under_data_and_uploads_are_verified(paths, monkeypatch,
+                                                                     tmp_path):
+    import hashlib
+
+    from recrute.apply.base import file_for
+    from recrute.apply.runner import resolve_files, unapproved_uploads
+
+    rel = "packets/1/v1/resume.pdf"
+    approved = paths.data / rel
+    approved.parent.mkdir(parents=True)
+    approved.write_bytes(b"%PDF approved")
+    decoy = paths.home / rel  # same relative path under RECRUTE_HOME
+    decoy.parent.mkdir(parents=True, exist_ok=True)
+    decoy.write_bytes(b"%PDF other")
+    packet = Packet(job_id=1, resume_pdf=rel,
+                    artifacts={rel: hashlib.sha256(b"%PDF approved").hexdigest()})
+    files = resolve_files(packet, paths)
+    assert files["resume"] == approved
+    assert unapproved_uploads(packet, paths, files) == []
+    assert unapproved_uploads(packet, paths, {"resume": decoy}) == ["resume"]
+
+    # a file answer naming the packet's path resolves through `files`, never the cwd
+    cwd = tmp_path / "cwd"
+    (cwd / "packets/1/v1").mkdir(parents=True)
+    (cwd / rel).write_bytes(b"%PDF cwd")
+    monkeypatch.chdir(cwd)
+    q = FormQuestion(id="cv", label="Resume", type="file", required=True)
+    packet.questions = [q]
+    packet.answers = [FormAnswer(question_id="cv", value=rel)]
+    assert file_for(q, packet, files) == approved
+    packet.answers = [FormAnswer(question_id="cv", value="other/thing.pdf")]
+    assert file_for(q, packet, files) is None

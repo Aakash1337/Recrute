@@ -50,7 +50,22 @@ _LOCATION_SUFFIX = re.compile(
     r"\b(remote|hybrid)\s*$", re.IGNORECASE)
 
 
+_SYMBOL_WORDS = [(re.compile(r"(?<![\w+#])c\+\+", re.I), " cplusplus "),
+                 (re.compile(r"(?<![\w+#])c#", re.I), " csharp "),
+                 (re.compile(r"(?<![\w+#])f#", re.I), " fsharp "),
+                 (re.compile(r"(?<![\w.])\.net\b", re.I), " dotnet ")]
+
+
+def spell_symbols(text: str) -> str:
+    """Spell out technology names that are mostly symbols, so folding punctuation away keeps
+    "C++", "C#" and "C" (and ".NET") distinct."""
+    for rx, word in _SYMBOL_WORDS:
+        text = rx.sub(word, text)
+    return text
+
+
 def normalize_title(title: str) -> str:
+    title = spell_symbols(title)
     title = re.sub(r"\((remote|hybrid|onsite|on-site|us|usa)[^)]*\)", " ", title, flags=re.I)
     # "Security Engineer - Remote (US)" -> base title, but keep specialisations
     # ("Security Engineer - Product" and "- Infrastructure" are different openings)

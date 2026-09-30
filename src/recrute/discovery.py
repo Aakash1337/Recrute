@@ -119,6 +119,8 @@ def discover_search(ctx) -> dict:
                     continue
                 if name == "hn_whoshiring":
                     src.task = "extract_postings"
+                if hasattr(src, "done"):  # thread progress replaces the date cursor
+                    src.done = state.get("done") or {}
                 rotating = hasattr(src, "query_offset")
                 if rotating:
                     import math
@@ -164,7 +166,7 @@ def discover_search(ctx) -> dict:
                     else:
                         out[name] = ingest(s, raws).as_dict()
                         state = {"last_ok": now.isoformat(),
-                                 **{k: state[k] for k in ("query_ok", "query_failures")
+                                 **{k: state[k] for k in ("query_ok", "query_failures", "done")
                                     if k in state}}
                         ingested_ok = True
                 except HttpError as e:
@@ -178,6 +180,12 @@ def discover_search(ctx) -> dict:
                     out[name] = f"error: {e.__class__.__name__}"
                 if sctx.errors:
                     state["errors"] = dict(list(sctx.errors.items())[:5])
+                if ingested_ok and getattr(src, "thread_id", None):
+                    prev = state.get("done") or {}
+                    ids = set(prev.get("ids") or []) \
+                        if str(prev.get("thread")) == src.thread_id else set()
+                    state["done"] = {"thread": src.thread_id,
+                                     "ids": sorted(ids | set(src.processed))}
                 if rotating:
                     if ingested_ok:  # these searches' results are stored: they're covered
                         ok = dict(state.get("query_ok") or {})

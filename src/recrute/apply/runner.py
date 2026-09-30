@@ -48,24 +48,48 @@ def resolve_files(packet: Packet, paths: Paths,
     """role -> existing file. The APPROVED packet's resume / cover letter are authoritative:
     if the packet names one that can't be found, that role is simply missing (so the run goes
     to CP3); it is never replaced by another file. `files` only fills roles the packet doesn't
-    specify. Relative paths are tried against RECRUTE_HOME, then data/."""
+    specify. The packet's own (generated) files resolve ONLY under data/, where their approved
+    digests were taken; other relative paths are tried against RECRUTE_HOME, then data/."""
     wanted: dict[str, str | Path] = dict(files or {})
+    generated: set[str] = set()
     if packet.resume_pdf:
         wanted["resume"] = packet.resume_pdf
+        generated.add("resume")
     if packet.cover_letter_pdf:
         wanted["cover_letter"] = packet.cover_letter_pdf
+        generated.add("cover_letter")
     out: dict[str, Path] = {}
     for role, p in wanted.items():
         if not p:
             continue
         p = Path(p)
-        for cand in ([p] if p.is_absolute() else [paths.home / p, paths.data / p]):
+        bases = [paths.data] if role in generated else [paths.home, paths.data]
+        for cand in ([p] if p.is_absolute() else [b / p for b in bases]):
             if cand.is_file():
                 out[role] = cand
                 break
         else:
             log.warning("file for %s not found: %s", role, p)
     return out
+
+
+def unapproved_uploads(packet: Packet, paths: Paths, file_map: Mapping[str, Path]) -> list[str]:
+    """Roles whose ACTUAL upload file isn't a file you approved: checked on the resolved path
+    itself (not just the packet's name for it), against the digests taken at approval."""
+    import hashlib
+
+    if not packet.artifacts:
+        return []
+    approved = {(paths.data / rel).resolve(): digest for rel, digest in packet.artifacts.items()}
+    bad = []
+    for role in ("resume", "cover_letter"):
+        f = file_map.get(role)
+        if f is None:
+            continue
+        digest = approved.get(f.resolve())
+        if digest is None or hashlib.sha256(f.read_bytes()).hexdigest() != digest:
+            bad.append(role)
+    return bad
 
 
 def _new_page(page_factory: Callable[[], Page] | BrowserContext) -> Page:
@@ -104,9 +128,13 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
                             reason=f"approved files changed or missing: {', '.join(changed)}",
                             details=details)
 
+    file_map = resolve_files(packet, paths, files)
+    if bad := unapproved_uploads(packet, paths, file_map):
+        return ApplyOutcome(status="needs_human",
+                            reason=f"upload file is not the approved one: {', '.join(bad)}",
+                            details=details)
     receipt = Receipt(paths, job.id, now)
     receipt.write_packet(packet)
-    file_map = resolve_files(packet, paths, files)
     receipt.copy_files(file_map)
     details["files"] = {k: str(v) for k, v in file_map.items()}
 

@@ -640,3 +640,23 @@ def test_title_specialisations_are_distinct_openings(engine):
         jobs = {j.title: j.apply_url for j in s.exec(select(Job)).all()}
         assert jobs == {"Security Engineer - Product": "https://acme.example/jobs/product",
                         "Security Engineer - Infrastructure": "https://acme.example/jobs/infra"}
+
+
+def test_symbol_languages_stay_distinct(engine):
+    from sqlmodel import Session, select
+
+    from recrute.models import Job
+    from recrute.pipeline.ingest import ingest
+    from recrute.pipeline.normalize import normalize_title
+    from recrute.schemas import RawJob
+    from recrute.sources.hn import _role_slug
+
+    titles = ["Software Engineer (C++)", "Software Engineer (C#)", "Software Engineer (C)",
+              "Software Engineer (.NET)"]
+    assert len({normalize_title(t) for t in titles}) == 4
+    assert len({_role_slug(t) for t in titles}) == 4
+    raws = [RawJob(source="captured", url=f"https://acme.test/jobs/{i}", title=t,
+                   company="Acme", locations=["Austin, TX"]) for i, t in enumerate(titles)]
+    with Session(engine) as s:
+        ingest(s, raws)
+        assert len(s.exec(select(Job)).all()) == 4

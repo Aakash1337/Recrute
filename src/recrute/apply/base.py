@@ -287,11 +287,17 @@ def file_for(q: FormQuestion, packet: Packet, files: Mapping[str, Path],
         return None
     a = resolve_answer(q, packet, aliases)
     if a is not None and has_value(a) and isinstance(a.value, str):
+        # the answer names a role, or the packet's own file: always the RESOLVED (verified)
+        # path from `files`, never a path looked up on its own (e.g. relative to the cwd)
         v = a.value.strip()
         if v in files:
             return files[v]
-        if Path(v).suffix and Path(v).exists():
-            return Path(v)
+        named = {packet.resume_pdf: "resume", packet.cover_letter_pdf: "cover_letter"}
+        if v in named and v:
+            return files.get(named[v])
+        if Path(v).suffix:
+            return next((p for p in files.values() if Path(v).is_absolute()
+                         and Path(v) == p), None)
     role = file_role(q)
     if a is not None and a.value is False:
         return None
