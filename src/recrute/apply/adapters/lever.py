@@ -96,10 +96,15 @@ class LeverAdapter(BaseAdapter):
     confirm_url_re = re.compile(r"/(thanks|confirmation)\b", re.I)
 
     def start_url(self, job: Job) -> str:
+        """The /apply form for a posting URL, keeping any query/fragment (tracking links such
+        as ?lever-source=LinkedIn)."""
+        from urllib.parse import urlsplit, urlunsplit
+
         url = job.apply_url
-        if "lever.co" in url and not url.rstrip("/").endswith("/apply"):
-            url = url.rstrip("/") + "/apply"
-        return url
+        parts = urlsplit(url)
+        if "lever.co" in parts.netloc and not parts.path.rstrip("/").endswith("/apply"):
+            parts = parts._replace(path=parts.path.rstrip("/") + "/apply")
+        return urlunsplit(parts)
 
     def fetch_questions(self, job: Job, http: Http | None, *, page: Page | None = None,
                         ) -> list[FormQuestion]:

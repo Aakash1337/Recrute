@@ -13,6 +13,7 @@ The structured profile is the only source of facts for resumes, cover letters an
 {% if flags is none %}<p class="warn">The proposal was edited after ingest (or has no check results), so it can't be verified automatically.</p>{% endif %}
 {% if flags %}<ul>{% for f in flags %}<li class="flag-{{ f.severity }}"><b>{{ f.severity }}</b> {{ f.where }}: “{{ f.text }}” <span class="muted">({{ f.reason }})</span></li>{% endfor %}</ul>{% endif %}
 <form hx-post="/profile/accept" hx-target="#r2">
+  <input type="hidden" name="digest" value="{{ digest }}">
   <label><input type="checkbox" name="override"> accept anyway (I checked the flagged items)</label>
   <button class="primary">Accept proposed profile</button> <span id="r2"></span>
 </form>

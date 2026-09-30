@@ -77,6 +77,29 @@ class LazyBrowser:
         self._cm = self.context = None
 
 
+def notify_handoff(ctx, job_id: int | None, reason: str) -> None:
+    """CP3: a filled form is open in the automation browser and needs you. Sent BEFORE the
+    wait, so you learn about it while the form is still there."""
+    from recrute.models import Company
+    from recrute.settings import get_setting
+    from recrute.tasks import notify
+
+    try:
+        with ctx.session() as s:
+            job = s.get(Job, job_id) if job_id else None
+            if job is None:
+                return
+            company = s.get(Company, job.company_id) if job.company_id else None
+            base = get_setting(s, "notify")["ui_base_url"] or ""
+            minutes = int(PAUSE_WAIT_SECONDS // 60)
+            notify(s, "Recrute needs you (CP3)",
+                   f"{job.title} at {company.name if company else '?'}: {reason}. The form is "
+                   f"open in the automation browser for {minutes} minutes. "
+                   f"{base}/applications", priority="high")
+    except Exception as e:  # a failed notification must not break the hand-off
+        log.warning("CP3 notification failed: %s", e.__class__.__name__)
+
+
 def left_open(outcome) -> bool:
     details = outcome.details or {}
     return bool(details.get("page_left_open")) or (
@@ -102,6 +125,7 @@ def run_due_task(ctx) -> dict:
                                  days=int(get_setting(s, "company_cooldown_days"))))
         mode = result.mode
         if result.ran and result.outcome and left_open(result.outcome):
+            notify_handoff(ctx, result.job_id, result.outcome.reason)
             browser.wait_for_human()  # a filled form is waiting for you (CP3), in any mode
         return {"ran": result.ran, "reason": result.reason[:200] if result.reason else "",
                 "job_id": result.job_id, "mode": mode,
@@ -135,6 +159,7 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
                             router=ctx.router, files=files or None)
         _record_assist(session, app, outcome)
         if left_open(outcome):
+            notify_handoff(ctx, job.id, outcome.reason)
             browser.wait_for_human()
         return {"assist": job.id, "status": outcome.status}
     return None

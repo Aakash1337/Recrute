@@ -101,3 +101,11 @@ def test_manual_submission_counts_toward_caps(engine):
         mark_applied(s, job.id)
         counts = day_counts(s, datetime.now().astimezone())
         assert counts.total == 1 and counts.by_channel == {"greenhouse": 1}
+
+
+@pytest.mark.parametrize("approved,live", [
+    ("Do you have 3 years of Python experience?", "Do you have 5 years of Python experience?"),
+    ("Do you have Python experience?", "Do you have Python and Java experience?"),
+])
+def test_substantive_changes_are_new_questions(approved, live):
+    assert not same_question(q(approved), q(live))

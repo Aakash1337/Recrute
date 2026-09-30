@@ -170,22 +170,24 @@ def prefill_ok(q: FormQuestion, accept_prefilled: bool) -> bool:
             and getattr(q, "current", None) not in (None, "", []))
 
 
-# Words that change what a screening question legally asks. A label that gains or loses one
-# of these is a different question, even if the field id is the same.
-_SENSITIVE = {"not", "no", "never", "without", "non", "citizen", "citizenship", "authorized",
-              "authorised", "authorization", "sponsor", "sponsorship", "visa", "clearance",
-              "require", "requires", "required", "currently", "future", "now", "ever", "felony",
-              "convicted", "disability", "veteran", "gender", "race", "ethnicity", "over", "under",
-              "18", "21", "relocate", "salary", "hourly"}
 _FAMILY = {"text": "text", "textarea": "text", "email": "text", "tel": "text", "url": "text",
            "number": "text", "date": "date", "select": "choice", "radio": "choice",
            "multiselect": "multi", "checkbox": "multi", "file": "file"}
 
 
+# Words whose presence/absence is purely cosmetic in a form label.
+_COSMETIC = {"please", "optional", "required", "your", "the", "a", "an", "city", "state",
+             "country", "profile", "url", "link", "full", "if", "any", "applicable", "enter",
+             "provide", "here", "e", "g", "eg", "ex"}
+
+
 def same_question(approved: FormQuestion, live: FormQuestion) -> bool:
-    """Whether the live field still asks what was approved at CP2 (same answer family, and a
-    label that is identical or only cosmetically different, with no change in the sensitive
-    words that flip a question's meaning)."""
+    """Whether the live field still asks exactly what was approved at CP2.
+
+    Strict on purpose: labels must be equal after cosmetic normalization (case, punctuation,
+    spacing, required-markers) and may differ only by allowlisted filler words. Any change in
+    numbers ("3 years" -> "5 years") or substantive words ("Python" -> "Python and Java") makes
+    it a new question that goes to CP3."""
     fa = _FAMILY.get(approved.type, approved.type)
     fl = _FAMILY.get(live.type, live.type)
     if fa != fl:
@@ -202,14 +204,11 @@ def same_question(approved: FormQuestion, live: FormQuestion) -> bool:
         return True
     if re.sub(r"[^a-z0-9]", "", a) == re.sub(r"[^a-z0-9]", "", b):
         return True  # "VeteranStatus" vs "Veteran Status"
-    ta, tb = set(re.findall(r"[a-z0-9]+", a)), set(re.findall(r"[a-z0-9]+", b))
-    if (ta ^ tb) & _SENSITIVE:
+    ta, tb = re.findall(r"[a-z0-9]+", a), re.findall(r"[a-z0-9]+", b)
+    if [t for t in ta if any(c.isdigit() for c in t)] != \
+            [t for t in tb if any(c.isdigit() for c in t)]:
         return False
-    if ta <= tb or tb <= ta:
-        return True  # only non-sensitive qualifiers added, e.g. "Location (City)"
-    import difflib
-
-    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
+    return set(ta) ^ set(tb) <= _COSMETIC  # only filler words differ
 
 
 def resolve_answer(q: FormQuestion, packet: Packet, aliases: Mapping[str, Sequence[str]] = {},

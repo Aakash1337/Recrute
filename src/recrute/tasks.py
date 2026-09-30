@@ -122,27 +122,22 @@ def build_packets(ctx) -> dict:
         bank = load_answer_bank(ctx.paths)
         built = failed = auto = stale = 0
         for job in pending:
+            token = None
             try:
                 prior = s.exec(select(Application).where(Application.job_id == job.id)).first()
                 note = ((prior.packet or {}).get("user_note") or "") if prior else ""
-                auto += build_packet_for(ctx, s, job, profile, bank, build_packet, note)
+                token = claim_build(s, job)
+                auto += build_packet_for(ctx, s, job, profile, bank, build_packet, note,
+                                         token=token)
                 built += 1
             except StaleBuild:
                 s.rollback()
                 stale += 1
             except Exception as e:  # one bad posting must not block the rest
-                log.exception("packet for job %s failed", job.id)
+                log.error("packet for job %s failed: %s", job.id, e.__class__.__name__)
                 s.rollback()
-                app = _application(s, job)
-                app.last_error = f"packet: {e.__class__.__name__}: {str(e)[:200]}"
-                app.attempts += 1
-                s.add(app)
-                if app.attempts >= 3:
-                    job.status = JobStatus.NEEDS_HUMAN
-                    s.add(StatusEvent(job_id=job.id, status=job.status,
-                                      note="packet generation failed 3 times"))
-                    s.add(job)
-                s.commit()
+                if token is not None:
+                    record_build_failure(s, job.id, token, e)
                 failed += 1
         return {"built": built, "failed": failed, "auto_approved": auto, "stale": stale}
 
@@ -183,8 +178,33 @@ def claim_build(session, job: Job) -> str:
     return token
 
 
-def build_packet_for(ctx, session, job: Job, profile, bank, build_packet, user_note: str = ""
-                     ) -> int:
+def record_build_failure(session, job_id: int, token: str, error: Exception) -> None:
+    """Counts a failed build, only while this builder still owns the claim and the job is still
+    waiting for a packet (a human decision or newer build made meanwhile is never touched).
+    After 3 failures the job is handed to you."""
+    from sqlalchemy import update
+
+    app = session.exec(select(Application).where(Application.job_id == job_id)).first()
+    if app is None or app.build_token != token:
+        return
+    failures = int((app.outcome or {}).get("packet_failures", 0)) + 1
+    outcome = {**(app.outcome or {}), "packet_failures": failures}
+    res = session.execute(update(Application).where(
+        Application.id == app.id, Application.build_token == token,
+        select(Job.id).where(Job.id == job_id, Job.status == JobStatus.SHORTLISTED).exists())
+        .values(outcome=outcome, build_token="",
+                last_error=f"packet: {error.__class__.__name__}"))
+    if res.rowcount == 1 and failures >= 3:
+        session.execute(update(Job).where(Job.id == job_id,
+                                          Job.status == JobStatus.SHORTLISTED)
+                        .values(status=JobStatus.NEEDS_HUMAN))
+        session.add(StatusEvent(job_id=job_id, status=JobStatus.NEEDS_HUMAN,
+                                note="packet generation failed 3 times"))
+    session.commit()
+
+
+def build_packet_for(ctx, session, job: Job, profile, bank, build_packet, user_note: str = "",
+                     token: str | None = None) -> int:
     """Builds/rebuilds one packet. Returns 1 if the auto-approval rule approved it.
 
     Publication is conditional: only if this build still holds the claim and the job is still
@@ -196,7 +216,7 @@ def build_packet_for(ctx, session, job: Job, profile, bank, build_packet, user_n
     from recrute.insights import auto_approve_reason
     from recrute.packets import revision
 
-    token = claim_build(session, job)
+    token = token or claim_build(session, job)
     company = session.get(Company, job.company_id) if job.company_id else None
     questions = fetch_questions(job, ctx.paths, session)
     packet = build_packet(job, questions, profile=profile, bank=bank, router=ctx.router,
@@ -263,13 +283,18 @@ def sync_inbox(session, router, cfg: dict, password: str, connect=None) -> dict:
     raws = [job for m in alerts for job in parse_alert(m)]
     ingested = ingest(session, raws).as_dict() if raws else {}
     alert_ids = {id(m) for m in alerts}
-    events = process_messages(session, router, [m for m in messages if id(m) not in alert_ids])
+    unresolved: list = []
+    events = process_messages(session, router, [m for m in messages if id(m) not in alert_ids],
+                              unresolved=unresolved)
     uids = [m.uid for m in messages if m.uid is not None]
-    if uids:
+    stuck = [m.uid for m in unresolved if m.uid is not None]
+    if stuck:  # keep the cursor before the first unclassified email so it's retried
+        state["uid"] = max(min(stuck) - 1, after or 0)
+    elif uids:
         state["uid"] = max(uids + [after or 0])
     set_state(session, state_key, state)
     return {"messages": len(messages), "alert_jobs": len(raws), "ingested": ingested,
-            "events": len(events)}
+            "events": len(events), "unresolved": len(unresolved)}
 
 
 # ------------------------------------------------------------------------------ notifications

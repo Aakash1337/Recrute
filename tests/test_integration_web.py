@@ -212,7 +212,7 @@ def test_sync_inbox_cursor_and_uidvalidity(engine, session_factory):
 
         def complete(self, task, prompt, **kw):
             Router.calls += 1
-            n = prompt.count("<email")
+            n = prompt.count("### EMAIL")
             return {"results": [{"index": i, "kind": "other", "company": "", "job_title": "",
                                  "confidence": 0.9, "summary": ""} for i in range(n)]}
 
@@ -413,3 +413,116 @@ def test_stale_packet_builder_cannot_overwrite_skip(engine, monkeypatch, paths):
         with pytest.raises(tasks.StaleBuild):
             tasks.build_packet_for(ctx, s, s.get(Job, job_id), None, None, overtaken)
         assert s.get(Job, job_id).status == JobStatus.SHORTLISTED
+
+
+def test_profile_accept_bound_to_reviewed_proposal(client):
+    from recrute.paths import get_paths
+
+    prop = get_paths().data / "profile.proposed.yaml"
+    prop.write_text("name: Ada\n", encoding="utf-8")
+    import re
+
+    page = client.get("/profile").text
+    digest = re.search(r'name="digest" value="([0-9a-f]+)"', page).group(1)
+    prop.write_text("name: Mallory\n", encoding="utf-8")  # a newer ingest landed meanwhile
+    r = client.post("/profile/accept", data={"digest": digest, "override": "on"}, headers=HX)
+    assert r.status_code == 409 and "changed" in r.text
+
+
+def test_unclassified_email_is_retried(engine):
+    from recrute.settings import get_state
+    from recrute.tasks import sync_inbox
+
+    class Incomplete:
+        def complete(self, task, prompt, **kw):
+            return {"results": []}
+
+    cfg = {"host": "h", "port": 993, "user": "me@example.com", "folder": "INBOX"}
+    fake = FakeIMAP({5: _mail(5, "Interview invitation - Acme", "recruiting@acme.example",
+                              "We'd like to schedule an interview for the SOC Analyst role.")})
+    with Session(engine) as s:
+        r = sync_inbox(s, Incomplete(), cfg, "pw", connect=lambda c: fake)
+        state = get_state(s, "imap:me@example.com:INBOX")
+        assert state.get("uid") in (None, 4)  # cursor held before the unclassified email
+        from recrute.models import EmailEvent
+
+        assert s.exec(select(EmailEvent)).all() == []  # not stored as "other"
+        assert r["unresolved"] >= 0
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://jobs.lever.co/acme/abc?lever-source=LinkedIn",
+     "https://jobs.lever.co/acme/abc/apply?lever-source=LinkedIn"),
+    ("https://jobs.lever.co/acme/abc/apply?x=1", "https://jobs.lever.co/acme/abc/apply?x=1"),
+])
+def test_lever_start_url_keeps_query(url, expected):
+    from recrute.apply.adapters.lever import LeverAdapter
+    from recrute.models import Job
+
+    assert LeverAdapter().start_url(Job(title="t", apply_url=url, canonical_url="c")) == expected
+
+
+def test_failed_builder_cannot_overwrite_rejection(engine):
+    from recrute.models import Application, Job, JobStatus
+    from recrute.tasks import claim_build, record_build_failure
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="u", canonical_url="u", status=JobStatus.SHORTLISTED)
+        s.add(job)
+        s.commit()
+        token = claim_build(s, job)
+        job.status = JobStatus.REJECTED  # the human rejects it while the build runs
+        s.add(job)
+        s.commit()
+        for _ in range(3):
+            record_build_failure(s, job.id, token, RuntimeError("boom"))
+        s.refresh(job)
+        assert job.status == JobStatus.REJECTED
+        app = s.exec(select(Application)).one()
+        assert app.attempts == 0  # packet failures never touch apply-attempt accounting
+
+
+def test_legacy_packet_revision_backfilled(client):
+    from recrute.db import get_engine
+    from recrute.models import Application
+
+    job_id = _seed_packet()
+    with Session(get_engine()) as s:
+        app = s.exec(select(Application).where(Application.job_id == job_id)).one()
+        app.packet_rev = ""  # a row created before revisions existed
+        s.add(app)
+        s.commit()
+    import re
+
+    page = client.get(f"/packets/{job_id}").text
+    rev = re.search(r'name="rev" value="([0-9a-f]+)"', page).group(1)
+    assert client.post(f"/packets/{job_id}/approve", data={"rev": rev},
+                       headers=HX).status_code == 200
+
+
+def test_cp3_handoff_notifies_before_waiting(engine, monkeypatch, paths):
+    import threading
+    from types import SimpleNamespace
+
+    from recrute import applying
+    from recrute.apply.scheduler import RunResult
+    from recrute.models import Job
+    from recrute.schemas import ApplyOutcome
+
+    with Session(engine) as s:
+        job = Job(title="SOC Analyst", apply_url="u", canonical_url="u")
+        s.add(job)
+        s.commit()
+        job_id = job.id
+    order = []
+    monkeypatch.setattr("recrute.tasks.notify", lambda *a, **k: order.append("notify") or [])
+    monkeypatch.setattr(applying.LazyBrowser, "wait_for_human",
+                        lambda self, timeout=0: order.append("wait"))
+    outcome = ApplyOutcome(status="needs_human", reason="new required field",
+                           details={"page_left_open": True})
+    monkeypatch.setattr("recrute.apply.scheduler.run_due", lambda s, **kw: RunResult(
+        ran=True, reason="x", job_id=job_id, mode="submit", outcome=outcome))
+    ctx = SimpleNamespace(session=lambda: Session(engine), paths=paths, router=None,
+                          config=SimpleNamespace(browser=None), stop=threading.Event())
+    applying.run_due_task(ctx)
+    assert order == ["notify", "wait"]

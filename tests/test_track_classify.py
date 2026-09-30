@@ -107,10 +107,24 @@ def test_classify_batches_and_maps_indices():
     assert len(router.calls) == 3
     assert all(c[0] == "classify_email" and c[2] is CLASSIFY_SCHEMA for c in router.calls)
     assert len(out) == 12
+    # every batch omitted one email: incomplete answers are unresolved (retried later), never
+    # silently stored as "other"
+    assert out == [None] * 12
+
+
+def test_complete_batches_map_indices():
+    msgs = [msg(str(i), "no-reply@greenhouse.io", f"Application {i}") for i in range(7)]
+
+    def responder(prompt):
+        idx = [int(x) for x in re.findall(r"### EMAIL (\d+)", prompt)]
+        return {"results": [{"index": i, "kind": "confirmation", "company": f"C{i}",
+                             "job_title": "", "confidence": 1.7, "summary": "ok"}
+                            for i in reversed(idx)]}
+
+    out = classify_messages(FakeRouter(responder), msgs, batch_size=5)
     assert out[0].kind == "confirmation" and out[0].company == "C0"
     assert out[0].confidence == 1.0  # clamped
-    assert out[4].kind == "other" and out[4].confidence == 0.0  # missing -> other
-    assert out[10].company == "C0"  # indices are per batch
+    assert out[5].company == "C0"  # indices are per batch
 
 
 def test_prompt_contains_email_and_injection_warning():

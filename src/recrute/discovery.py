@@ -122,12 +122,16 @@ def discover_search(ctx) -> dict:
                                      since=last - timedelta(hours=1) if last else None)
                 try:
                     raws = list(src.fetch(sctx))
-                    if sctx.errors and not raws:  # the source swallowed a failure
+                    if sctx.errors:
+                        # (partial) failure swallowed by the source: keep what we got, but DON'T
+                        # advance the completion cursor, so the failed part is retried later
+                        if raws:
+                            out[name] = ingest(s, raws).as_dict() | {"partial": True}
                         msg = " ".join(sctx.errors.values())
                         limited = any(code in msg for code in ("429", "999", "403"))
                         wait = 6 * 3600 if limited else 1800
                         state["backoff_until"] = (now + timedelta(seconds=wait)).isoformat()
-                        out[name] = "failed: backing off"
+                        out.setdefault(name, "failed: backing off")
                     else:
                         out[name] = ingest(s, raws).as_dict()
                         state = {"last_ok": now.isoformat()}

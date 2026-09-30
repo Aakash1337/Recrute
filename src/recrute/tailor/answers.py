@@ -500,6 +500,22 @@ def format_value(q: FormQuestion, value: bool | str | int | None) -> Any:
 # --------------------------------------------------------------------------- matching
 
 
+_NEGATED_Q = re.compile(r"\b(not|n't|never|unable|without)\b", re.IGNORECASE)
+
+
+def work_auth_answer(label: str, wa: WorkAuthorization) -> bool | None:
+    """Only the plain question "Are you (legally) authorized to work in the US?" is answered
+    from the bank. Negated forms, or authorization qualified by sponsorship ("... without
+    sponsorship", "... for any employer"), are left for you: a wrong legal answer is worse than
+    an unanswered one. The label is read raw (qualifiers in parentheses count)."""
+    raw = label.lower()
+    if _NEGATED_Q.search(raw) or re.search(r"sponsor|visa|any employer|h-?1b|opt\b|cpt\b", raw):
+        return None
+    if wa.authorized_to_work_in_us is None:
+        return None
+    return bool(wa.authorized_to_work_in_us)
+
+
 def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
               priority: str | None) -> bool | str | int | None:
     wa, c, label = bank.work_authorization, bank.contact, clean_label(q.label)
@@ -507,7 +523,7 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
         case "sponsorship":
             return sponsorship_answer(q.label, wa) if is_yes_no(q) else None
         case "work_auth":
-            return wa.authorized_to_work_in_us if is_yes_no(q) else None
+            return work_auth_answer(q.label, wa) if is_yes_no(q) else None
         case "relocate":
             return bank.logistics.willing_to_relocate
         case "start_date":
@@ -515,6 +531,10 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
         case "notice":
             return bank.logistics.notice_period or None
         case "salary":
+            full = f"{q.label} {q.description}".lower()
+            if re.search(r"hour|hourly|/\s*hr\b|per hr|month|monthly|week|weekly|daily|per day",
+                         full) or re.search(r"\b(eur|gbp|cad|inr|aud|€|£|₹)", full):
+                return None  # our ranges are annual USD: never convert silently; you answer
             if q.type == "number":
                 lo, hi = bank.salary.range_for(priority)
                 if re.search(r"\bmin", label):

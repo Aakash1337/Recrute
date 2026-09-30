@@ -84,7 +84,7 @@ def packet_detail(request: Request, job_id: int):
         return page(request, "packet_detail.html", {
             "job": job, "company": company, "app": app, "packet": packet, "profile": profile,
             "answers": {a.question_id: a for a in packet.answers},
-            "rev": packets.current_rev(app)}, s)
+            "rev": packets.current_rev(app, s)}, s)
 
 
 @router.post("/packets/{job_id}/approve", response_class=HTMLResponse)
@@ -298,6 +298,7 @@ def profile_page(request: Request):
         return page(request, "profile.html", {
             "current": current.read_text(encoding="utf-8") if current.exists() else "",
             "proposed": proposed.exists(), "diff": diff, "files": files, "flags": flags,
+            "digest": _proposal_digest(paths),
             "state": _ingest_state}, s)
 
 
@@ -329,13 +330,24 @@ def profile_ingest():
     return _msg("Structuring your resume files… refresh in a minute.")
 
 
+def _proposal_digest(paths) -> str:
+    import hashlib
+
+    f = paths.data / "profile.proposed.yaml"
+    return hashlib.sha256(f.read_bytes()).hexdigest()[:24] if f.exists() else ""
+
+
 @router.post("/profile/accept", response_class=HTMLResponse)
-def profile_accept(override: Annotated[str | None, Form()] = None):
+def profile_accept(digest: Annotated[str, Form()] = "",
+                   override: Annotated[str | None, Form()] = None):
     from recrute.tailor import BlockingFlagsError, accept_proposed
 
     paths = get_paths()
     if not (paths.data / "profile.proposed.yaml").exists():
         return _msg("nothing to accept", False, 409)
+    if _ingest_state["running"] or not digest or digest != _proposal_digest(paths):
+        return _msg("the proposal changed since you opened this page; reload and review it",
+                    False, 409)
     try:
         accept_proposed(paths, allow_blocking=override == "on")
     except BlockingFlagsError as e:

@@ -380,3 +380,40 @@ def test_concurrent_add_answer_keeps_all_entries(tmp_path):
     common = load_answer_bank(paths).common
     assert all(common.get(f"question_{i}") == f"a{i}" for i in range(12))
     assert not list(paths.resources.glob("*.tmp")) and not list(paths.resources.glob("*.lock"))
+
+
+@pytest.mark.parametrize("label", [
+    "Are you NOT legally authorized to work in the US?",
+    "Are you authorized to work in the US (without sponsorship)?",
+    "Are you legally authorized to work in the United States for any employer?",
+])
+def test_qualified_or_negated_work_auth_is_left_for_the_user(label):
+    from recrute.schemas import FormQuestion
+    from recrute.tailor.answers import AnswerBank, match_question
+
+    bank = AnswerBank.model_validate({"work_authorization": {
+        "authorized_to_work_in_us": True, "requires_sponsorship_now": True,
+        "requires_sponsorship_future": True}})
+    q = FormQuestion(id="q", label=label, type="select", options=["Yes", "No"])
+    a = match_question(q, bank)
+    assert a is None or a.value in (None, "") or a.needs_review
+
+
+def test_plain_work_auth_still_answered():
+    from recrute.schemas import FormQuestion
+    from recrute.tailor.answers import AnswerBank, match_question
+
+    bank = AnswerBank.model_validate({"work_authorization": {"authorized_to_work_in_us": True}})
+    q = FormQuestion(id="q", label="Are you legally authorized to work in the United States?",
+                     type="select", options=["Yes", "No"])
+    assert match_question(q, bank).value == "Yes"
+
+
+def test_hourly_salary_not_filled_from_annual_range():
+    from recrute.schemas import FormQuestion
+    from recrute.tailor.answers import AnswerBank, match_question
+
+    bank = AnswerBank.model_validate({"salary": {"ranges_usd": {"P1": [80000, 100000]}}})
+    q = FormQuestion(id="s", label="What is your desired hourly salary?", type="number")
+    a = match_question(q, bank, priority="P1")
+    assert a is None or a.value in (None, "")

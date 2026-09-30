@@ -69,8 +69,20 @@ def _store(session: Session, app: Application, packet: Packet, expected_rev: str
     return new_rev
 
 
-def current_rev(app: Application) -> str:
-    return app.packet_rev or revision(app.packet)
+def current_rev(app: Application, session: Session | None = None) -> str:
+    """The packet's revision; rows from before revisions existed are backfilled (once,
+    conditionally) so review actions can bind to them."""
+    if app.packet_rev:
+        return app.packet_rev
+    rev = revision(app.packet)
+    if session is not None:
+        session.execute(update(Application).where(Application.id == app.id,
+                                                  Application.packet_rev == "")
+                        .values(packet_rev=rev))
+        session.commit()
+        session.refresh(app)
+        return app.packet_rev or rev
+    return rev
 
 
 def approve(session: Session, job_id: int, rev: str, *, override_blocks: bool = False) -> None:

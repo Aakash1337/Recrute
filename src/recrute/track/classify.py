@@ -190,14 +190,36 @@ def _clamp(x: Any) -> float:
         return 0.0
 
 
+def _exactly_one_per_index(n: int):
+    def validate(result: Any) -> None:
+        got = [r.get("index") for r in (result or {}).get("results", [])
+               if isinstance(r, dict)] if isinstance(result, dict) else []
+        if len(got) != len(set(got)) or set(got) != set(range(n)):
+            raise ValueError(f"expected one result for each of {n} emails")
+    return validate
+
+
 def classify_messages(router: Router, messages: Sequence[MailMessage], *,
-                      batch_size: int = BATCH_SIZE) -> list[EmailClassification]:
-    """One classification per message (same order). Call `prefilter` first."""
-    out: list[EmailClassification] = []
+                      batch_size: int = BATCH_SIZE) -> list[EmailClassification | None]:
+    """One classification per message (same order); None = unresolved (the model's answer was
+    incomplete or failed): such messages are retried later, never stored as "other"."""
+    import inspect
+
+    from recrute.llm.base import LLMError
+
+    out: list[EmailClassification | None] = []
     for start in range(0, len(messages), batch_size):
         batch = messages[start:start + batch_size]
         prompt = PROMPT_HEADER + "\n".join(_render(i, m) for i, m in enumerate(batch))
-        result = router.complete(TASK, prompt, schema=CLASSIFY_SCHEMA, system=SYSTEM)
+        validate = _exactly_one_per_index(len(batch))
+        kw = {"validate": validate} if "validate" in inspect.signature(
+            router.complete).parameters else {}
+        try:
+            result = router.complete(TASK, prompt, schema=CLASSIFY_SCHEMA, system=SYSTEM, **kw)
+            validate(result)
+        except (LLMError, ValueError):
+            out.extend([None] * len(batch))
+            continue
         by_index: dict[int, dict[str, Any]] = {}
         for r in (result or {}).get("results", []) if isinstance(result, dict) else []:
             if isinstance(r, dict) and isinstance(r.get("index"), int):
@@ -205,8 +227,7 @@ def classify_messages(router: Router, messages: Sequence[MailMessage], *,
         for i in range(len(batch)):
             r = by_index.get(i)
             if r is None or r.get("kind") not in KINDS:
-                out.append(EmailClassification(kind="other", confidence=0.0,
-                                               summary="(no classification returned)"))
+                out.append(None)
                 continue
             out.append(EmailClassification(
                 kind=r["kind"], company=str(r.get("company") or "").strip(),
@@ -541,8 +562,11 @@ def confirm_event(session: Session, event_id: int, job_id: int | None = None, *,
 
 def process_messages(session: Session, router: Router, messages: Iterable[MailMessage], *,
                      threshold: float = AUTO_APPLY_THRESHOLD,
-                     batch_size: int = BATCH_SIZE) -> list[AppliedEvent]:
-    """Full pipeline: skip already-stored messages, prefilter, classify, apply."""
+                     batch_size: int = BATCH_SIZE,
+                     unresolved: list[MailMessage] | None = None) -> list[AppliedEvent]:
+    """Full pipeline: skip already-stored messages, prefilter, classify, apply. Messages the
+    model couldn't classify are appended to `unresolved` (if given) and not stored, so they're
+    retried on a later sync."""
     msgs = list(messages)
     seen = known_message_ids(session, (m.message_id for m in msgs))
     rows = session.exec(
@@ -556,4 +580,7 @@ def process_messages(session: Session, router: Router, messages: Iterable[MailMe
     if not todo:
         return []
     classes = classify_messages(router, todo, batch_size=batch_size)
-    return apply_events(session, zip(todo, classes, strict=True), threshold=threshold)
+    done = [(m, c) for m, c in zip(todo, classes, strict=True) if c is not None]
+    if unresolved is not None:
+        unresolved.extend(m for m, c in zip(todo, classes, strict=True) if c is None)
+    return apply_events(session, done, threshold=threshold)

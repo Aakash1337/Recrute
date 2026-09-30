@@ -155,3 +155,27 @@ def test_truncated_board_does_not_close_jobs(engine, monkeypatch):
     assert stats["closed"] == 0
     with Session(engine) as s:
         assert not s.exec(select(Job).where(Job.status == JobStatus.CLOSED)).all()
+
+
+def test_partial_source_failure_keeps_cursor(engine, monkeypatch):
+    from recrute.schemas import RawJob
+    from recrute.settings import get_state, set_setting
+
+    class Partial:
+        cadence = __import__("datetime").timedelta(hours=1)
+
+        def fetch(self, sctx):
+            sctx.errors["hn_whoshiring:batch2"] = "extraction failed"
+            yield RawJob(source="hn_whoshiring", url="https://news.ycombinator.com/item?id=1",
+                         title="Security Engineer", company="Acme", locations=["Remote"])
+
+    with Session(engine) as s:
+        set_setting(s, "sources_enabled", {k: False for k in discovery.SEARCH_SOURCES}
+                    | {"hn_whoshiring": True})
+    monkeypatch.setattr(discovery, "get_source", lambda name: Partial())
+    monkeypatch.setattr(discovery, "Http", lambda **kw: FakeHttp({}))
+    out = discovery.discover_search(_ctx(engine))
+    assert out["hn_whoshiring"]["partial"] is True
+    with Session(engine) as s:
+        st = get_state(s, "source:hn_whoshiring")
+        assert "last_ok" not in st and st["backoff_until"]
