@@ -166,7 +166,9 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
             company = session.get(Company, job.company_id) if job.company_id else None
             if company is not None:
                 learn_company_board(session, company, raw)
-            if _prefer(raw) and job.ats != raw.ats:
+            same_posting = (raw.ats and raw.ats == job.ats and raw.ats_job_id
+                            and raw.ats_job_id == job.ats_job_id and canon != job.canonical_url)
+            if (_prefer(raw) and job.ats != raw.ats) or same_posting:
                 existing = session.exec(select(Job).where(Job.canonical_url == canon)).first()
                 if existing is None or existing.id == job.id:
                     job.apply_url, job.canonical_url = target, canon

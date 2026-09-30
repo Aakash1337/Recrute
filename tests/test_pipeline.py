@@ -360,3 +360,45 @@ def test_score_skips_jobs_changed_during_llm_call(engine, session_factory, paths
         job = s.exec(select(Job)).one()
         s.refresh(job)
         assert job.status == JobStatus.REJECTED
+
+
+# --- audit round 3 regressions -------------------------------------------------------------
+
+def test_title_change_during_scoring_is_not_applied(engine, session_factory, paths):
+    class Racing(TriageProvider):
+        def complete(self, req):
+            with Session(engine) as other:
+                ingest(other, [raw(title="Senior Security Engineer")])
+            return super().complete(req)
+
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        filter_new(s, Criteria(), NO_ELIG)
+        st = score_pending(s, _router(Racing({}), session_factory), Criteria(), paths)
+        assert st.scored == 0
+        job = s.exec(select(Job)).one()
+        s.refresh(job)
+        assert job.score is None
+
+
+def test_same_ats_url_change_updates_target(engine):
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        ingest(s, [raw(url="https://job-boards.greenhouse.io/acme/jobs/1")])
+        job = s.exec(select(Job)).one()
+        assert job.apply_url == "https://job-boards.greenhouse.io/acme/jobs/1"
+
+
+def test_snooze_then_stale_approve_rejected(engine):
+    from recrute.review import ReviewError, decide
+
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        job = s.exec(select(Job)).one()
+        job.score = 70
+        s.add(job)
+        s.commit()
+        seen = job.snoozed_until  # what the stale tab rendered
+        decide(s, job.id, "snooze")
+        with pytest.raises(ReviewError):
+            decide(s, job.id, "approve", expected_snooze=seen)

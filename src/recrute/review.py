@@ -53,7 +53,10 @@ ACTIONS = {
 }
 
 
-def decide(session: Session, job_id: int, action: str, reason: str | None = None) -> Job:
+def decide(session: Session, job_id: int, action: str, reason: str | None = None,
+           expected_snooze: object = ...) -> Job:
+    """`expected_snooze` is the job's snoozed_until as the caller saw it (the UI renders it);
+    a decision made against a stale view (e.g. someone snoozed it meanwhile) is rejected."""
     if action not in ACTIONS:
         raise ReviewError(f"unknown action {action!r}")
     values: dict = {"status": ACTIONS[action]}
@@ -61,16 +64,20 @@ def decide(session: Session, job_id: int, action: str, reason: str | None = None
         values["snoozed_until"] = utcnow() + timedelta(days=SNOOZE_DAYS)
     # Conditional update: only succeeds if the job is still awaiting review, so two concurrent
     # decisions can't both win.
-    result = session.execute(
-        update(Job).where(Job.id == job_id,
-                          col(Job.status).in_([JobStatus.DISCOVERED, JobStatus.SNOOZED]))
-        .values(**values)
-    )
+    conds = [Job.id == job_id, col(Job.status).in_([JobStatus.DISCOVERED, JobStatus.SNOOZED])]
+    if expected_snooze is not ...:
+        conds.append(col(Job.snoozed_until).is_(None) if expected_snooze is None
+                     else Job.snoozed_until == expected_snooze)
+    else:
+        conds.append(or_(col(Job.snoozed_until).is_(None), col(Job.snoozed_until) <= utcnow()))
+    result = session.execute(update(Job).where(*conds).values(**values))
     if result.rowcount != 1:
         session.rollback()
         job = session.get(Job, job_id)
         if job is None:
             raise ReviewError("job not found")
+        if job.snoozed_until is not None and job.status == JobStatus.DISCOVERED:
+            raise ReviewError("job was snoozed meanwhile; reload")
         raise ReviewError(f"job is {job.status.value}, not awaiting review")
     session.add(Decision(job_id=job_id, checkpoint="CP1", action=action, reason=reason))
     session.add(StatusEvent(job_id=job_id, status=ACTIONS[action],

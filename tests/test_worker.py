@@ -63,3 +63,40 @@ def test_migrate_adds_missing_columns(tmp_path):
         job = s.exec(select(Job)).one()
         assert job.title == "Old" and job.description_hash == ""
     assert migrate(engine) == []  # idempotent
+
+
+def test_safe_error_hides_validation_inputs():
+    from pydantic import BaseModel, ValidationError
+
+    from recrute.worker import safe_error
+
+    class P(BaseModel):
+        email: int
+
+    try:
+        P(email="jane.doe@example.com")
+    except ValidationError as e:
+        msg = safe_error(e)
+    assert "jane" not in msg and "email" in msg
+
+
+def test_cli_run_exits_nonzero_on_failure(monkeypatch, tmp_path):
+    from datetime import timedelta
+
+    from typer.testing import CliRunner
+
+    from recrute import db, worker
+    from recrute.cli import app
+
+    monkeypatch.setenv("RECRUTE_HOME", str(tmp_path))
+    db.get_engine.cache_clear()
+
+    def boom(ctx):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(worker, "default_tasks",
+                        lambda: [worker.Task("boom", timedelta(minutes=1), boom)])
+    monkeypatch.setattr(worker, "build_ctx", lambda: FakeCtx(db.get_engine()))
+    result = CliRunner().invoke(app, ["run", "boom"])
+    db.get_engine.cache_clear()
+    assert result.exit_code == 1

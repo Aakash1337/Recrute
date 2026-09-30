@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 
 import yaml
+from sqlalchemy import update
 from sqlmodel import Session, col, select
 
 from recrute.criteria import Criteria
@@ -143,26 +144,30 @@ def pending_jobs(session: Session, limit: int) -> list[tuple[Job, str]]:
     return [(job, name or "") for job, name in rows]
 
 
-def apply_result(session: Session, job: Job, result: dict, criteria: Criteria,
-                 provider: str | None, stats: ScoreStats) -> None:
+def scoring_version(job: Job) -> tuple:
+    """Everything triage and the rules depend on; a result only applies to exactly this."""
+    return (job.title, job.description_hash, tuple(job.locations or ()), job.remote,
+            job.employment_type, job.salary_min, job.salary_max,
+            job.priority.value if job.priority else None)
+
+
+def evaluate(job: Job, result: dict, criteria: Criteria) -> tuple[int, dict, str | None]:
+    """Pure: (score, field updates, filter reason or None) for one triage result."""
     score = max(0, min(100, int(result["score"])))
-    session.add(JobScore(job_id=job.id, score=score, reason=result["reason"],
-                         details={k: result[k] for k in result if k not in ("job_id", "score",
-                                                                            "reason")},
-                         provider=provider))
-    job.score = score
-    if job.years_required is None and result.get("years_required") is not None:
-        job.years_required = result["years_required"]
+    updates: dict = {"score": score}
+    yrs = job.years_required
+    if yrs is None and result.get("years_required") is not None:
+        yrs = updates["years_required"] = int(result["years_required"])
+    sal_max = job.salary_max
     if job.salary_min is None and result.get("salary_min"):
-        job.salary_min = result["salary_min"]
-    if job.salary_max is None and result.get("salary_max"):
-        job.salary_max = result["salary_max"]
+        updates["salary_min"] = int(result["salary_min"])
+    if sal_max is None and result.get("salary_max"):
+        sal_max = updates["salary_max"] = int(result["salary_max"])
     threshold = criteria.min_score.get(job.priority, 101) if job.priority else 101
     reason = None
-    yrs = job.years_required
     if yrs is not None and yrs > criteria.max_years_required:
         reason = f"requires {yrs}+ years"
-    elif criteria.salary_floor and job.salary_max and job.salary_max < criteria.salary_floor:
+    elif criteria.salary_floor and sal_max and sal_max < criteria.salary_floor:
         reason = "salary below floor"
     elif result["seniority"] == "senior":
         reason = "LLM: senior-level role"
@@ -171,14 +176,38 @@ def apply_result(session: Session, job: Job, result: dict, criteria: Criteria,
     elif score < threshold:
         reason = f"score {score} below {threshold} for {job.priority.value}"
     if reason:
-        job.status = JobStatus.FILTERED_OUT
-        job.filter_reason = reason
+        updates["status"] = JobStatus.FILTERED_OUT
+        updates["filter_reason"] = reason
+    return score, updates, reason
+
+
+def apply_result(session: Session, job: Job, version: tuple, result: dict, criteria: Criteria,
+                 provider: str | None, stats: ScoreStats) -> bool:
+    """Atomically apply one result: only if the job is still unscored, open, awaiting triage
+    and unchanged since it was sent to the LLM. Returns whether it was applied."""
+    if scoring_version(job) != version:
+        return False
+    score, updates, reason = evaluate(job, result, criteria)
+    res = session.execute(
+        update(Job).where(Job.id == job.id, Job.status == JobStatus.DISCOVERED,
+                          col(Job.score).is_(None), col(Job.closed_at).is_(None),
+                          Job.description_hash == job.description_hash, Job.title == job.title)
+        .values(**updates))
+    if res.rowcount != 1:
+        session.rollback()
+        return False
+    session.add(JobScore(job_id=job.id, score=score, reason=result["reason"],
+                         details={k: result[k] for k in result
+                                  if k not in ("job_id", "score", "reason")},
+                         provider=provider))
+    if reason:
         session.add(StatusEvent(job_id=job.id, status=JobStatus.FILTERED_OUT, note=reason))
         stats.below_threshold += 1
     else:
         stats.queued += 1
     stats.scored += 1
-    session.add(job)
+    session.commit()
+    return True
 
 
 def score_pending(session: Session, router: LLMRouter, criteria: Criteria, paths: Paths,
@@ -191,7 +220,7 @@ def score_pending(session: Session, router: LLMRouter, criteria: Criteria, paths
     for i in range(0, len(jobs), BATCH_SIZE):
         batch = jobs[i: i + BATCH_SIZE]
         prompt = build_prompt(summary, criteria, batch)
-        snapshot = {job.id: job.description_hash for job, _ in batch}
+        snapshot = {job.id: scoring_version(job) for job, _ in batch}
         session.commit()  # end the read transaction before the (slow) LLM call
         try:
             out = router.complete("triage", prompt, schema=TRIAGE_SCHEMA, system=SYSTEM,
@@ -206,11 +235,6 @@ def score_pending(session: Session, router: LLMRouter, criteria: Criteria, paths
                 continue
             session.refresh(job)
             # The job may have changed while the LLM was thinking (user decision, re-poll,
-            # closure): only apply the score to exactly the state that was scored.
-            if (job.status != JobStatus.DISCOVERED or job.score is not None
-                    or job.closed_at is not None
-                    or job.description_hash != snapshot[job.id]):
-                continue
-            apply_result(session, job, result, criteria, None, stats)
-        session.commit()
+            # closure): results only apply to exactly the state that was scored.
+            apply_result(session, job, snapshot[job.id], result, criteria, None, stats)
     return stats

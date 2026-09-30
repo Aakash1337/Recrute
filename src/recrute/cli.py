@@ -92,7 +92,15 @@ def run_task_cmd(task: str) -> None:
     if task not in tasks:
         typer.echo(f"unknown task; choose from: {', '.join(tasks)}", err=True)
         raise typer.Exit(1)
-    typer.echo(json.dumps(w.run_task(w.build_ctx(), tasks[task]), indent=2, default=str))
+    stats = w.run_task(w.build_ctx(), tasks[task])
+    typer.echo(json.dumps(stats, indent=2, default=str))
+    from recrute.models import TaskRun
+
+    with session_scope() as s:
+        run = s.get(TaskRun, task)
+        if run is not None and run.last_ok is False:
+            typer.echo(f"task failed: {run.last_error}", err=True)
+            raise typer.Exit(1)
 
 
 @app.command()

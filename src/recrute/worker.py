@@ -56,6 +56,17 @@ def is_due(run: TaskRun | None, every: timedelta, now: datetime) -> bool:
     return _aware(run.last_started_at) + every <= now
 
 
+def safe_error(e: BaseException) -> str:
+    """Error text for logs/UI without echoing data. Validation errors (e.g. a malformed profile)
+    carry the offending input values, so only their field paths are kept."""
+    from pydantic import ValidationError
+
+    if isinstance(e, ValidationError):
+        locs = ", ".join(".".join(str(p) for p in err["loc"]) for err in e.errors()[:5])
+        return f"ValidationError in {e.title}: invalid field(s) {locs}"
+    return f"{e.__class__.__name__}: {str(e)[:200]}"
+
+
 def run_task(ctx: Ctx, task: Task) -> dict:
     with ctx.session() as s:
         run = s.get(TaskRun, task.name) or TaskRun(name=task.name)
@@ -66,8 +77,10 @@ def run_task(ctx: Ctx, task: Task) -> dict:
     try:
         stats = task.fn(ctx) or {}
     except Exception as e:  # a failing task must not kill the worker
-        log.exception("task %s failed", task.name)
-        ok, err = False, f"{e.__class__.__name__}: {str(e)[:300]}"
+        err = safe_error(e)
+        ok = False
+        log.error("task %s failed: %s", task.name, err)
+        log.debug("task %s traceback", task.name, exc_info=True)
     with ctx.session() as s:
         run = s.get(TaskRun, task.name)
         run.last_finished_at = utcnow()
