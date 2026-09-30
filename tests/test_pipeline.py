@@ -515,3 +515,23 @@ def test_closure_does_not_overwrite_concurrent_applied(engine):
         s.exec = real_exec
         s.refresh(job)
         assert job.status == JobStatus.APPLIED and job.closed_at is not None
+
+
+def test_target_change_voids_unsent_approval(engine):
+    from recrute.models import Application
+
+    with Session(engine) as s:
+        ingest(s, [raw(source="linkedin_guest", url="https://linkedin.com/jobs/view/5",
+                       ats="linkedin_easy_apply", ats_token=None, ats_job_id="5",
+                       apply_url="https://linkedin.com/jobs/view/5")])
+        job = s.exec(select(Job)).one()
+        job.status = JobStatus.APPROVED
+        s.add(job)
+        s.add(Application(job_id=job.id, channel="linkedin_easy_apply",
+                          approved_at=datetime(2026, 1, 1, tzinfo=UTC)))
+        s.commit()
+        ingest(s, [raw()])  # the company's own Greenhouse posting shows up
+        s.refresh(job)
+        app = s.exec(select(Application)).one()
+        assert job.ats == "greenhouse" and job.status == JobStatus.SHORTLISTED
+        assert app.approved_at is None

@@ -12,6 +12,7 @@ capped per company.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Iterator
 from typing import Any
 from urllib.parse import quote
@@ -128,11 +129,21 @@ class SmartRecruitersSource(BoardSource):
         want = keyword_regex(track_keywords(ctx.criteria, include_description=False)) if ctx \
             else None
         budget = self.details_per_company if ctx else 0
-        for p in payload.get("content") or []:
+        postings = payload.get("content") or []
+        candidates = [i for i, p in enumerate(postings)
+                      if want is not None and want.search(p.get("name") or "")
+                      and ctx.is_new(to_utc(p.get("releasedDate")))]
+        # The detail budget rotates through the candidates across polls (a fresh window every
+        # 6 hours), so a board with more matching postings than the budget still gets every
+        # description eventually instead of always the same first N.
+        chosen: set[int] = set()
+        if candidates and budget > 0:
+            start = (int(time.time() // (6 * 3600)) * budget) % len(candidates)
+            chosen = {candidates[(start + k) % len(candidates)]
+                      for k in range(min(budget, len(candidates)))}
+        for i, p in enumerate(postings):
             detail = None
-            if budget > 0 and want is not None and want.search(p.get("name") or "") \
-                    and ctx.is_new(to_utc(p.get("releasedDate"))):
-                budget -= 1
+            if i in chosen:
                 try:
                     detail = ctx.http.get_json(DETAIL.format(token=quote(company.ats_token),
                                                              id=quote(str(p["id"]))))

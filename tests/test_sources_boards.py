@@ -212,3 +212,27 @@ def test_smartrecruiters_paginates():
     jobs = list(src.fetch(ctx_for(http, CompanyRef("B", "smartrecruiters", "B"))))
     assert len(jobs) == 102 + 3
     assert [u for u in http.urls() if "offset=" in u][-1].count("offset=100") == 1
+
+
+def test_smartrecruiters_detail_budget_rotates(monkeypatch):
+    import recrute.sources.smartrecruiters as sr
+    from recrute.criteria import Criteria
+    from recrute.sources.base import CompanyRef, SourceContext
+
+    postings = [{"id": str(i), "name": "Security Analyst", "releasedDate": None,
+                 "location": {"city": "Austin", "region": "TX", "country": "us"}}
+                for i in range(31)]
+    fetched = set()
+
+    class Http:
+        def get_json(self, url):
+            fetched.add(url.rsplit("/", 1)[-1])
+            return {}
+
+    src = sr.SmartRecruitersSource(details_per_company=30)
+    ctx = SourceContext(http=Http(), criteria=Criteria())
+    company = CompanyRef(name="Acme", ats="smartrecruiters", ats_token="acme")
+    for window in range(3):
+        monkeypatch.setattr(sr.time, "time", lambda w=window: w * 6 * 3600 + 1)
+        list(src.parse_board({"content": postings}, company, ctx))
+    assert fetched == {str(i) for i in range(31)}

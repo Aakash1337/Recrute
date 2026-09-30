@@ -158,6 +158,25 @@ def _prefer(raw: RawJob) -> bool:
     return raw.ats in {"greenhouse", "lever", "ashby", "workable", "smartrecruiters"}
 
 
+def _retarget_unsent_application(session: Session, job: Job) -> None:
+    """The apply target moved (e.g. a LinkedIn listing merged into the company's own ATS
+    posting). An unsent packet was built for the old form: void any approval and rebuild it for
+    the new target (new questions, new adapter)."""
+    from sqlalchemy import update
+
+    from recrute.models import Application
+
+    if job.status not in (JobStatus.PACKET_READY, JobStatus.APPROVED):
+        return
+    job.status = JobStatus.SHORTLISTED
+    session.execute(update(Application).where(Application.job_id == job.id,
+                                              col(Application.submitted_at).is_(None))
+                    .values(approved_at=None, scheduled_for=None, build_token="")
+                    .execution_options(synchronize_session=False))
+    session.add(StatusEvent(job_id=job.id, status=JobStatus.SHORTLISTED,
+                            note="apply target changed; packet will be rebuilt for the new form"))
+
+
 def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
     """Upsert one posting (runs inside a savepoint; see ingest)."""
     target, canon = job_canonical(raw)
@@ -203,8 +222,11 @@ def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
         if (_prefer(raw) and job.ats != raw.ats) or same_posting:
             existing = session.exec(select(Job).where(Job.canonical_url == canon)).first()
             if existing is None or existing.id == job.id:
+                target_changed = job.apply_url != target
                 job.apply_url, job.canonical_url = target, canon
                 job.ats, job.ats_job_id = raw.ats, raw.ats_job_id
+                if target_changed:
+                    _retarget_unsent_application(session, job)
         before = _decision_inputs(job)
         authoritative = known is not None and (raw.ats == job.ats or not job.ats)
         if authoritative:

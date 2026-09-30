@@ -67,6 +67,40 @@ _PROFILE_RULES: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
+_DEGREE_RANK = [(r"ph\.?\s?d|doctor", 5), (r"master|m\.?s\b|m\.?sc|mba|m\.?eng", 4),
+                (r"bachelor|b\.?s\b|b\.?sc|b\.?a\b|b\.?eng|b\.?tech", 3),
+                (r"associate", 2), (r"high school|diploma|ged", 1)]
+
+
+def _completed(ed) -> bool:
+    """Completed only if it has an end year that isn't in the future (and isn't 'present' /
+    'expected'). Anything unclear is not treated as completed."""
+    import re
+    from datetime import date
+
+    end = (ed.end or "").lower()
+    if not end or any(w in end for w in ("present", "expected", "current", "ongoing")):
+        return False
+    m = re.search(r"(19|20)\d{2}", end)
+    return bool(m) and int(m.group(0)) <= date.today().year and not (
+        int(m.group(0)) == date.today().year and re.search(r"\b(dec|nov|oct|sep)", end))
+
+
+def highest_completed_degree(profile: Profile) -> str | None:
+    """The highest degree actually earned; None when completion can't be established (you'll
+    answer it at CP2 instead of the form claiming an unfinished degree)."""
+    import re
+
+    best, best_rank = None, 0
+    for ed in profile.education:
+        if not ed.degree or not _completed(ed):
+            continue
+        rank = next((r for rx, r in _DEGREE_RANK if re.search(rx, ed.degree, re.I)), 0)
+        if rank > best_rank:
+            best, best_rank = ed.degree, rank
+    return best
+
+
 def _profile_value(kind: str, profile: Profile) -> str | None:
     ed = profile.education[0] if profile.education else None
     ex = profile.experience[0] if profile.experience else None
@@ -85,7 +119,7 @@ def _profile_value(kind: str, profile: Profile) -> str | None:
         "gpa": ed.gpa if ed else None,
         "grad_date": ed.end if ed else None,
         "major": ed.field if ed else None,
-        "degree": ed.degree if ed else None,
+        "degree": highest_completed_degree(profile),
         "school": ed.school if ed else None,
         "current_company": ex.company if ex and ex.end.lower() in ("", "present") else None,
         "current_title": ex.title if ex and ex.end.lower() in ("", "present") else None,

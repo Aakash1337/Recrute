@@ -468,3 +468,30 @@ def test_legal_qualifiers_in_description_are_honoured():
     sp = FormQuestion(id="b", label="Will you require visa sponsorship?", type="select",
                       options=["Yes", "No"], description="Now or at any time in the future.")
     assert match_question(sp, bank).value == "Yes"
+
+
+@pytest.mark.parametrize("label", [
+    "Are you currently on an H-1B visa?",
+    "Will you require sponsorship to work in Canada?",
+    "What is your visa status?",
+])
+def test_visa_status_and_foreign_sponsorship_left_for_user(label):
+    from recrute.tailor.answers import WorkAuthorization, sponsorship_answer
+
+    wa = WorkAuthorization(requires_sponsorship_now=False, requires_sponsorship_future=False)
+    assert sponsorship_answer(label, wa) is None
+
+
+def test_unfinished_degree_not_reported_as_completed():
+    from recrute.schemas import Education, FormQuestion, Profile
+    from recrute.tailor.answer_questions import highest_completed_degree, profile_answer
+
+    p = Profile(name="Ada", education=[
+        Education(id="e1", school="Tech U", degree="Master of Science", end="May 2099"),
+        Education(id="e2", school="State U", degree="Bachelor of Science", end="2024")])
+    assert highest_completed_degree(p) == "Bachelor of Science"
+    a = profile_answer(FormQuestion(id="d", label="Highest level of education completed"), p)
+    assert a is None or a.value == "Bachelor of Science"
+    only_current = Profile(name="Ada", education=[
+        Education(id="e1", school="Tech U", degree="Master of Science", end="Expected 2027")])
+    assert highest_completed_degree(only_current) is None

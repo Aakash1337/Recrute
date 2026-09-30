@@ -49,6 +49,8 @@ DEFAULTS: dict[str, Any] = {
 
 # Settings whose values are dicts: updates are merged key-by-key with type checking.
 _DICT_KEYS = {"sources_enabled", "linkedin_session_budget", "auto_approve", "notify", "imap"}
+# Protective per-site caps that can only be raised/removed explicitly (never by omission).
+PROTECTED_CAPS = {"linkedin_easy_apply": 15}
 
 
 def get_setting(session: Session, key: str) -> Any:
@@ -67,6 +69,9 @@ def set_setting(session: Session, key: str, value: Any) -> None:
         raise KeyError(f"unknown setting: {key}")
     if key in _DICT_KEYS and isinstance(value, dict):
         value = {**get_setting(session, key), **value}  # partial updates keep other fields
+    if key == "site_caps" and isinstance(value, dict):
+        # updating one site never drops another site's cap; protective caps always exist
+        value = {**PROTECTED_CAPS, **get_setting(session, "site_caps"), **value}
     value = _validate(key, value)
     now = utcnow()
     # Atomic upsert: concurrent first writes can't collide on the primary key.

@@ -8,9 +8,11 @@ from recrute.tailor.cover_letter import CoverLetter, needs_cover_letter, write_c
 from recrute.tailor.ingest import (
     BlockingFlagsError,
     IngestResult,
+    ProposalChanged,
     accept_proposed,
     ingest_resume,
     load_profile,
+    proposal_digest,
     read_proposal_flags,
     save_profile,
 )
@@ -36,6 +38,8 @@ __all__ = [
     "JobContext",
     "RenderResult",
     "accept_proposed",
+    "ProposalChanged",
+    "proposal_digest",
     "add_answer",
     "answer_questions",
     "build_packet",

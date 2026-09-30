@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Receipt · Recrute{% endblock %}
+{% block content %}
+<h2>Receipt: {{ rel }}</h2>
+<ul>
+  {% for f in files %}<li><a href="/files/{{ f }}" target="_blank">{{ f.rsplit('/', 1)[-1] }}</a></li>
+  {% else %}<li class="muted">No files recorded for this attempt.</li>{% endfor %}
+</ul>
+{% for f in files if f.endswith('.png') %}
+<p class="muted">{{ f.rsplit('/', 1)[-1] }}</p><img src="/files/{{ f }}" style="max-width:100%;border:1px solid var(--line)">
+{% endfor %}
+{% endblock %}

@@ -240,7 +240,10 @@ def build_packet_for(ctx, session, job: Job, profile, bank, build_packet, user_n
     if res.rowcount != 1:
         session.rollback()
         raise StaleBuild("superseded while building")
+    from recrute.applying import channel_for
+
     session.execute(update(Application).where(Application.job_id == job.id).values(
+        channel=channel_for(job),  # the adapter for the job's CURRENT target
         packet=data, packet_rev=revision(data), resume_path=packet.resume_pdf,
         cover_letter_path=packet.cover_letter_pdf, approved_at=utcnow() if reason else None,
         last_error=None, build_token=""))

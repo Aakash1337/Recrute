@@ -70,3 +70,12 @@ def test_dict_settings_partial_update_and_types(engine):
         set_setting(s, "sources_enabled", {"linkedin_session": "true"})
         assert get_setting(s, "sources_enabled")["linkedin_session"] is True
         assert get_setting(s, "sources_enabled")["greenhouse"] is True
+
+
+def test_updating_one_site_cap_keeps_linkedin_cap(engine):
+    with Session(engine) as s:
+        set_setting(s, "site_caps", {"greenhouse": 10})
+        caps = get_setting(s, "site_caps")
+        assert caps == {"linkedin_easy_apply": 15, "greenhouse": 10}
+        set_setting(s, "site_caps", {"linkedin_easy_apply": 8})
+        assert get_setting(s, "site_caps")["linkedin_easy_apply"] == 8

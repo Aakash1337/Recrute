@@ -8,7 +8,7 @@
 {% endfor %}
 {% if reminders %}
 <h2>Reminders</h2>
-<ul>{% for r in reminders %}<li>{{ r.message }} {% if r.kind == 'ghost' %}<button hx-post="/applications/{{ r.job_id }}/ghosted" hx-swap="outerHTML">Mark ghosted</button>{% endif %}</li>{% endfor %}</ul>
+<ul>{% for r in reminders %}<li>{{ r.message }} {% if r.kind == 'ghosted' %}<button hx-post="/applications/{{ r.job_id }}/ghosted" hx-swap="outerHTML">Mark ghosted</button>{% endif %}</li>{% endfor %}</ul>
 {% endif %}
 {% for key in ['needs_human', 'approved', 'applying', 'applied', 'acknowledged', 'interviewing', 'offer', 'declined', 'ghosted'] %}
 {% set rows = groups.get(key, []) %}
@@ -26,7 +26,7 @@
     </td>
     <td>
       <a href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">posting ↗</a>
-      {% if app and app.receipt_dir %}· <a href="/files/{{ app.receipt_dir }}/after_submit.png" target="_blank">receipt</a>{% endif %}
+      {% if app and app.receipt_dir %}· <a href="/receipt/{{ app.receipt_dir }}" target="_blank">receipt</a>{% endif %}
       {% if key == 'needs_human' %}
         {% if app and app.packet %}<button hx-post="/applications/{{ job.id }}/assist" hx-swap="outerHTML">Open &amp; pre-fill</button>{% endif %}
         <button class="primary" hx-post="/applications/{{ job.id }}/mark-applied" hx-swap="outerHTML">I submitted it</button>

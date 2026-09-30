@@ -46,6 +46,18 @@ def data_file(rel: str):
     return FileResponse(target, headers=headers)
 
 
+@router.get("/receipt/{rel:path}", response_class=HTMLResponse)
+def receipt_index(request: Request, rel: str):
+    """Everything saved for one application attempt (screenshots, form HTML, outcome...)."""
+    data = get_paths().data.resolve()
+    target = (data / rel).resolve()
+    if not target.is_relative_to(data / "receipts") or not target.is_dir():
+        raise HTTPException(404)
+    files = sorted(p.relative_to(data).as_posix() for p in target.rglob("*") if p.is_file())
+    with session_scope() as s:
+        return page(request, "receipt.html", {"rel": rel, "files": files}, s)
+
+
 # ------------------------------------------------------------------------------ CP2 packets
 
 
@@ -343,16 +355,20 @@ def _proposal_digest(paths) -> str:
 @router.post("/profile/accept", response_class=HTMLResponse)
 def profile_accept(digest: Annotated[str, Form()] = "",
                    override: Annotated[str | None, Form()] = None):
-    from recrute.tailor import BlockingFlagsError, accept_proposed
+    from recrute.tailor.ingest import BlockingFlagsError, ProposalChanged, accept_proposed
 
     paths = get_paths()
     if not (paths.data / "profile.proposed.yaml").exists():
         return _msg("nothing to accept", False, 409)
-    if _ingest_state["running"] or not digest or digest != _proposal_digest(paths):
+    if _ingest_state["running"] or not digest:
         return _msg("the proposal changed since you opened this page; reload and review it",
                     False, 409)
     try:
-        accept_proposed(paths, allow_blocking=override == "on")
+        # the digest is checked again inside the lock, against the exact bytes promoted
+        accept_proposed(paths, allow_blocking=override == "on", expected_digest=digest)
+    except ProposalChanged:
+        return _msg("the proposal changed since you opened this page; reload and review it",
+                    False, 409)
     except BlockingFlagsError as e:
         return _msg(f"{len(e.flags)} blocking issue(s): fix the proposal or tick 'accept anyway'",
                     False, 409)

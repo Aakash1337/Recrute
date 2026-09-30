@@ -570,3 +570,30 @@ def test_importing_one_badge_dataset_keeps_the_other(tmp_path, monkeypatch):
         job = s.exec(select(Job)).one()
         assert job.badges["h1b"] == 17 and job.badges["e_verify"] is True
     db.get_engine.cache_clear()
+
+
+def test_receipt_index_and_ghost_button(client):
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.db import get_engine
+    from recrute.models import Application, Job, JobStatus, StatusEvent
+    from recrute.paths import get_paths
+
+    d = get_paths().data / "receipts" / "9-x"
+    d.mkdir(parents=True)
+    (d / "blocked.png").write_bytes(b"\\x89PNG")
+    with Session(get_engine()) as s:
+        job = Job(title="Old one", apply_url="https://x", canonical_url="c-ghost",
+                  status=JobStatus.APPLIED)
+        s.add(job)
+        s.flush()
+        when = datetime.now(UTC) - timedelta(days=45)
+        s.add(Application(job_id=job.id, channel="greenhouse", receipt_dir="receipts/9-x",
+                          submitted_at=when))
+        s.add(StatusEvent(job_id=job.id, status=JobStatus.APPLIED, created_at=when))
+        s.commit()
+    page = client.get("/applications").text
+    assert "/receipt/receipts/9-x" in page and "Mark ghosted" in page
+    idx = client.get("/receipt/receipts/9-x").text
+    assert "blocked.png" in idx
+    assert client.get("/receipt/../data").status_code == 404

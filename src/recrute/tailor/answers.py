@@ -370,6 +370,13 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
     """
     # the FULL label: parenthetical clauses like "now (or in the future)" carry the scope
     t = " ".join(label.lower().replace("*", " ").replace("’", "'").split())
+    # only genuine employer-sponsorship questions; visa STATUS questions ("are you on an H-1B?")
+    # and other countries' sponsorship are facts the bank doesn't have
+    if not re.search(r"sponsor", t) or re.search(
+            r"\b(currently (on|hold)|do you (hold|have) an?|what is your|type of visa|"
+            r"your visa (type|status))\b|canada|kingdom|\buk\b|europe|\beu\b|india|mexico|"
+            r"australia|germany", t):
+        return None
     now, fut = wa.requires_sponsorship_now, wa.requires_sponsorship_future
     has_now, has_fut = bool(_NOW_RE.search(t)), bool(_FUTURE_RE.search(t))
     if has_now and has_fut:
