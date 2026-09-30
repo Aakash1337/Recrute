@@ -1,0 +1,39 @@
+{
+  "id": 1001,
+  "title": "Security Analyst",
+  "absolute_url": "https://job-boards.greenhouse.io/acme/jobs/1001",
+  "questions": [
+    {"description": null, "label": "First Name", "required": true, "fields": [{"name": "first_name", "type": "input_text", "values": []}]},
+    {"description": null, "label": "Last Name", "required": true, "fields": [{"name": "last_name", "type": "input_text", "values": []}]},
+    {"description": null, "label": "Email", "required": true, "fields": [{"name": "email", "type": "input_text", "values": []}]},
+    {"description": null, "label": "Phone", "required": true, "fields": [{"name": "phone", "type": "input_text", "values": []}]},
+    {"description": null, "label": "Resume/CV", "required": true, "fields": [{"name": "resume", "type": "input_file", "values": []}, {"name": "resume_text", "type": "textarea", "values": []}]},
+    {"description": null, "label": "Cover Letter", "required": false, "fields": [{"name": "cover_letter", "type": "input_file", "values": []}, {"name": "cover_letter_text", "type": "textarea", "values": []}]},
+    {"description": "<p>Please share your <em>LinkedIn</em> profile.</p>", "label": "LinkedIn Profile", "required": false, "fields": [{"name": "question_1001", "type": "input_text", "values": []}]},
+    {"description": null, "label": "Why do you want to work at Acme?", "required": true, "fields": [{"name": "question_1002", "type": "textarea", "values": []}]},
+    {"description": null, "label": "Will you now or in the future require immigration sponsorship to work at Acme?", "required": true, "fields": [{"name": "question_1003", "type": "multi_value_single_select", "values": [{"label": "Yes", "value": 1}, {"label": "No", "value": 0}]}]},
+    {"description": null, "label": "Which areas interest you?", "required": true, "fields": [{"name": "question_1004[]", "type": "multi_value_multi_select", "values": [{"label": "Detection engineering", "value": 1}, {"label": "Incident response", "value": 2}, {"label": "Red team", "value": 3}]}]},
+    {"description": null, "label": "Please review and acknowledge Acme's Candidate Privacy Policy.", "required": true, "fields": [{"name": "question_1005[]", "type": "multi_value_multi_select", "values": [{"label": "Acknowledge/Confirm", "value": 9}]}]}
+  ],
+  "location_questions": [
+    {"description": null, "label": "Longitude", "required": true, "fields": [{"name": "longitude", "type": "input_hidden", "values": []}]},
+    {"description": null, "label": "Latitude", "required": true, "fields": [{"name": "latitude", "type": "input_hidden", "values": []}]},
+    {"description": null, "label": "Location", "required": true, "fields": [{"name": "location", "type": "input_text", "values": []}]}
+  ],
+  "compliance": [
+    {"type": "eeoc", "description": "&lt;p&gt;Voluntary self-identification&lt;/p&gt;", "questions": [
+      {"required": false, "label": "Gender", "fields": [{"name": "gender", "type": "multi_value_single_select", "values": [{"label": "Male", "value": "1"}, {"label": "Female", "value": "2"}, {"label": "Decline To Self Identify", "value": "3"}]}]}
+    ]},
+    {"type": "eeoc", "description": "", "questions": [
+      {"required": false, "label": "VeteranStatus", "fields": [{"name": "veteran_status", "type": "multi_value_single_select", "values": [{"label": "I am not a protected veteran", "value": "1"}, {"label": "I identify as one or more of the classifications of a protected veteran", "value": "2"}, {"label": "I don't wish to answer", "value": "3"}]}]}
+    ]}
+  ],
+  "demographic_questions": {
+    "header": "Voluntary Self-Identification",
+    "description": "<p>Optional.</p>",
+    "questions": [
+      {"id": 1757, "label": "Voluntary Self-Identification of Gender:\t", "required": true, "type": "multi_value_single_select",
+       "answer_options": [{"id": 12578, "label": "Female", "free_form": false, "decline_to_answer": false}, {"id": 12579, "label": "Male", "free_form": false, "decline_to_answer": false}, {"id": 12581, "label": "I don't wish to answer", "free_form": false, "decline_to_answer": true}]}
+    ]
+  }
+}
