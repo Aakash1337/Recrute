@@ -8,6 +8,7 @@
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time, timedelta, tzinfo
 
+from dateutil.tz import tzlocal
 from sqlalchemy import func
 from sqlmodel import Session, col, select
 
@@ -46,12 +47,13 @@ class DigestStats:
 
 
 def _day_bounds(now: datetime, tz: tzinfo | None) -> tuple[datetime, datetime, datetime]:
-    """(local start of day, start in UTC, end in UTC)."""
-    tz = tz or now.astimezone().tzinfo or UTC
-    local_now = now.astimezone(tz)
-    start_local = datetime.combine(local_now.date(), time.min, tzinfo=tz)
-    start_utc = start_local.astimezone(UTC)
-    return start_local, start_utc, start_utc + timedelta(days=1)
+    """(local start of day, start in UTC, end in UTC). The end is the NEXT local midnight, so
+    DST days are 23 or 25 hours long rather than a fixed 24."""
+    tz = tz or tzlocal()  # DST-aware system zone (a fixed-offset astimezone() tz is not)
+    local_day = now.astimezone(tz).date()
+    start_local = datetime.combine(local_day, time.min, tzinfo=tz)
+    end_local = datetime.combine(local_day + timedelta(days=1), time.min, tzinfo=tz)
+    return start_local, start_local.astimezone(UTC), end_local.astimezone(UTC)
 
 
 def collect_stats(session: Session, *, now: datetime | None = None, tz: tzinfo | None = None,

@@ -24,7 +24,8 @@ from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
 
 import keyring
-from bs4 import BeautifulSoup
+
+from recrute.capture.htmltext import html_to_text
 
 log = logging.getLogger(__name__)
 
@@ -84,21 +85,6 @@ class MailMessage:
 
 
 # --------------------------------------------------------------------------- parsing
-
-
-def html_to_text(html: str) -> str:
-    soup = BeautifulSoup(html, "lxml")
-    for tag in soup(["script", "style", "head", "title"]):
-        tag.decompose()
-    for br in soup.find_all("br"):
-        br.replace_with("\n")
-    text = soup.get_text("\n")
-    lines = [re.sub(r"[ \t ]+", " ", ln).strip() for ln in text.splitlines()]
-    out: list[str] = []
-    for ln in lines:
-        if ln or (out and out[-1]):
-            out.append(ln)
-    return "\n".join(out).strip()
 
 
 def _part_text(part: Message) -> str:
@@ -229,14 +215,25 @@ class ImapInbox:
             raise ImapError(f"no IMAP password in keyring for {self.config.user!r}; "
                             "set one with set_imap_password()")
         self.conn = self._connect(self.config)
-        typ, _ = self.conn.login(self.config.user, pw)
-        if typ != "OK":
-            raise ImapError("IMAP login failed")
-        # readonly=True -> EXAMINE: the server never sets \Seen on this session.
-        typ, data = self.conn.select(_quote_mailbox(self.config.folder), readonly=True)
-        if typ != "OK":
-            raise ImapError(f"cannot open folder {self.config.folder!r}: {data!r}")
-        self.uidvalidity = self._read_uidvalidity()
+        try:
+            try:
+                # imaplib raises IMAP4.error on NO/BAD for LOGIN (never returns "NO")
+                typ, _ = self.conn.login(self.config.user, pw)
+            except imaplib.IMAP4.error as e:
+                raise ImapError(f"IMAP login failed: {e}") from None
+            if typ != "OK":
+                raise ImapError("IMAP login failed")
+            # readonly=True -> EXAMINE: the server never sets \Seen on this session.
+            try:
+                typ, data = self.conn.select(_quote_mailbox(self.config.folder), readonly=True)
+            except imaplib.IMAP4.error as e:
+                raise ImapError(f"cannot open folder {self.config.folder!r}: {e}") from None
+            if typ != "OK":
+                raise ImapError(f"cannot open folder {self.config.folder!r}: {data!r}")
+            self.uidvalidity = self._read_uidvalidity()
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -248,16 +245,18 @@ class ImapInbox:
             self.conn = None
 
     def _read_uidvalidity(self) -> int | None:
+        # imaplib: response("UIDVALIDITY") -> ("UIDVALIDITY", [b"123"]) after SELECT/EXAMINE,
+        # or ("UIDVALIDITY", [None]) if the server didn't send it.
         try:
-            typ, data = self.conn.response("UIDVALIDITY")
+            code, data = self.conn.response("UIDVALIDITY")
         except Exception:
             return None
-        if typ == "OK" and data and data[0]:
-            try:
-                return int(data[0])
-            except (TypeError, ValueError):
-                return None
-        return None
+        if str(code).upper() != "UIDVALIDITY" or not data or data[-1] is None:
+            return None
+        try:
+            return int(data[-1])
+        except (TypeError, ValueError):
+            return None
 
     def search_uids(self, *, since: date | datetime | None = None,
                     after_uid: int | None = None) -> list[int]:

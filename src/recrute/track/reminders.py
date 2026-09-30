@@ -14,7 +14,7 @@ from typing import Any, Literal
 from sqlmodel import Session, select
 
 from recrute.models import Application, Company, EmailEvent, Job, JobStatus, StatusEvent
-from recrute.track.classify import Router
+from recrute.track.classify import Router, transition_status
 
 FOLLOW_UP_DAYS = 14
 GHOST_DAYS = 30
@@ -125,16 +125,15 @@ def reminders_from_db(session: Session, *, now: datetime | None = None,
 
 
 def mark_ghosted(session: Session, job_id: int) -> bool:
-    """User accepted a "ghosted" suggestion. Commits."""
+    """User accepted a "ghosted" suggestion. Atomic: only moves a job that is still
+    APPLIED/ACKNOWLEDGED at write time (a reply processed meanwhile wins). Commits."""
     job = session.get(Job, job_id)
-    if job is None or JobStatus(job.status) not in WAITING_STATUSES:
+    if job is None:
         return False
-    job.status = JobStatus.GHOSTED
-    session.add(job)
-    session.add(StatusEvent(job_id=job_id, status=JobStatus.GHOSTED,
-                            note="no response; marked ghosted by user"))
+    ok = transition_status(session, job, JobStatus.GHOSTED, WAITING_STATUSES,
+                           note="no response; marked ghosted by user")
     session.commit()
-    return True
+    return ok
 
 
 # --------------------------------------------------------------------------- LLM draft

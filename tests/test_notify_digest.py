@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta, timezone
 
+import pytest
 from sqlmodel import Session
 
 from recrute.models import (
@@ -11,7 +12,13 @@ from recrute.models import (
     Priority,
     StatusEvent,
 )
-from recrute.notify.digest import build_digest, collect_stats, instant_alert, should_alert
+from recrute.notify.digest import (
+    _day_bounds,
+    build_digest,
+    collect_stats,
+    instant_alert,
+    should_alert,
+)
 
 NOW = datetime(2026, 9, 29, 18, 0, tzinfo=UTC)
 TZ = timezone(timedelta(hours=-4))  # local day = 2026-09-29 (04:00Z .. next 04:00Z)
@@ -105,3 +112,52 @@ def test_instant_alert():
     j.score = 99
     j.status = JobStatus.FILTERED_OUT
     assert not should_alert(j)
+
+
+# --------------------------------------------------------------------------- DST (audit)
+
+def _new_york():
+    zoneinfo = pytest.importorskip("zoneinfo")
+    try:
+        return zoneinfo.ZoneInfo("America/New_York")
+    except zoneinfo.ZoneInfoNotFoundError:  # Windows without the tzdata package
+        pytest.skip("no tz database")
+
+
+def test_day_bounds_spring_forward():
+    ny = _new_york()
+    # 2026-03-08: clocks jump 02:00 EST -> 03:00 EDT, a 23-hour day
+    now = datetime(2026, 3, 8, 15, 0, tzinfo=UTC)
+    start_local, start, end = _day_bounds(now, ny)
+    assert start == datetime(2026, 3, 8, 5, 0, tzinfo=UTC)  # 00:00 EST
+    assert end == datetime(2026, 3, 9, 4, 0, tzinfo=UTC)  # 00:00 EDT
+    assert end - start == timedelta(hours=23)
+
+
+def test_day_bounds_fall_back():
+    ny = _new_york()
+    # 2026-11-01: clocks fall back 02:00 EDT -> 01:00 EST, a 25-hour day
+    now = datetime(2026, 11, 1, 15, 0, tzinfo=UTC)
+    _, start, end = _day_bounds(now, ny)
+    assert start == datetime(2026, 11, 1, 4, 0, tzinfo=UTC)  # 00:00 EDT
+    assert end == datetime(2026, 11, 2, 5, 0, tzinfo=UTC)  # 00:00 EST
+    assert end - start == timedelta(hours=25)
+
+
+def test_digest_counts_across_dst_boundaries(engine):
+    ny = _new_york()
+    with Session(engine) as s:
+        c = Company(name="Acme")
+        s.add(c)
+        s.commit()
+        s.add_all([
+            # 23:30 local on the 25-hour fall-back day: still Nov 1 locally
+            job(1, company_id=c.id, first_seen=datetime(2026, 11, 2, 4, 30, tzinfo=UTC)),
+            # 00:30 local on Mar 9 (after the 23-hour day): NOT Mar 8
+            job(2, company_id=c.id, first_seen=datetime(2026, 3, 9, 4, 30, tzinfo=UTC)),
+        ])
+        s.commit()
+        fall = collect_stats(s, now=datetime(2026, 11, 1, 15, 0, tzinfo=UTC), tz=ny)
+        spring = collect_stats(s, now=datetime(2026, 3, 8, 15, 0, tzinfo=UTC), tz=ny)
+    assert fall.new_matches == 1
+    assert spring.new_matches == 0

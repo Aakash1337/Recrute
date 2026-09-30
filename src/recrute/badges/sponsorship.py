@@ -10,7 +10,7 @@ jobs (PLAN.md §3.1); the user judges sponsorship themselves during review.
 import re
 from typing import Literal
 
-from bs4 import BeautifulSoup
+from recrute.capture.htmltext import html_to_text
 
 Sponsorship = Literal["will_sponsor", "no_sponsorship", "unknown"]
 EligibilityFlag = Literal["clearance_required", "citizenship_required", "itar_us_person"]
@@ -29,7 +29,7 @@ _CLAUSE_SPLIT = re.compile(r"\s*[;,()]\s*|\s+(?:but|however|although|though|whil
 
 def _to_text(text: str) -> str:
     if "<" in text and re.search(r"<(?:p|br|li|div|ul|span|strong|b|h\d)\b", text, re.I):
-        text = BeautifulSoup(text, "lxml").get_text("\n")
+        text = html_to_text(text)
     return text.replace(" ", " ").replace("’", "'")
 
 
@@ -193,14 +193,35 @@ def _clauses(sentence: str) -> list[str]:
     return [c for c in _CLAUSE_SPLIT.split(sentence) if c and c.strip()]
 
 
+# Explicit exemption inside the clause: "does not require US citizenship", "U.S. person status
+# is not required", "not subject to ITAR".
+_NEGATED = re.compile(
+    r"(?:\bnot|n't|\bnever|\bno longer)\s+" + _w(3) + r"(?:require[sd]?|requirement|subject|"
+    r"necessary|needed|mandatory|apply|applies|applicable|restricted)\b"
+    r"|\bexempt\b|\bwithout (?:any )?(?:export )?restrictions?\b",
+    re.I,
+)
+
+
+def _mentions(clause: str, *patterns: re.Pattern[str]) -> bool:
+    return any(p.search(clause) for p in patterns)
+
+
+def _all_mentions_negated(sentence: str, *patterns: re.Pattern[str]) -> bool:
+    """True if every clause mentioning the pattern(s) explicitly negates the requirement."""
+    hits = [c for c in _clauses(sentence) if _mentions(c, *patterns)]
+    return bool(hits) and all(_NEGATED.search(c) for c in hits)
+
+
 def _mention_required(sentence: str, pattern: re.Pattern[str]) -> bool:
-    """A mention counts if its clause doesn't soften it ("preferred", "a plus") and, when the
-    sentence as a whole is softened, the clause itself states a requirement."""
+    """A mention counts if its clause doesn't negate or soften it ("not required", "preferred",
+    "a plus") and, when the sentence as a whole is softened, the clause itself states a
+    requirement."""
     sentence_soft = bool(_NOT_REQUIRED.search(sentence))
     for clause in _clauses(sentence):
         if not pattern.search(clause):
             continue
-        if _NOT_REQUIRED.search(clause):
+        if _NEGATED.search(clause) or _NOT_REQUIRED.search(clause):
             continue
         if sentence_soft and not _REQUIRED.search(clause):
             continue
@@ -210,6 +231,8 @@ def _mention_required(sentence: str, pattern: re.Pattern[str]) -> bool:
 
 def _clearance_required(s: str) -> bool:
     if not _CLEARANCE.search(s) or _CLEARANCE_NEG.search(s):
+        return False
+    if _all_mentions_negated(s, _CLEARANCE):
         return False
     if _mention_required(s, _CLEARANCE):
         # Bare adjectives ("active clearance") need some requirement wording in the sentence;
@@ -222,7 +245,7 @@ def _clearance_required(s: str) -> bool:
 def _citizenship_required(s: str) -> bool:
     if not _US_CITIZEN.search(s) or _BOILERPLATE.search(s):
         return False
-    if _CITIZEN_ALTERNATIVE.search(s):
+    if _CITIZEN_ALTERNATIVE.search(s) or _all_mentions_negated(s, _US_CITIZEN):
         return False
     return _mention_required(s, _US_CITIZEN) and bool(_REQUIRED.search(s) or re.search(
         r"\bcitizenship\s*[:\-–]", s, re.I))
@@ -234,6 +257,9 @@ def _itar_required(s: str) -> bool:
     has_person = bool(_US_PERSON.search(s))
     has_export = bool(_EXPORT.search(s) or _EXPORT_CI.search(s))
     if not (has_person or has_export):
+        return False
+    # An explicit exemption wins over the requirement-word fallbacks below.
+    if _all_mentions_negated(s, _US_PERSON, _EXPORT, _EXPORT_CI):
         return False
     if _NOT_REQUIRED.search(s) and not _REQUIRED.search(s):
         return False
