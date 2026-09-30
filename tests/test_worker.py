@@ -100,3 +100,36 @@ def test_cli_run_exits_nonzero_on_failure(monkeypatch, tmp_path):
     result = CliRunner().invoke(app, ["run", "boom"])
     db.get_engine.cache_clear()
     assert result.exit_code == 1
+
+
+def test_loop_survives_bookkeeping_errors(engine):
+    import threading
+
+    from sqlalchemy.exc import OperationalError
+
+    from recrute import worker
+
+    calls = {"n": 0, "fn": 0}
+
+    class Flaky:
+        def __init__(self):
+            self.stop = threading.Event()
+
+        def session(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OperationalError("stmt", {}, Exception("database is locked"))
+            return Session(engine)
+
+    ctx = Flaky()
+
+    def fn(c):
+        calls["fn"] += 1
+        c.stop.set()
+        return {}
+
+    t = threading.Thread(target=worker._loop,
+                         args=(ctx, [worker.Task("x", timedelta(seconds=0), fn)], 0.01))
+    t.start()
+    t.join(timeout=10)
+    assert not t.is_alive() and calls["fn"] == 1  # recovered and ran the task

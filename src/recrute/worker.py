@@ -116,15 +116,27 @@ def build_ctx() -> Ctx:
 
 
 def _loop(ctx: Ctx, tasks: list[Task], tick: float) -> None:
+    """Never dies: a transient failure OUTSIDE a task body (e.g. "database is locked" while
+    recording a run) is logged and retried after a bounded backoff. A task whose start was
+    recorded isn't rerun early: its due time is based on that start."""
+    failures = 0
     while not ctx.stop.is_set():
         now = utcnow()
-        for task in tasks:
-            if ctx.stop.is_set():
-                break
-            with ctx.session() as s:
-                due = is_due(s.get(TaskRun, task.name), task.every, now)
-            if due:
-                run_task(ctx, task)
+        try:
+            for task in tasks:
+                if ctx.stop.is_set():
+                    break
+                with ctx.session() as s:
+                    due = is_due(s.get(TaskRun, task.name), task.every, now)
+                if due:
+                    run_task(ctx, task)
+            failures = 0
+        except Exception as e:  # bookkeeping / due-check failure: keep the thread alive
+            failures += 1
+            log.error("worker loop error (%s); retrying: %s", threading.current_thread().name,
+                      safe_error(e))
+            ctx.stop.wait(min(300.0, tick * 2 ** min(failures, 4)))
+            continue
         ctx.stop.wait(tick)
 
 

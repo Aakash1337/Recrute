@@ -339,3 +339,15 @@ def test_itar_requirement_bound_to_its_clause(text, flagged):
     from recrute.badges import eligibility_flags
 
     assert ("itar_us_person" in eligibility_flags(text)) is flagged
+
+
+@pytest.mark.parametrize("text,flagged", [
+    ("You must have experience with ITAR regulations.", False),
+    ("Candidates must have knowledge of export-control regulations.", False),
+    ("Candidates must be U.S. persons as defined by ITAR.", True),
+    ("You must be able to access export-controlled technical data.", True),
+])
+def test_itar_skills_vs_status(text, flagged):
+    from recrute.badges import eligibility_flags
+
+    assert ("itar_us_person" in eligibility_flags(text)) is flagged

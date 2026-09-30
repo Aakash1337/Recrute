@@ -325,6 +325,23 @@ def is_yes_no(q: FormQuestion) -> bool:
     return bool(_YES_NO_START.search(clean_label(q.label)))
 
 
+_SENSITIVE_TEXT = re.compile(
+    r"\b(?:authori[sz]\w*|sponsor\w*|visas?|citizen\w*|immigration|work permit|green card|"
+    r"h-?1b|opt|cpt|salary|salaries|compensation|pay|wages?|earn(?:ed|ings?)?|clearance|"
+    r"gender|sex|race|racial|ethnic\w*|hispanic|latin[oax]|veterans?|disabilit\w*|pronouns?|"
+    r"sexual orientation|age|date of birth|birth ?date|criminal|convict\w*|felon\w*|"
+    r"arrest\w*|background check|drug (?:test|screen)\w*|social security|ssn|religio\w*|"
+    r"marital|pregnan\w*)\b",
+    re.IGNORECASE)
+
+
+def is_sensitive_question(q: FormQuestion) -> bool:
+    """Legal or personal questions (work authorization, compensation history, EEO, criminal
+    history, age...) judged on the FULL question, label and description. These are answered
+    only from your answer bank or by you; never drafted by the LLM."""
+    return bool(_SENSITIVE_TEXT.search(f"{q.label} {q.description}"))
+
+
 def classify_question(q: FormQuestion) -> str | None:
     """The bank/profile field a question asks for, or None (-> grounded LLM drafting)."""
     if q.type == "file":

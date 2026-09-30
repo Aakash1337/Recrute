@@ -71,12 +71,16 @@ def live_page(request: Request):
 
 @router.get("/live/frame")
 def live_frame():
+    from fastapi.responses import Response
+
     from recrute import live
 
     f = live.live_dir(get_paths()) / "frame.jpg"
-    if not f.is_file():
-        raise HTTPException(404)
-    return FileResponse(f, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+    try:
+        data = f.read_bytes()  # read at once: keeps the file open for the shortest time
+    except OSError:
+        raise HTTPException(404) from None
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 @router.get("/live/status", response_class=HTMLResponse)

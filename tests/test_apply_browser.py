@@ -910,3 +910,25 @@ def test_live_view_frames_and_remote_input(context, paths):
     assert live.apply_inputs(paths, page) is False
     assert page.input_value("#q") == "typed remotely"
     page.close()
+
+
+@pytest.mark.browser
+def test_hidden_populated_controls_are_verified(context):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <label for="n">Name</label><input id="n" name="n" value="Ada">
+      <input id="salary" name="salary" value="250000" style="display:none">
+      <select id="src" name="src" aria-hidden="true"><option value=""></option>
+        <option value="li" selected>LinkedIn</option></select>
+      <input type="hidden" name="csrf" value="abc123">
+    </form>""")
+    fields = {f.id: f for f in dom.extract_fields(page)}
+    assert fields["salary"].widget == "hidden_value" and fields["salary"].current == "250000"
+    assert "src" in fields and "csrf" not in fields
+    packet = Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")])
+    problems = verify_fields(list(fields.values()), packet, {})
+    assert "salary" in problems and "src" in problems and "n" not in problems
+    page.close()

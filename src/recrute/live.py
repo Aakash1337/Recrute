@@ -117,10 +117,20 @@ def publish_frame(paths: Paths, page) -> None:
             "() => ({width: window.innerWidth, height: window.innerHeight})")
     except Exception:  # page navigating/closing: skip this frame
         return
-    _atomic_write(d / "frame.jpg", jpg)
-    _atomic_write(d / "frame.json", json.dumps({
+    try:
+        _atomic_write(d / "frame.jpg", jpg)
+    except OSError:  # Windows: the UI is reading the old frame right now; next tick
+        return
+    _safe_write(d / "frame.json", json.dumps({
         "url": page.url, "width": size["width"], "height": size["height"],
         "at": time.time(), "session": active_session(paths)}).encode())
+
+
+def _safe_write(path: Path, data: bytes) -> None:
+    try:
+        _atomic_write(path, data)
+    except OSError:  # a concurrent reader on Windows; the next tick rewrites it
+        pass
 
 
 def apply_inputs(paths: Paths, page) -> bool:
@@ -157,4 +167,7 @@ def clear(paths: Paths) -> None:
     d = live_dir(paths)
     for f in [d / "session.json", d / "frame.jpg", d / "frame.json",
               *(d / "inputs").glob("*.json")]:
-        f.unlink(missing_ok=True)
+        try:
+            f.unlink(missing_ok=True)
+        except OSError:  # Windows sharing violation: retried at the next session start
+            pass

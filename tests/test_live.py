@@ -93,3 +93,21 @@ def test_delayed_input_never_crosses_handoffs(paths):
         f'{{"type": "type", "text": "secret", "session": "{old}"}}', encoding="utf-8")
     assert live.apply_inputs(paths, Page()) is False
     assert new != old
+
+
+def test_publish_frame_survives_sharing_violation(paths, monkeypatch):
+    from recrute import live
+
+    class Page:
+        url = "https://x"
+        viewport_size = {"width": 100, "height": 100}
+
+        def screenshot(self, **kw):
+            return b"jpg"
+
+    def locked(path, data):
+        raise PermissionError(32, "The process cannot access the file")
+
+    monkeypatch.setattr(live, "_atomic_write", locked)
+    live.publish_frame(paths, Page())  # must not raise
+    live.clear(paths)

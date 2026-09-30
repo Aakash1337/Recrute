@@ -204,13 +204,17 @@ _EXPORT_REQ = re.compile(r"\b(?:must|required|requires?|requirement|subject to|o
 
 
 _APPLICANT_RESTRICTION = re.compile(
+    # the applicant must BE something / be ABLE TO ACCESS something (status or access), not
+    # merely know or handle regulations ("you must have experience with ITAR" is a skill)
     r"\b(?:applicants?|candidates?|you|employees?|hires?)\s+(?:must|will need to|need to|are "
-    r"required to|shall)\b"
-    r"|\b(?:position|role|job|work)\s+(?:requires|is subject to|will require|involves access)\b"
+    r"required to|shall)\s+(?:be\b|qualify\b|meet (?:the )?(?:export|itar|ear)|"
+    r"(?:be )?(?:able|eligible) to (?:access|receive|obtain|be granted))"
+    r"|\b(?:position|role|job|work)\s+(?:requires|is subject to|will require|involves)\s+"
+    r"(?:access to|u\.?s\.? person|citizenship|export|itar|an export licen)"
     r"|\baccess to (?:export[- ]controlled|itar[- ]controlled|controlled|technical data|"
     r"defense articles)\b"
-    r"|\b(?:must|required to) (?:be|qualify|meet|obtain)\b|\beligib\w+ (?:to|for) (?:access|"
-    r"receive|export)\b|\brestricted to\b|\bonly (?:u\.?s\.?|us) (?:persons?|citizens?)\b"
+    r"|\beligib\w+ (?:to|for) (?:access|receive|export)\b|\brestricted to\b|"
+    r"\bonly (?:u\.?s\.?|us) (?:persons?|citizens?)\b"
     r"|\bsubject to (?:u\.?s\.? )?(?:export|itar|ear) (?:controls? )?(?:restrictions|"
     r"requirements|licens\w+)\b",
     re.I)

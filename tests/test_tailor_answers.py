@@ -601,3 +601,42 @@ def test_sponsorship_with_authorization_qualifiers_left_for_user(label):
     a = match_question(FormQuestion(id="q", label=label, type="select",
                                     options=["Yes", "No"]), bank)
     assert a is None or a.value in (None, "")
+
+
+def test_education_answers_follow_the_requested_degree():
+    from recrute.schemas import Education, FormQuestion, Profile
+    from recrute.tailor.answer_questions import profile_answer
+
+    p = Profile(name="Ada", education=[
+        Education(id="m", school="Tech U", degree="Master of Science", field="AI",
+                  end="Expected May 2027"),
+        Education(id="b", school="State U", degree="Bachelor of Science", field="CS",
+                  end="May 2024")])
+    major = profile_answer(FormQuestion(id="x", label="Major",
+                                        description="Enter your undergraduate major"), p)
+    assert major.value == "CS"
+    # unqualified: the highest degree actually EARNED (the master's is still in progress)
+    assert profile_answer(FormQuestion(id="y", label="Major"), p).value == "CS"
+    yr = profile_answer(FormQuestion(id="z", label="Graduation year",
+                                     description="Undergraduate degree"), p)
+    assert yr.value == "2024"
+
+
+def test_sensitive_questions_never_reach_the_llm():
+    from recrute.schemas import FormQuestion, Profile
+    from recrute.tailor.answer_questions import answer_questions
+    from recrute.tailor.answers import AnswerBank
+
+    class Router:
+        calls = 0
+
+        def complete(self, *a, **k):
+            Router.calls += 1
+            raise AssertionError("sensitive questions must not be sent to the LLM")
+
+    qs = [FormQuestion(id="e", label="Eligibility", type="textarea",
+                       description="Describe your US work authorization without sponsorship"),
+          FormQuestion(id="s", label="Describe your salary history", type="textarea")]
+    out = answer_questions(qs, profile=Profile(name="Ada"), bank=AnswerBank(), router=Router())
+    assert Router.calls == 0
+    assert all(a.value in (None, "") and a.needs_review for a in out.answers)

@@ -311,7 +311,7 @@ def may_have_been_sent(app: Application, job_status: JobStatus | None = None) ->
     return bool(handed_over) and (job_status is None or job_status in _RESERVING)
 
 
-def day_counts(session: Session, now: datetime) -> DayCounts:
+def day_counts(session: Session, now: datetime, exclude_app_id: int | None = None) -> DayCounts:
     """Counted toward today's global and site caps: see may_have_been_sent."""
     tz = now.tzinfo
     today = now.date()
@@ -321,6 +321,8 @@ def day_counts(session: Session, now: datetime) -> DayCounts:
                         .where(or_(Application.attempts > 0,
                                    col(Application.submitted_at).is_not(None)))).all()
     for app, job in rows:
+        if exclude_app_id is not None and app.id == exclude_app_id:
+            continue
         when = aware(app.submitted_at, tz) or _attempted_at(app, tz)
         if when is None or when.date() != today:
             continue
@@ -502,11 +504,14 @@ def submit_gate(bind: Any, *, app_id: int, job_id: int, channel: str, attempt_id
                 return f"channel suspended: {info.get('reason')}"
             if not is_active(t, list(get_setting(s, "active_hours"))):
                 return "deferred: outside active hours"
-            counts = day_counts(s, t)  # includes this attempt's own reservation
-            if counts.total > int(get_setting(s, "apps_per_day")):
+            # everything ELSE sent (or possibly sent) today, plus this submission, counted
+            # against the caps of the day the click actually happens (attempts can start
+            # before midnight and submit after it)
+            others = day_counts(s, t, exclude_app_id=app_id)
+            if others.total + 1 > int(get_setting(s, "apps_per_day")):
                 return "deferred: daily application cap reached"
             cap = (get_setting(s, "site_caps") or {}).get(channel)
-            if cap is not None and counts.by_channel.get(channel, 0) > int(cap):
+            if cap is not None and others.by_channel.get(channel, 0) + 1 > int(cap):
                 return f"deferred: {channel} daily cap reached"
         return None
 

@@ -422,6 +422,17 @@ def verify_fields(fields: Sequence[LiveField], packet: Packet, files: Mapping[st
             if f.required or cur not in (None, "", []):
                 problems[f.id] = "custom control we can't verify (needs you)"
             continue
+        if f.widget == "hidden_value":
+            if f.type == "file":  # a hidden upload input: must hold exactly the approved file
+                path = file_for(f, packet, files, aliases)
+                if path is None or cur != path.name:
+                    problems[f.id] = f"a hidden upload holds {cur!r}, not the approved file"
+                continue
+            a = resolve_answer(f, packet, aliases)
+            if not has_value(a) or not value_matches(f, cur, a.value):
+                problems[f.id] = ("a hidden field would submit a value you didn't approve: "
+                                  f"{str(cur)[:60]!r}")
+            continue
         if f.widget == "file" or f.type == "file":
             path = file_for(f, packet, files, aliases)
             if path is not None and cur != path.name:

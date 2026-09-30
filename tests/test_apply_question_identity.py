@@ -241,3 +241,42 @@ def test_give_up_after_clicked_submit_keeps_cooldown(engine):
         skip(s, clicked.id, "given up")
         skip(s, never.id, "given up")
         assert [cid for cid, _ in company_events(s)] == [c.id]  # only the clicked one counts
+
+
+def test_attempt_crossing_midnight_respects_new_days_caps(engine):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlmodel import Session
+
+    from recrute.apply.scheduler import packet_revision, submit_gate
+    from recrute.models import Application, Job, JobStatus
+    from recrute.settings import set_setting
+
+    tz = timezone(timedelta(hours=-4))
+    now = datetime(2026, 10, 2, 0, 5, tzinfo=tz)  # just after midnight
+    with Session(engine) as s:
+        set_setting(s, "apps_per_day", 1)
+        set_setting(s, "active_hours", [0, 24])
+        done = Job(title="sent", apply_url="a", canonical_url="a", status=JobStatus.APPLIED)
+        cur = Job(title="cur", apply_url="b", canonical_url="b", status=JobStatus.APPLYING)
+        s.add_all([done, cur])
+        s.flush()
+        s.add(Application(job_id=done.id, channel="greenhouse", attempts=1,
+                          submitted_at=now - timedelta(minutes=2)))
+        app = Application(job_id=cur.id, channel="greenhouse", attempts=1,
+                          approved_at=now - timedelta(hours=1), packet={"job_id": cur.id},
+                          outcome={"details": {"attempt_id": "A1",
+                                               "attempt_started_at":
+                                                   (now - timedelta(minutes=8)).isoformat()}})
+        s.add(app)
+        s.commit()
+        rev = packet_revision(app)
+        app_id, job_id = app.id, cur.id
+
+    class Lease:
+        def held(self):
+            return True
+
+    gate = submit_gate(engine, app_id=app_id, job_id=job_id, channel="greenhouse",
+                       attempt_id="A1", revision=rev, lease=Lease(), clock=lambda: now)
+    assert gate() == "deferred: daily application cap reached"

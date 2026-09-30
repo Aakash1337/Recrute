@@ -289,6 +289,9 @@ def fill_fields(root: Page | Frame, fields: Sequence[LiveField], packet: Packet,
             report.notes.append(f"blocker appeared while filling: {blocker}")
             break
         report.labels[f.id] = f.label
+        if f.widget == "hidden_value":
+            report.skipped.append(f.id)  # can't operate; checked by pre-submit verification
+            continue
         if f.widget == "custom":
             # a control we can't operate safely: never guess. Required or holding any value
             # (e.g. a pre-selected answer nobody approved) -> the human decides (CP3)

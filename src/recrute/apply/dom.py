@@ -208,7 +208,7 @@ def extract_fields(root: Page | Frame, *, scope: str | None = None,
     fields: list[LiveField] = []
     seen: dict[str, int] = {}
     for i, r in enumerate(raw):
-        if not r.get("visible") and not include_hidden:
+        if not r.get("visible") and not include_hidden and r.get("widget") != "hidden_value":
             continue
         key = r.get("key") or f"field_{i}"
         if key in seen:

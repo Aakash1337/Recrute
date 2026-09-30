@@ -198,12 +198,32 @@
     // search inputs ARE form fields (typeahead questions); only a widget's own auxiliary
     // filter box or the site's header/nav search is skipped
     if (t === 'search' && el.closest('[role="listbox"], [role="menu"], header, nav')) continue;
-    if (el.getAttribute('aria-hidden') === 'true' || el.disabled) continue;
+    if (el.disabled) continue;
     const isFile = t === 'file';
     // file inputs are usually visually hidden; judge them by their wrapper / label instead
-    const shown = isFile ? (visible(el) || (el.parentElement && visible(el.parentElement))
-                            || [...(el.labels || [])].some(visible)) : visible(el);
-    if (!shown) continue;
+    const shown = el.getAttribute('aria-hidden') !== 'true' && (isFile
+      ? (visible(el) || (el.parentElement && visible(el.parentElement))
+         || [...(el.labels || [])].some(visible)) : visible(el));
+    if (!shown) {
+      // Hidden by CSS/aria but enabled: the browser still SUBMITS its value. We can't operate
+      // it, so any value it holds must be one you approved (checked before submit), else CP3.
+      const v = isFile ? (el.files && el.files.length ? el.files[0].name : '')
+        : (el.tagName === 'SELECT' ? [...el.selectedOptions].filter(o => o.value !== '')
+             .map(o => o.text.trim()).join(' | ') : el.value);
+      // native forms only submit NAMED controls; and a hidden input backing a visible widget in
+      // the same field (react-select, custom pickers) is checked through that widget
+      const c0 = container(el);
+      const backs = c0 && [...c0.box.querySelectorAll('input, select, textarea, [role="combobox"]')]
+        .some(o => o !== el && visible(o));
+      if (v && el.name && !backs) {
+        const lab = labelOf(el);
+        push({key: keyOf(el), label: clean(lab.text) || el.name || el.id, required: false,
+              selector: sel(el), options: [], option_selectors: [], current: v,
+              visible: false, trigger: '', max_length: null, type: isFile ? 'file' : 'text',
+              widget: 'hidden_value'});
+      }
+      continue;
+    }
     const lab = labelOf(el);
     const key = keyOf(el);
     const rec = {key, label: clean(lab.text), required: reqOf(el, lab), selector: sel(el),

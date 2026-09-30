@@ -20,6 +20,7 @@ from recrute.tailor.answers import (
     classify_question,
     field_core,
     format_value,
+    is_sensitive_question,
     match_option,
     match_question,
 )
@@ -154,25 +155,50 @@ def _profile_value(kind: str, profile: Profile) -> str | None:
     return values.get(kind) or None
 
 
-def gpa_for(q: FormQuestion, profile: Profile) -> str | None:
-    """GPA from the education entry the question asks about: undergraduate -> bachelor's /
-    associate, graduate -> master's / PhD. Unqualified with several GPAs on file -> ambiguous
-    (None, you answer it)."""
+def education_for(q: FormQuestion, profile: Profile, need: str = ""):
+    """The education entry a question is about: "undergraduate" -> bachelor's/associate,
+    "graduate"/master's/PhD -> graduate entries; otherwise the only entry (having `need`
+    filled in). Several candidates -> None (ambiguous: you answer it)."""
     import re
 
     text = f"{q.label} {q.description}".lower()
-    with_gpa = [ed for ed in profile.education if (ed.gpa or "").strip()]
+    entries = [ed for ed in profile.education if not need or (getattr(ed, need) or "").strip()]
 
     def level(ed) -> int:
         return next((r for rx, r in _DEGREE_RANK if re.search(rx, ed.degree or "", re.I)), 0)
 
-    if "undergrad" in text:
-        hits = [ed for ed in with_gpa if level(ed) in (2, 3)]
-    elif re.search(r"\bgraduate\b|\bgrad school\b|master|ph\.?d", text):
-        hits = [ed for ed in with_gpa if level(ed) >= 4]
+    if "undergrad" in text or "bachelor" in text:
+        hits = [ed for ed in entries if level(ed) in (2, 3)]
+    elif re.search(r"\bgraduate\b|\bgrad school\b|master|ph\.?d|doctoral", text):
+        hits = [ed for ed in entries if level(ed) >= 4]
+    elif re.search(r"most recent|current|latest", text):
+        hits = entries[:1]
     else:
-        hits = with_gpa
-    return hits[0].gpa if len(hits) == 1 else None
+        hits = entries
+        if len(hits) > 1 and need in ("school", "field", "end"):
+            # an unqualified "School"/"Major" means the highest degree actually earned
+            best = highest_completed_degree(profile)
+            hits = [ed for ed in hits if best and ed.degree == best and _completed(ed)][:1]
+    return hits[0] if len(hits) == 1 else None
+
+
+def gpa_for(q: FormQuestion, profile: Profile) -> str | None:
+    ed = education_for(q, profile, "gpa")
+    return ed.gpa if ed else None
+
+
+def _education_value(kind: str, q: FormQuestion, profile: Profile) -> str | None:
+    import re
+
+    field = {"gpa": "gpa", "major": "field", "school": "school", "grad_date": "end"}[kind]
+    ed = education_for(q, profile, field)
+    if ed is None:
+        return None
+    value = getattr(ed, field)
+    if kind == "grad_date" and re.search(r"\byear\b", f"{q.label} {q.description}", re.I):
+        m = re.search(r"(19|20)\d{2}", value or "")
+        return m.group(0) if m else None
+    return value or None
 
 
 def profile_answer(q: FormQuestion, profile: Profile) -> FormAnswer | None:
@@ -182,7 +208,8 @@ def profile_answer(q: FormQuestion, profile: Profile) -> FormAnswer | None:
         kind = next((k for k, rx in _PROFILE_RULES if rx.fullmatch(core)), None)
     if kind is None or q.type in ("file", "checkbox"):
         return None
-    raw = gpa_for(q, profile) if kind == "gpa" else _profile_value(kind, profile)
+    raw = (_education_value(kind, q, profile) if kind in ("gpa", "major", "school", "grad_date")
+           else _profile_value(kind, profile))
     value = format_value(q, raw)
     if value is None:
         return None
@@ -332,7 +359,8 @@ def answer_questions(questions: list[FormQuestion], *, profile: Profile, bank: A
             done[q.id] = hit
             continue
         kind = classify_question(q)
-        if kind in SENSITIVE_KINDS or kind in CONTACT_KINDS or q.type == "date":
+        if (kind in SENSITIVE_KINDS or kind in CONTACT_KINDS or q.type == "date"
+                or is_sensitive_question(q)):
             done[q.id] = FormAnswer(question_id=q.id, value=None, source="default",
                                     confidence=0.0, needs_review=True)
         elif q.type == "checkbox" and not q.options and _CONSENT_RE.search(q.label):
