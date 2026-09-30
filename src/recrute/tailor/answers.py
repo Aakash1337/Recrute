@@ -127,7 +127,8 @@ def _file_lock(target: Path, timeout: float = 30.0, stale: float = 120.0):
         try:
             os.mkdir(lock)
             break
-        except FileExistsError:
+        except (FileExistsError, PermissionError):
+            # Windows reports "Access is denied" while another holder is removing the lock
             try:
                 if time.time() - lock.stat().st_mtime > stale:  # holder died
                     os.rmdir(lock)
@@ -140,16 +141,27 @@ def _file_lock(target: Path, timeout: float = 30.0, stale: float = 120.0):
     try:
         yield
     finally:
-        try:
-            os.rmdir(lock)
-        except OSError:
-            pass
+        for _ in range(50):  # Windows may briefly refuse while another waiter stats it
+            try:
+                os.rmdir(lock)
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                time.sleep(0.02)
 
 
 def _write_atomic(path: Path, text: str) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)  # readers see the old or the new file, never a partial one
+    for attempt in range(50):
+        try:
+            os.replace(tmp, path)  # readers see the old or the new file, never a partial one
+            return
+        except PermissionError:  # Windows: a reader has the target open for a moment
+            if attempt == 49:
+                raise
+            time.sleep(0.05)
 
 
 def add_answer(paths: Paths, key: str, text: str) -> str:
