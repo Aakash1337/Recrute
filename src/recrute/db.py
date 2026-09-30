@@ -1,8 +1,9 @@
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 
-from sqlalchemy import event
+from sqlalchemy import event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -32,8 +33,56 @@ def get_engine() -> Engine:
     return make_engine()
 
 
+log = logging.getLogger(__name__)
+
+
+def _sql_default(column) -> str | None:
+    """SQL literal for a column's simple Python default (needed to add NOT NULL columns)."""
+    default = column.default.arg if column.default is not None else None
+    if callable(default) or default is None:
+        return None
+    if isinstance(default, bool):
+        return "1" if default else "0"
+    if isinstance(default, int | float):
+        return str(default)
+    if isinstance(default, str):
+        return "'" + default.replace("'", "''") + "'"
+    if hasattr(default, "value"):  # enums are stored by name
+        return "'" + str(default.name).replace("'", "''") + "'"
+    return None
+
+
+def migrate(engine: Engine) -> list[str]:
+    """Additive auto-migration: create missing tables/indexes and ADD missing columns.
+    Never drops or rewrites anything, so an older database keeps all its data."""
+    SQLModel.metadata.create_all(engine)
+    changes = []
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in SQLModel.metadata.sorted_tables:
+            existing = {c["name"] for c in insp.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in existing:
+                    continue
+                coltype = column.type.compile(dialect=engine.dialect)
+                default = _sql_default(column)
+                ddl = f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {coltype}'
+                if default is not None:
+                    ddl += f" NOT NULL DEFAULT {default}" if not column.nullable \
+                        else f" DEFAULT {default}"
+                conn.execute(text(ddl))
+                changes.append(f"{table.name}.{column.name}")
+        for table in SQLModel.metadata.sorted_tables:
+            for index in table.indexes:
+                if not index.unique:
+                    index.create(conn, checkfirst=True)
+    if changes:
+        log.info("database migrated: added %s", ", ".join(changes))
+    return changes
+
+
 def init_db(engine: Engine | None = None) -> None:
-    SQLModel.metadata.create_all(engine or get_engine())
+    migrate(engine or get_engine())
 
 
 @contextmanager

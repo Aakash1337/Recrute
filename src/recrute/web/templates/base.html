@@ -6,25 +6,62 @@
   <title>{% block title %}Recrute{% endblock %}</title>
   <script src="/static/htmx.min.js"></script>
   <style>
-    :root { color-scheme: light dark; --muted: #888; --ok: #2e9e5b; --bad: #d64545; --warn: #d69a2d; }
-    body { font: 15px/1.5 system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
-    header { display: flex; align-items: baseline; gap: 1rem; border-bottom: 1px solid #8884; margin-bottom: 1.5rem; }
-    header h1 { margin: 0 0 .5rem; font-size: 1.4rem; }
-    header span { color: var(--muted); }
-    section { margin-bottom: 2rem; }
-    h2 { font-size: 1.05rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+    :root { color-scheme: light dark; --muted: #888; --ok: #2e9e5b; --bad: #d64545; --warn: #d69a2d;
+            --line: #8883; --hl: #3b82f622; --p0: #a855f7; --p1: #ef4444; --p2: #3b82f6; --p3: #6b7280; }
+    * { box-sizing: border-box; }
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 0; }
+    nav { display: flex; gap: .25rem; align-items: center; padding: .5rem 1rem; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: Canvas; z-index: 5; flex-wrap: wrap; }
+    nav b { margin-right: 1rem; font-size: 1.05rem; }
+    nav a { text-decoration: none; color: inherit; padding: .25rem .6rem; border-radius: 6px; }
+    nav a.active, nav a:hover { background: var(--hl); }
+    nav .count { font-size: .75em; background: var(--p2); color: white; border-radius: 99px; padding: 0 .45em; margin-left: .25em; }
+    main { max-width: 1400px; margin: 1rem auto; padding: 0 1rem; }
+    h2 { font-size: .95rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 1.5rem 0 .5rem; }
     table { border-collapse: collapse; width: 100%; }
-    td { padding: .35rem .5rem; border-bottom: 1px solid #8882; vertical-align: top; }
-    .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
-    .stats { display: flex; gap: 1rem; }
-    .stat { border: 1px solid #8884; border-radius: 8px; padding: .75rem 1rem; min-width: 8rem; }
-    .stat b { display: block; font-size: 1.6rem; }
-    input[type=range] { width: 20rem; vertical-align: middle; }
-    .muted { color: var(--muted); font-size: .9em; }
+    td, th { padding: .35rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+    th { font-weight: 600; color: var(--muted); font-size: .85em; }
+    .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); } .muted { color: var(--muted); font-size: .9em; }
+    .stats { display: flex; gap: .75rem; flex-wrap: wrap; }
+    .stat { border: 1px solid var(--line); border-radius: 8px; padding: .6rem .9rem; min-width: 7rem; }
+    .stat b { display: block; font-size: 1.5rem; }
+    .chip { display: inline-block; font-size: .75em; font-weight: 700; padding: 0 .45em; border-radius: 4px; color: white; }
+    .P0 { background: var(--p0); } .P1 { background: var(--p1); } .P2 { background: var(--p2); } .P3 { background: var(--p3); }
+    .badge { font-size: .8em; border: 1px solid var(--line); border-radius: 4px; padding: 0 .35em; white-space: nowrap; }
+    .score { font-weight: 700; font-variant-numeric: tabular-nums; }
+    .split { display: grid; grid-template-columns: minmax(360px, 42%) 1fr; gap: 1rem; align-items: start; }
+    .list { max-height: calc(100vh - 140px); overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+    .row { padding: .5rem .7rem; border-bottom: 1px solid var(--line); cursor: pointer; }
+    .row.sel { background: var(--hl); outline: 2px solid var(--p2); outline-offset: -2px; }
+    .row .t { font-weight: 600; }
+    .pane { border: 1px solid var(--line); border-radius: 8px; padding: 1rem; max-height: calc(100vh - 140px); overflow: auto; }
+    .desc { font-size: .92em; } .desc h1, .desc h2, .desc h3 { font-size: 1em; text-transform: none; color: inherit; letter-spacing: 0; }
+    button, .btn { font: inherit; padding: .3rem .7rem; border-radius: 6px; border: 1px solid var(--line); background: ButtonFace; cursor: pointer; }
+    button.primary { background: var(--ok); color: white; border-color: transparent; }
+    button.danger { background: var(--bad); color: white; border-color: transparent; }
+    input, select, textarea { font: inherit; padding: .25rem .4rem; }
+    textarea { width: 100%; min-height: 5rem; }
+    kbd { font-size: .8em; border: 1px solid var(--line); border-radius: 3px; padding: 0 .3em; }
+    .new { background: #f59e0b22; } .flag-block { color: var(--bad); } .flag-warn { color: var(--warn); }
+    form.inline { display: inline; }
+    fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 1rem; }
+    label.f { display: block; margin: .25rem 0; }
   </style>
 </head>
 <body>
-  <header><h1>Recrute</h1><span>human-in-the-loop job applications</span></header>
-  {% block content %}{% endblock %}
+  <nav>
+    <b>Recrute</b>
+    {% set p = request.url.path %}
+    <a href="/" class="{{ 'active' if p == '/' }}">Dashboard</a>
+    <a href="/queue" class="{{ 'active' if p.startswith('/queue') }}">Review{% if nav and nav.queue %}<span class="count">{{ nav.queue }}</span>{% endif %}</a>
+    <a href="/packets" class="{{ 'active' if p.startswith('/packets') }}">Packets{% if nav and nav.packets %}<span class="count">{{ nav.packets }}</span>{% endif %}</a>
+    <a href="/applications" class="{{ 'active' if p.startswith('/applications') }}">Applications{% if nav and nav.needs_human %}<span class="count" style="background:var(--warn)">{{ nav.needs_human }}</span>{% endif %}</a>
+    <a href="/inbox" class="{{ 'active' if p.startswith('/inbox') }}">Inbox</a>
+    <a href="/filtered" class="{{ 'active' if p.startswith('/filtered') }}">Filtered</a>
+    <a href="/companies" class="{{ 'active' if p.startswith('/companies') }}">Companies</a>
+    <a href="/analytics" class="{{ 'active' if p.startswith('/analytics') }}">Analytics</a>
+    <a href="/settings" class="{{ 'active' if p.startswith('/settings') }}">Settings</a>
+  </nav>
+  <main>{% block content %}{% endblock %}</main>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

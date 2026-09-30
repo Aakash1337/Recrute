@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Review · Recrute{% endblock %}
+{% block content %}
+<p class="muted">
+  CP1: approve jobs to build an application packet. <kbd>j</kbd>/<kbd>k</kbd> move ·
+  <kbd>a</kbd> approve · <kbd>r</kbd> reject · <kbd>s</kbd> snooze 7d · <kbd>m</kbd> I'll apply manually.
+  Visa badges are shown for your judgement only; they never affect filtering or ranking.
+</p>
+<div class="split">
+  <div class="list" id="list">
+    {% for job, company in rows %}
+    <div class="row{{ ' sel' if loop.first }}" id="row-{{ job.id }}" data-id="{{ job.id }}"
+         hx-get="/jobs/{{ job.id }}" hx-target="#detail" hx-sync="#list:replace"
+         hx-trigger="click{{ ', load' if loop.first }}">
+      <div class="t">{{ job.title }}</div>
+      <div>{% include "_job_row_meta.html" %}</div>
+    </div>
+    {% else %}
+    <div class="row muted">Nothing to review. New matches appear here after discovery and scoring.</div>
+    {% endfor %}
+  </div>
+  <div class="pane" id="detail"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  const list = document.getElementById('list');
+  const rows = () => Array.from(list.querySelectorAll('.row[data-id]'));
+  const sel = () => list.querySelector('.row.sel');
+  function select(el) {
+    if (!el) return;
+    rows().forEach(r => r.classList.remove('sel'));
+    el.classList.add('sel');
+    el.scrollIntoView({block: 'nearest'});
+    htmx.trigger(el, 'click');
+  }
+  list.addEventListener('click', e => {
+    const r = e.target.closest('.row[data-id]');
+    if (r) { rows().forEach(x => x.classList.remove('sel')); r.classList.add('sel'); }
+  });
+  // Actions always target the job rendered in the detail pane, and only when that is also the
+  // selected row (while a different row's details are still loading, actions are ignored).
+  let busy = false;
+  function decide(action, reason) {
+    const pane = document.getElementById('job-pane');
+    const el = sel();
+    if (busy || !pane || !el || pane.dataset.jobId !== el.dataset.id) return;
+    busy = true;
+    const next = el.nextElementSibling || el.previousElementSibling;
+    const body = new URLSearchParams({action});
+    if (reason) body.set('reason', reason);
+    htmx.ajax('POST', '/jobs/' + pane.dataset.jobId + '/decide', {target: '#detail', values: Object.fromEntries(body)})
+      .then(() => { el.remove(); if (next && next.dataset.id) select(next); })
+      .finally(() => { busy = false; });
+  }
+  window.recruteDecide = decide;
+  document.addEventListener('keydown', e => {
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+    const el = sel();
+    if (e.key === 'j') select(el ? el.nextElementSibling : rows()[0]);
+    else if (e.key === 'k') select(el ? el.previousElementSibling : rows()[0]);
+    else if (e.key === 'a') decide('approve');
+    else if (e.key === 's') decide('snooze');
+    else if (e.key === 'm') decide('manual');
+    else if (e.key === 'r') { const s = document.getElementById('reject-reason'); if (s) s.focus(); else decide('reject'); }
+  });
+})();
+</script>
+{% endblock %}

@@ -136,3 +136,151 @@ def test_router_all_fail(session_factory):
     router, _ = make_router(session_factory, [LLMError("x")], [LLMError("y")])
     with pytest.raises(LLMError, match="all providers failed"):
         router.complete("t", "p")
+
+
+# --- audit regressions --------------------------------------------------------------------
+
+def test_claude_non_dict_envelope_is_llm_error(paths):
+    with pytest.raises(LLMError):
+        claude(paths).parse(0, "[]", "", LLMRequest("x", SCHEMA), 5)
+
+
+def test_schema_violation_is_llm_error_without_content(paths):
+    env = {"subtype": "success", "is_error": False, "result": "",
+           "structured_output": {"n": "Jane Doe 555-0100"}}
+    with pytest.raises(LLMError) as e:
+        claude(paths).parse(0, json.dumps(env), "", LLMRequest("x", SCHEMA), 5)
+    assert "Jane" not in str(e.value) and "555" not in str(e.value)
+    with pytest.raises(LLMError) as e:
+        codex(paths).parse(0, '{"n": 1, "extra": "Jane Doe"}', "", LLMRequest("x", SCHEMA), 5)
+    assert "Jane" not in str(e.value)
+
+
+def test_cli_stderr_content_not_leaked(paths):
+    stderr = "user\nMy name is Jane Doe, phone 555-0100\ncodex\nsome answer\nERROR: boom"
+    with pytest.raises(LLMError) as e:
+        codex(paths).parse(1, "", stderr, LLMRequest("x"), 5)
+    assert "Jane" not in str(e.value) and "boom" not in str(e.value)
+    assert "cli failure" in str(e.value)
+
+
+def test_launch_failure_is_llm_error(tmp_path):
+    from recrute.llm.base import run_cli
+
+    with pytest.raises(LLMError):
+        run_cli([str(tmp_path / "does-not-exist")], "", tmp_path, 5)
+
+
+def test_timeout_kills_process_tree(tmp_path):
+    import subprocess
+    import sys
+    import time
+
+    from recrute.llm.base import run_cli
+
+    marker = tmp_path / "grandchild.pid"
+    script = tmp_path / "parent.py"
+    script.write_text(
+        "import subprocess, sys, time\n"
+        f"p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open(r'{marker}', 'w').write(str(p.pid))\n"
+        "time.sleep(60)\n", encoding="utf-8")
+    with pytest.raises(LLMError, match="timed out"):
+        run_cli([sys.executable, str(script)], "", tmp_path, 3)
+    pid = int(marker.read_text())
+    time.sleep(1)
+    if sys.platform == "win32":
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], capture_output=True,
+                             text=True).stdout
+        assert str(pid) not in out
+    else:
+        import os
+
+        try:
+            os.kill(pid, 0)
+            # may be a zombie awaiting reap by init; check state
+            state = open(f"/proc/{pid}/stat").read().split()[2]
+            assert state == "Z"
+        except ProcessLookupError:
+            pass
+
+
+def test_subscription_env_strips_api_keys(monkeypatch):
+    from recrute.llm.base import subscription_env
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-y")
+    env = subscription_env()
+    assert "ANTHROPIC_API_KEY" not in env and "OPENAI_API_KEY" not in env
+
+
+def test_single_provider_config_keeps_other_defaults(paths):
+    from recrute.llm.router import build_providers
+
+    cfg = Config.model_validate({"llm": {"providers": {"claude": {"command": "claude",
+                                                                   "model": "sonnet"}}}})
+    assert cfg.llm.providers["codex"].command == "codex"
+    assert cfg.llm.providers["claude"].model == "sonnet"
+    assert set(build_providers(cfg, paths)) == {"claude", "codex"}
+
+
+def test_cache_key_changes_with_model(session_factory):
+    router, prov = make_router(session_factory, [{"n": 1}, {"n": 2}], [])
+    assert router.complete("t", "p", schema=SCHEMA) == {"n": 1}
+    router.config = Config.model_validate(
+        {"llm": {"routing": {"default": ["claude:opus", "codex"]}}})
+    assert router.complete("t", "p", schema=SCHEMA) == {"n": 2}
+    assert len(prov["claude"].requests) == 2
+
+
+def test_codex_args_disable_all_tools(paths, monkeypatch, tmp_path):
+    monkeypatch.setattr("recrute.llm.codex_cli.resolve_command", lambda c: "/bin/codex")
+    args = codex(paths).build_args(LLMRequest("x"), None, tmp_path / "o.txt")
+    disabled = {args[i + 1] for i, a in enumerate(args) if a == "--disable"}
+    assert {"shell_tool", "unified_exec", "browser_use", "computer_use", "plugins"} <= disabled
+    assert "--ignore-user-config" in args
+
+
+def test_claude_args_isolated(paths, monkeypatch):
+    monkeypatch.setattr("recrute.llm.claude_cli.resolve_command", lambda c: "/bin/claude")
+    args = claude(paths).build_args(LLMRequest("x"))
+    assert "--strict-mcp-config" in args
+    assert args[args.index("--setting-sources") + 1] == ""
+
+
+@pytest.mark.parametrize("tail", ["429 Too many requests", "ERROR: quota exceeded",
+                                  "You've hit your usage limit. Try again at 5pm."])
+def test_rate_limit_phrases_detected(paths, tail):
+    with pytest.raises(RateLimitedError):
+        codex(paths).parse(1, "", "user\nprompt text\n" + tail, LLMRequest("x"), 5)
+
+
+def test_echoed_profile_with_keywords_not_leaked(paths):
+    stderr = "user\nWorked at Unlimited Example; login failed once\ncodex\n...\nexit"
+    with pytest.raises(LLMError) as e:
+        codex(paths).parse(1, "", stderr, LLMRequest("x"), 5)
+    assert "Unlimited" not in str(e.value)
+
+
+def test_negative_auth_is_rechecked(paths, monkeypatch):
+    import recrute.llm.codex_cli as mod
+
+    p = codex(paths)
+    states = iter(["Not logged in", "Logged in using ChatGPT"])
+    monkeypatch.setattr(p, "auth_status", lambda: next(states))
+    monkeypatch.setattr(mod, "AUTH_RETRY", 0.0)
+    with pytest.raises(LLMError):
+        p.ensure_subscription()
+    p.ensure_subscription()  # login happened since: recovers
+
+
+def test_router_validator_rejects_and_does_not_cache(session_factory):
+    router, prov = make_router(session_factory, [{"n": 1}, {"n": 5}], [{"n": 2}])
+
+    def must_be_big(out):
+        if out["n"] < 2:
+            raise ValueError("too small")
+
+    assert router.complete("t", "p", validate=must_be_big) == {"n": 2}  # claude rejected
+    # the rejected claude answer was not cached; valid codex answer is reused
+    assert router.complete("t", "p", validate=must_be_big) == {"n": 2}

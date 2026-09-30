@@ -1,33 +1,43 @@
 {% extends "base.html" %}
 {% block content %}
-<section>
-  <h2>Overview</h2>
-  <div class="stats">
-    <div class="stat"><b>{{ stats.jobs }}</b>jobs</div>
-    <div class="stat"><b>{{ stats.llm_calls }}</b>LLM calls</div>
-  </div>
-</section>
+<h2>Pipeline</h2>
+<div class="stats">
+  {% for key, label in [("discovered","discovered"),("shortlisted","approved (CP1)"),("packet_ready","awaiting packet OK"),("approved","queued to submit"),("needs_human","needs you"),("applied","applied"),("acknowledged","acknowledged"),("interviewing","interviewing"),("offer","offers"),("declined","declined"),("filtered_out","filtered out")] %}
+  <div class="stat"><b>{{ by_status.get(key, 0) }}</b>{{ label }}</div>
+  {% endfor %}
+</div>
 
-<section>
-  <h2>Volume</h2>
-  {% include "_knob.html" %}
-  <p class="muted">
-    Per-site caps (not raised by this knob):
-    {% for site, cap in settings.site_caps.items() %}{{ site }} ≤ {{ cap }}/day{% if not loop.last %}, {% endif %}{% endfor %}.
-    Active hours: {{ settings.active_hours[0] }}:00–{{ settings.active_hours[1] }}:00.
-  </p>
-</section>
+<h2>Volume</h2>
+{% include "_knob.html" %}
+<p class="muted">
+  Per-site caps (not raised by this knob):
+  {% for site, cap in settings.site_caps.items() %}{{ site }} ≤ {{ cap }}/day{% if not loop.last %}, {% endif %}{% endfor %}.
+  Active hours: {{ settings.active_hours[0] }}:00–{{ settings.active_hours[1] }}:00.
+</p>
 
-<section>
-  <h2>System checks</h2>
-  <table>
-    {% for c in checks %}
-    <tr>
-      <td class="{{ 'ok' if c.ok else ('bad' if c.required else 'warn') }}">{{ '✔' if c.ok else ('✖' if c.required else '!') }}</td>
-      <td>{{ c.name }}</td>
-      <td class="muted">{{ c.detail }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-</section>
+<h2>Background tasks</h2>
+<table>
+  <tr><th>task</th><th>last run</th><th>result</th><th>stats</th></tr>
+  {% for t in tasks %}
+  <tr><td>{{ t.name }}</td><td>{{ t.last_finished_at | ago }}</td>
+      <td class="{{ 'ok' if t.last_ok else 'bad' }}">{{ 'ok' if t.last_ok else (t.last_error or 'running') }}</td>
+      <td class="muted">{{ t.last_stats }}</td></tr>
+  {% else %}
+  <tr><td colspan="4" class="muted">No runs yet. Start the worker with <code>recrute serve --worker</code> or <code>recrute worker</code>.</td></tr>
+  {% endfor %}
+</table>
+
+<h2>LLM calls (all time)</h2>
+<p>{% for p, n in llm.items() %}<span class="badge">{{ p }}: {{ n }}</span> {% else %}<span class="muted">none yet</span>{% endfor %}</p>
+
+<h2>System checks</h2>
+<table>
+  {% for c in checks %}
+  <tr>
+    <td class="{{ 'ok' if c.ok else ('bad' if c.required else 'warn') }}">{{ '✔' if c.ok else ('✖' if c.required else '!') }}</td>
+    <td>{{ c.name }}</td>
+    <td class="muted">{{ c.detail }}</td>
+  </tr>
+  {% endfor %}
+</table>
 {% endblock %}

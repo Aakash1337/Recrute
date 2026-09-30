@@ -32,8 +32,17 @@ def build_providers(config: Config, paths: Paths) -> dict[str, Provider]:
     }
 
 
-def cache_key(task: str, req: LLMRequest) -> str:
-    blob = json.dumps([task, req.system, req.prompt, req.schema], sort_keys=True)
+def cache_key(task: str, req: LLMRequest, config: Config | None = None) -> str:
+    """Includes the task's execution config (routes, models, provider args) so switching a
+    model re-runs instead of returning the previous model's cached answer."""
+    fingerprint = None
+    if config is not None:
+        fingerprint = [
+            [r.provider, r.model or config.llm.providers[r.provider].model,
+             config.llm.providers[r.provider].extra_args]
+            for r in config.llm.route(task)
+        ]
+    blob = json.dumps([task, req.system, req.prompt, req.schema, fingerprint], sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
@@ -45,21 +54,38 @@ class LLMRouter:
         self.session_factory = session_factory
 
     def complete(self, task: str, prompt: str, *, schema: dict[str, Any] | None = None,
-                 system: str | None = None, use_cache: bool = True) -> Any:
+                 system: str | None = None, use_cache: bool = True,
+                 validate: Callable[[Any], None] | None = None) -> Any:
+        """`validate` may raise ValueError to reject a structurally valid but semantically
+        wrong answer; rejected answers are never cached and the next provider is tried."""
         base = LLMRequest(prompt=prompt, schema=schema, system=system)
-        key = cache_key(task, base)
+        key = cache_key(task, base, self.config)
         if use_cache and (hit := self._cached(key)) is not None:
-            return hit
+            if validate is None:
+                return hit
+            try:
+                validate(hit)
+                return hit
+            except ValueError:
+                pass  # stale/invalid cache entry: ask again
 
         errors: list[str] = []
         for route in self.config.llm.route(task):
-            provider = self.providers[route.provider]
+            provider = self.providers.get(route.provider)
+            if provider is None:
+                errors.append(f"{route.provider}: not configured")
+                continue
             if self._cooling_down(route.provider):
                 errors.append(f"{route.provider}: cooling down after usage limit")
                 continue
             req = LLMRequest(prompt=prompt, schema=schema, system=system, model=route.model)
             try:
                 result = provider.complete(req)
+                if validate is not None:
+                    try:
+                        validate(result.output)
+                    except ValueError as ve:
+                        raise LLMError(f"{route.provider}: invalid answer ({ve})") from ve
             except LLMError as e:
                 self._record(task, route.provider, key, ok=False, error=str(e),
                              rate_limited=isinstance(e, RateLimitedError))

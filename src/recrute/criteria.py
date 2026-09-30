@@ -40,7 +40,7 @@ class Criteria(BaseModel):
     exclude_title_keywords: list[str] = Field(default_factory=lambda: [
         "intern", "internship", "co-op", "senior", "sr.", "sr ", "staff", "principal", "lead",
         "manager", "director", "head of", "vp", "vice president", "chief", "architect",
-        "distinguished", "fellow", "part-time", "part time", "contract", "temporary",
+        "distinguished", "part-time", "part time", "contract", "temporary",
     ])
     max_years_required: int = 5
     exclude_companies: list[str] = Field(default_factory=list)

@@ -1,0 +1,10 @@
+{# expects: job, company #}
+{% if job.priority %}<span class="chip {{ job.priority.value }}">{{ job.priority.value }}</span>{% endif %}
+{% if job.score is not none %}<span class="score">{{ job.score }}</span>{% endif %}
+<span class="muted">{{ company.name if company else '' }} · {{ (job.locations or ['?'])[:2] | join(' / ') }}{% if job.remote %} · {{ job.remote }}{% endif %}
+{% if job.salary_max %} · {{ job.salary_min | money }}–{{ job.salary_max | money }}{% endif %} · {{ (job.posted_at or job.first_seen) | ago }}</span>
+{% set b = job.badges or {} %}
+{% if b.get('sponsorship') == 'will_sponsor' %}<span class="badge" title="Posting mentions sponsorship">🛂 sponsors</span>{% elif b.get('sponsorship') == 'no_sponsorship' %}<span class="badge" title="Posting says no sponsorship">🛂 no sponsor</span>{% endif %}
+{% if b.get('h1b') %}<span class="badge" title="Recent H-1B approvals (USCIS)">📊 H-1B {{ b.get('h1b') }}</span>{% endif %}
+{% if b.get('e_verify') is sameas true %}<span class="badge" title="E-Verify enrolled">✅ E-Verify</span>{% elif b.get('e_verify') is sameas false %}<span class="badge" title="Not found in E-Verify list">E-Verify?</span>{% endif %}
+{% if b.get('cap_exempt') %}<span class="badge" title="Likely H-1B cap-exempt">🎓 cap-exempt</span>{% endif %}

@@ -45,6 +45,20 @@ def find_chrome() -> str | None:
                                                         "google-chrome"))), None)
 
 
+def find_edge() -> str | None:
+    if sys.platform == "win32":
+        candidates = [
+            Path(os.environ.get(var, "")) / "Microsoft/Edge/Application/msedge.exe"
+            for var in ("PROGRAMFILES(X86)", "PROGRAMFILES", "LOCALAPPDATA")
+        ]
+        return next((str(c) for c in candidates if c.exists()), None)
+    if sys.platform == "darwin":
+        mac = Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+        return str(mac) if mac.exists() else None
+    return next(filter(None, (shutil.which(n) for n in ("microsoft-edge-stable",
+                                                        "microsoft-edge"))), None)
+
+
 def expected_chromium_revision() -> str | None:
     """The Chromium build the installed patchright version requires."""
     try:
@@ -82,25 +96,42 @@ def run_checks(config: Config, paths: Paths) -> list[Check]:
         Check("database", paths.db_file.exists(),
               str(paths.db_file) if paths.db_file.exists() else "missing (run `recrute init`)"),
     ]
+    from recrute.llm.base import ProviderUnavailableError
+    from recrute.llm.router import build_providers
+
+    providers = build_providers(config, paths)
     for name, prov in config.llm.providers.items():
         v = _version(prov.command)
-        checks.append(Check(f"llm:{name}", v is not None, v or f"{prov.command!r} not on PATH",
-                            required=False))
+        if v is None:
+            checks.append(Check(f"llm:{name}", False, f"{prov.command!r} not on PATH",
+                                required=False))
+            continue
+        try:
+            providers[name].ensure_subscription()
+            checks.append(Check(f"llm:{name}", True, f"{v}, subscription auth",
+                                required=False))
+        except ProviderUnavailableError as e:
+            checks.append(Check(f"llm:{name}", False, f"{v}: {e}", required=False))
     if not any(c.ok for c in checks if c.name.startswith("llm:")):
         checks.append(Check("llm", False, "no LLM CLI available (need claude or codex)"))
 
     chrome = find_chrome()
+    edge = find_edge()
     chromium = bundled_chromium_dir()
-    wants_chrome = config.browser.channel == "chrome"
+    channel = config.browser.channel
     checks.append(Check("browser:chrome", chrome is not None,
                         chrome or "Google Chrome not found (recommended for best fingerprint)",
                         required=False))
+    if channel == "msedge":
+        checks.append(Check("browser:edge", edge is not None, edge or "Microsoft Edge not found",
+                            required=False))
     checks.append(Check("browser:bundled-chromium", chromium is not None,
                         str(chromium) if chromium
                         else f"revision {expected_chromium_revision()} not installed "
                         "(run `uv run patchright install chromium`)",
                         required=False))
-    usable = (chrome is not None and wants_chrome) or chromium is not None
+    usable = ((channel == "chrome" and chrome is not None)
+              or (channel == "msedge" and edge is not None) or chromium is not None)
     checks.append(Check("browser", usable,
                         "ok" if usable else "no usable browser: install Chrome or bundled "
                         "Chromium"))

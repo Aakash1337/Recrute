@@ -9,6 +9,8 @@ import logging
 import random
 import threading
 import time
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -18,13 +20,33 @@ log = logging.getLogger(__name__)
 
 IMPERSONATE = "chrome"
 RETRY_STATUSES = {429, 500, 502, 503, 504}
+# Longest Retry-After we'll wait inline; longer ones abort so the scheduler retries later.
+MAX_INLINE_WAIT = 120.0
 
 
 class HttpError(RuntimeError):
-    def __init__(self, url: str, status: int | None, message: str = ""):
+    def __init__(self, url: str, status: int | None, message: str = "",
+                 retry_after: float | None = None):
         super().__init__(f"{status or 'ERR'} {url} {message}".strip())
         self.url = url
         self.status = status
+        self.retry_after = retry_after  # seconds the server asked us to wait, if any
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """Retry-After is either delta-seconds or an HTTP-date."""
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return max(0.0, (when - datetime.now(UTC)).total_seconds())
 
 
 class Http:
@@ -59,10 +81,13 @@ class Http:
                     if resp.status_code >= 400:
                         raise HttpError(url, resp.status_code, resp.text[:200])
                     return resp
-                last_exc = HttpError(url, resp.status_code)
-                retry_after = resp.headers.get("retry-after")
-                if retry_after and retry_after.isdigit():
-                    time.sleep(min(int(retry_after), 60))
+                wait = parse_retry_after(resp.headers.get("retry-after"))
+                last_exc = HttpError(url, resp.status_code, retry_after=wait)
+                if wait is not None:
+                    if wait > MAX_INLINE_WAIT or attempt >= self.retries:
+                        raise last_exc  # honor the full cooldown: caller reschedules
+                    time.sleep(wait)
+                    continue
             if attempt < self.retries:
                 time.sleep(min(2 ** attempt + random.random(), 30))
         if isinstance(last_exc, HttpError):

@@ -6,7 +6,9 @@ agent, which fixes them. Be concrete and skeptical. Report only real problems, n
 - Read `PLAN.md` first. It is the spec.
 - **Do NOT open anything under `resources/` or `data/`** (except `resources/README.md` and
   `resources/answers.example.yaml`). Those folders hold the user's personal data.
-- Do not modify files. You are read-only.
+- Do not modify files. You are read-only. Do not start the app (`recrute serve`/`init`) or anything
+  else that would touch `data/`.
+- Ignore `.claude/` (other agents' scratch worktrees).
 - Audit scope: {scope}
 
 ## What to look for (in priority order)
