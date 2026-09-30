@@ -153,8 +153,23 @@ def applications_page(request: Request):
             groups[job.status.value].append((job, company, app))
         reminders = reminders_from_db(s, follow_up_days=get_setting(s, "follow_up_days"),
                                       ghost_days=get_setting(s, "ghost_days"))
-        return page(request, "applications.html", {"groups": groups, "reminders": reminders},
-                    s)
+        from recrute.models import Setting
+
+        suspended = [(r.key.removeprefix("state:suspend:"), r.value)
+                     for r in s.exec(select(Setting).where(
+                         col(Setting.key).startswith("state:suspend:"))).all() if r.value]
+        return page(request, "applications.html", {"groups": groups, "reminders": reminders,
+                                                   "suspended": suspended}, s)
+
+
+@router.post("/channels/{channel}/resume", response_class=HTMLResponse)
+def channel_resume(channel: str):
+    from recrute.apply.state import clear_suspension
+
+    with session_scope() as s:
+        clear_suspension(s, channel)
+        s.commit()
+    return _msg(f"{channel} resumed.")
 
 
 @router.post("/applications/{job_id}/{action}", response_class=HTMLResponse)

@@ -216,3 +216,20 @@ def test_json_roundtrip_of_packet_model(override):
 
     p = Packet(job_id=1, citations={"q1": ["exp-a-b1"]})
     assert Packet.model_validate(json.loads(p.model_dump_json())).citations == p.citations
+
+
+def test_channel_suspension_shown_and_cleared(client):
+    from datetime import UTC, datetime
+
+    from recrute.apply.state import suspend, suspension
+    from recrute.db import get_engine
+
+    with Session(get_engine()) as s:
+        suspend(s, "linkedin_easy_apply", datetime.now(UTC), "security checkpoint")
+        s.commit()
+    page = client.get("/applications").text
+    assert "linkedin_easy_apply submissions are paused" in page
+    client.post("/channels/linkedin_easy_apply/resume", headers=HX)
+    with Session(get_engine()) as s:
+        assert suspension(s, "linkedin_easy_apply", datetime.now(UTC)) is None
+    assert "company_cap" in client.get("/settings").text

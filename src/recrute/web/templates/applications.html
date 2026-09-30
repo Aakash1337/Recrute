@@ -2,6 +2,10 @@
 {% block title %}Applications · Recrute{% endblock %}
 {% block content %}
 {% set labels = {'needs_human': 'Needs you', 'approved': 'Queued (drip scheduler)', 'applying': 'Submitting now', 'applied': 'Applied', 'acknowledged': 'Acknowledged', 'interviewing': 'Interviewing', 'offer': 'Offers', 'declined': 'Declined', 'ghosted': 'Ghosted'} %}
+{% for channel, info in suspended %}
+<p class="bad">⏸ {{ channel }} submissions are paused until {{ info.get('until', '?') }}: {{ info.get('reason', '') }}.
+  Check the account in the automation browser, then <button hx-post="/channels/{{ channel }}/resume" hx-swap="outerHTML">Resume {{ channel }}</button></p>
+{% endfor %}
 {% if reminders %}
 <h2>Reminders</h2>
 <ul>{% for r in reminders %}<li>{{ r.message }} {% if r.kind == 'ghost' %}<button hx-post="/applications/{{ r.job_id }}/ghosted" hx-swap="outerHTML">Mark ghosted</button>{% endif %}</li>{% endfor %}</ul>

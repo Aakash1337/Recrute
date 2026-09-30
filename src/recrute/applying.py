@@ -87,8 +87,13 @@ def run_due_task(ctx) -> dict:
             assisted = _run_assist_request(ctx, s, browser)
             if assisted:
                 return assisted
+            from datetime import timedelta
+
             result = run_due(s, page_factory=browser, paths=ctx.paths, router=ctx.router,
-                             trial_threshold=int(get_setting(s, "trial_threshold")))
+                             trial_threshold=int(get_setting(s, "trial_threshold")),
+                             company_cap=int(get_setting(s, "company_cap")),
+                             company_cooldown=timedelta(
+                                 days=int(get_setting(s, "company_cooldown_days"))))
         mode = result.mode
         if result.ran and result.outcome and result.outcome.status == "needs_human" \
                 and mode == "fill_and_pause":
@@ -96,7 +101,9 @@ def run_due_task(ctx) -> dict:
         return {"ran": result.ran, "reason": result.reason[:200] if result.reason else "",
                 "job_id": result.job_id, "mode": mode,
                 "status": result.outcome.status if result.outcome else None,
-                "next_run_at": result.next_run_at.isoformat() if result.next_run_at else None}
+                "next_run_at": result.next_run_at.isoformat() if result.next_run_at else None,
+                "recovered": getattr(result, "recovered", None) or None,
+                "skipped_channels": getattr(result, "skipped_channels", None) or None}
     finally:
         browser.close()
 

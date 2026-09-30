@@ -30,6 +30,9 @@ DEFAULTS: dict[str, Any] = {
     "linkedin_session_budget": {"searches": 10, "views": 80},
     # First N submissions per adapter are fill-and-pause (trial period).
     "trial_threshold": 5,
+    # Per-company guardrail: at most `company_cap` applications per `company_cooldown_days`.
+    "company_cap": 1,
+    "company_cooldown_days": 7,
     # CP2 auto-approval (M7). Off by default.
     "auto_approve": {"enabled": False, "min_score": 85, "priorities": ["P0", "P1"]},
     "follow_up_days": 14,
@@ -99,7 +102,8 @@ def _validate(key: str, value: Any) -> Any:
         value = float(value)
         if not 0.0 <= value < 1.0:
             raise ValueError("llm_reserve must be in [0, 1)")
-    elif key in ("trial_threshold", "follow_up_days", "ghost_days"):
+    elif key in ("trial_threshold", "follow_up_days", "ghost_days", "company_cap",
+                 "company_cooldown_days"):
         value = int(value)
         if value < 0:
             raise ValueError(f"{key} must be >= 0")
