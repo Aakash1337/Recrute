@@ -681,3 +681,21 @@ def test_closed_linkedin_alias_does_not_close_the_ats_job(engine):
         s.commit()
         assert discovery._close_listings(s, "linkedin", {"555"}) == 0
         assert s.exec(select(Job)).one().status == JobStatus.SHORTLISTED
+
+
+def test_one_closed_listing_of_a_merged_job_does_not_close_it(engine):
+    from sqlmodel import Session, select
+
+    from recrute import discovery
+    from recrute.models import Job, JobSource, JobStatus
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="u", canonical_url="li-m", status=JobStatus.DISCOVERED)
+        s.add(job)
+        s.flush()
+        for i in ("100", "200"):
+            s.add(JobSource(job_id=job.id, source="linkedin", source_job_id=i, url=f"u{i}"))
+        s.commit()
+        assert discovery._close_listings(s, "linkedin", {"100"}) == 0  # 200 may be active
+        assert discovery._close_listings(s, "linkedin", {"100", "200"}) == 1  # both closed
+        assert s.exec(select(Job)).one().status == JobStatus.CLOSED

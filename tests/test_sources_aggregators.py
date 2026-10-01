@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
+
 from recrute.criteria import Criteria, Track
 from recrute.http import HttpError
 from recrute.llm.base import LLMError
@@ -314,8 +316,8 @@ def test_himalayas_application_link_is_apply_url():
 def test_hn_roles_get_their_own_requirements():
     from recrute.sources.hn import role_sections
 
-    text = ("Acme | Remote (US) | Full-time\\nWe protect hospitals.\\n"
-            "Security Analyst: 2+ years of SOC experience.\\n"
+    text = ("Acme | Remote (US) | Full-time\nWe protect hospitals.\n"
+            "Security Analyst: 2+ years of SOC experience.\n"
             "Senior Security Engineer: 10+ years of experience required.")
     secs = role_sections(text, ["Security Analyst", "Senior Security Engineer"])
     assert "10+" not in secs["Security Analyst"] and "2+" in secs["Security Analyst"]
@@ -458,3 +460,20 @@ def test_hn_header_qualifiers_go_to_their_own_role_and_shared_ones_to_all():
     secs = role_sections(both, titles)
     for t in titles:
         assert "citizenship_required" in eligibility_flags(secs[t])
+
+
+@pytest.mark.parametrize("bodies", [
+    "All roles require US citizenship and 2+ years of experience.",
+    "All roles require US citizenship and 2+ years of experience.\n"
+    "Security Analyst: triage alerts.",  # only one role has its own heading
+])
+def test_hn_roles_without_headings_keep_the_shared_text(bodies):
+    from recrute.badges.sponsorship import eligibility_flags
+    from recrute.pipeline.filter import years_required
+    from recrute.sources.hn import role_sections
+
+    text = f"Acme | Security Engineer, Security Analyst | Remote (US)\n{bodies}"
+    secs = role_sections(text, ["Security Engineer", "Security Analyst"])
+    for t in ("Security Engineer", "Security Analyst"):
+        assert "citizenship_required" in eligibility_flags(secs[t])
+        assert years_required(secs[t]) == 2

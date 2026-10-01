@@ -285,10 +285,10 @@ def _split_roles(text: str, titles: list[str]) -> tuple[str, dict[str, str]]:
     def occurrences(t: str) -> list[re.Match[str]]:
         whole = list(re.finditer(r"(?<!\w)" + re.escape(t) + r"(?!\w)", text, re.I))
         found = whole or list(re.finditer(re.escape(t), text, re.I))
-        # a role's section starts where it is a HEADING; mentions inside a list of roles
-        # ("Acme | Senior Security Engineer, Security Analyst") are not section boundaries
-        headings = [m for m in found if heading(m)]
-        return headings or found
+        # a role's section starts ONLY where it is a heading; a mention inside a list of roles
+        # ("Acme | Senior Security Engineer, Security Analyst") or prose is never a boundary.
+        # A role without a heading keeps the shared text (requirements included).
+        return [m for m in found if heading(m)]
 
     cands = sorted((m.start(), -len(t), m.end(), t) for t in dict.fromkeys(titles) if t
                    for m in occurrences(t))
