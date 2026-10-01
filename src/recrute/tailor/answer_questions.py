@@ -46,8 +46,8 @@ from recrute.tailor.cover_letter import is_cover_letter_field
 
 _RESUME_RE = re.compile(r"resume|résumé|\bcv\b|curriculum", re.IGNORECASE)
 _CONSENT_RE = re.compile(r"\b(agree|acknowledge|consent|certify|confirm|attest)\b", re.IGNORECASE)
-_POLICY_RE = re.compile(r"\b(?:privacy|policy|policies|terms|consent|acknowledg\w*|"
-                        r"read and understand|have read|agree)\b", re.IGNORECASE)
+_POLICY_RE = re.compile(r"\b(?:privacy|policy|policies|terms|consent|notice|"
+                        r"read and understand|have read)\b", re.IGNORECASE)
 _AGREE_OPTION = re.compile(r"^\s*(?:yes|i agree|agree|i acknowledge|acknowledge(?:d)?|"
                            r"i accept|accept|i consent|i understand|confirm(?:ed)?|"
                            r"acknowledge/confirm)\b", re.IGNORECASE)
@@ -55,7 +55,8 @@ _AGREE_OPTION = re.compile(r"^\s*(?:yes|i agree|agree|i acknowledge|acknowledge(
 
 # "I confirm that I have completed a bachelor's degree": a fact about you, not a consent
 _FACTUAL_ATTESTATION = re.compile(
-    r"\b(?:confirm|certify|attest|declare|affirm)\w*\s+(?:that\s+)?(?:i|i'm|i've)\s+"
+    r"\b(?:confirm|certify|attest|declare|affirm|agree|acknowledge|understand)\w*\s+"
+    r"(?:that\s+)?(?:i|i'm|i've|i am|i have)\s+"
     r"(?!(?:have\s+)?(?:read|reviewed|understood|understand|agree|accept|consent|acknowledge)\b)",
     re.IGNORECASE)
 
@@ -82,7 +83,8 @@ def _acknowledgement_option(q: FormQuestion) -> str | None:
     """The single 'I agree' option of a policy acknowledgement (no 'No' alternative)."""
     if not q.options or q.type not in ("select", "radio", "multiselect", "checkbox"):
         return None
-    if not _POLICY_RE.search(f"{q.label} {q.description}"):
+    if not _POLICY_RE.search(f"{q.label} {q.description}") or _FACTUAL_ATTESTATION.search(
+            q.label):
         return None
     agree = [o for o in q.options if _AGREE_OPTION.match(o)]
     return agree[0] if len(agree) == 1 and len(q.options) == 1 else None

@@ -247,3 +247,14 @@ def test_saved_address_is_not_evidence_for_an_unrelated_answer():
     verify(profile, collect_claims(profile, answers=answers, questions=questions),
            router=router, saved=[("what_is_your_address", "100 Congress Ave, Austin, TX")])
     assert "Congress" not in router.calls[0][1]
+
+
+def test_address_as_a_verb_is_not_evidence_for_the_saved_address():
+    profile = make_profile()
+    questions = [FormQuestion(id="inc", label="How do you address production incidents?")]
+    answers = [FormAnswer(question_id="inc", value="I triage and write postmortems",
+                          source="llm_new")]
+    router = FakeRouter({"verify": {"flags": []}})
+    verify(profile, collect_claims(profile, answers=answers, questions=questions),
+           router=router, saved=[("what_is_your_address", "100 Congress Ave, Austin, TX")])
+    assert "Congress" not in router.calls[0][1]

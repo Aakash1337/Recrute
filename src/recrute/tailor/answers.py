@@ -395,6 +395,14 @@ _ADDRESS_VALUE_RE = re.compile(r"\d+\s+\w+.*\b(st|street|ave|avenue|rd|road|blvd
                                re.IGNORECASE)
 
 
+# a question that asks for a postal address ("How do you address incidents?" doesn't)
+_ADDRESS_REQUEST = re.compile(
+    r"\b(?:home|mailing|street|postal|current|residential|physical|permanent|full|billing|"
+    r"your|an?|the)\s+address\b(?!\s+(?:the|this|these|those|it|them|any|a|an)\b)|"
+    r"^\W*address\b|\baddress\s*(?:line|1|2)\b|\b(?:zip|postal)\s*code\b|\bpostcode\b|"
+    r"\bstreet\b|\bapartment\b|\bapt\b|\bwhere do you live\b", re.IGNORECASE)
+
+
 def subject_terms(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9+#]+", text.lower())
             if w not in _GENERIC_WORDS and len(w) > 1}
@@ -410,7 +418,7 @@ def saved_relevance(key: str, value: str, questions: list[str]) -> float:
     addressy = bool(_ADDRESS_RE.search(topic) or _ADDRESS_VALUE_RE.search(str(value)))
     best = 0.0
     for question in questions:
-        if addressy and not _ADDRESS_RE.search(question):
+        if addressy and not _ADDRESS_REQUEST.search(question):
             continue
         q_terms = subject_terms(question)
         common = t_terms & q_terms
@@ -509,20 +517,21 @@ _NOT_A_PLACE = re.compile(r"(the\s+)?(future|order|this|that|these|those|any|all
                           r"the job|the company|the past|the meantime)\b")
 
 
-# a place named before the visa: "a Panama work visa" (original case: proper nouns)
-_VISA_MODIFIER = re.compile(r"\b([A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*)*)\s+(?:[Ww]ork\s+|"
-                            r"[Ee]mployment\s+)?(?:[Vv]isas?|[Pp]ermits?)\b")
-_US_MODIFIERS = re.compile(r"(?i)(us|u\.s\.?|usa|u\.s\.a\.?|american|united states|work|"
-                           r"employment|h-?1b|h|o-?1|l-?1|e-?3|tn|f-?1|opt|stem opt|j-?1|"
-                           r"visa|any|a|the|will|do|does|would|are|is|have|has)")
+# what kind of visa: the words between "a"/"an" and "visa"/"permit" ("a Panama work visa", "an
+# H-1B visa", "a Costa Rica permit"), in any capitalization
+_VISA_MODIFIER = re.compile(r"\b(?:a|an)\s+((?:[a-z0-9][\w.'-]*\s+){1,3}?)(?:visas?|permits?)\b",
+                            re.IGNORECASE)
+_US_VISA_WORDS = frozenset("""us u.s u.s. usa u.s.a u.s.a. american united states work employment
+employer employer-sponsored sponsored sponsorship h-1b h1b h-1 h1 o-1 o1 l-1 l1 e-3 e3 tn f-1 f1
+opt stem j-1 j1 valid new current nonimmigrant non-immigrant immigrant temporary""".split())
 
 
 def _foreign_visa(label: str) -> bool:
+    """A visa of a kind the bank's US facts don't cover ("a Panama work visa")."""
     for m in _VISA_MODIFIER.finditer(label):
-        words = m.group(1).split()
-        # the first word may just open the sentence ("Visa sponsorship", "Will you ...")
-        place = " ".join(words[1:] if len(words) > 1 and m.start(1) == 0 else words)
-        if place and not _US_MODIFIERS.fullmatch(place):
+        words = [w.strip("()") for w in m.group(1).lower().split()
+                 if w not in ("a", "an", "the", "for", "any", "your", "of")]
+        if any(w not in _US_VISA_WORDS for w in words):
             return True
     return False
 
