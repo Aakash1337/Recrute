@@ -444,6 +444,15 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
             r"your visa (type|status))\b|canada|kingdom|\buk\b|europe|\beu\b|india|mexico|"
             r"australia|germany", t):
         return None
+    # only questions about NEEDING sponsorship (or working without it): "are you currently
+    # receiving / being sponsored", "is your employer sponsoring you" ask about a status the
+    # bank doesn't hold
+    if not (re.search(r"\b(?:requir\w*|need\w*|necessitat\w*)\b", t)
+            or _NEGATED_SPONSOR_RE.search(t)):
+        return None
+    if re.search(r"\b(?:receiv\w*|being sponsored|sponsored by|currently sponsored|"
+                 r"on (?:a |an )?(?:employer )?sponsor\w*|sponsoring you)\b", t):
+        return None
     # authorization qualifiers the bank doesn't establish: permanent / indefinite /
     # unrestricted status, any employer
     if re.search(r"permanent|indefinite|unrestricted|any employer|without (any )?restrictions?",
@@ -528,9 +537,13 @@ def _decline_option(options: list[str]) -> str | None:
     return next((o for o in options if _DECLINE_RE.search(o)), None)
 
 
-def match_option(value: str, options: list[str], cutoff: float = 90) -> str | None:
-    """Exact (normalized) match, then a strict whole-string fuzzy match that never flips a
-    negation. Not used for EEO answers (see match_eeo_option)."""
+def match_option(value: str, options: list[str], cutoff: float = 90, *,
+                 fuzzy: bool = False) -> str | None:
+    """Exact (normalized) match. With `fuzzy` (LLM-drafted text, which you always review), also
+    a strict whole-string fuzzy match that never flips a negation. Facts from your profile or
+    answer bank are matched exactly: a near-miss is a DIFFERENT fact ("University of York" vs
+    "University of New York", "C++" vs "C#"), so it is left for you instead.
+    Not used for EEO answers (see match_eeo_option)."""
     if not value or not options:
         return None
     low = _norm_option(value)
@@ -539,6 +552,8 @@ def match_option(value: str, options: list[str], cutoff: float = 90) -> str | No
         return exact[0]
     if low in ("decline", "prefer not to say", "decline to answer"):
         return _decline_option(options)
+    if not fuzzy:
+        return None
     negated = bool(_NEG_RE.search(value))
     pool = [o for o in options if bool(_NEG_RE.search(o)) == negated]
     best = process.extractOne(value, pool, scorer=fuzz.token_sort_ratio,

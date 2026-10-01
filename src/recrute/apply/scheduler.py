@@ -553,6 +553,11 @@ def finalize(session: Session, *, app_id: int, job_id: int, attempt_id: str, lea
     if this attempt still owns it (same attempt id, lease held) and the job is still
     APPLYING. Otherwise leave the job's status alone (rejected, applied manually, revoked,
     recovered) and just record what happened."""
+    # under the row's write lock: whatever happened meanwhile (a recovery, a new "Open &
+    # pre-fill" request) is read fresh and can't change before this commit
+    session.commit()
+    session.execute(update(Application).where(Application.id == app_id)
+                    .values(id=Application.id).execution_options(synchronize_session=False))
     app = session.exec(select(Application).where(Application.id == app_id)
                        .execution_options(populate_existing=True)).one()
     job = session.exec(select(Job).where(Job.id == job_id)
@@ -594,7 +599,21 @@ def finalize(session: Session, *, app_id: int, job_id: int, attempt_id: str, lea
     if result != "status_updated":
         details["status_left_unchanged"] = result.split(": ", 1)[1]
         details["intended_status"] = str(target)
-    app.outcome = {**outcome.model_dump(mode="json"), "details": details}
+    if ours:
+        app.outcome = {**outcome.model_dump(mode="json"), "details": details}
+    else:
+        # a late result from an attempt that lost the job: the CURRENT outcome (and any
+        # request queued since, e.g. "Open & pre-fill") stays; the late result is appended to
+        # its history, and evidence that something may have been sent is never downgraded
+        late = {**outcome.model_dump(mode="json"), "details": details}
+        late["details"].pop("previous_outcome", None)
+        cur = dict(before)
+        cur_details = dict(cur.get("details") or {})
+        if (outcome.details or {}).get("submit_attempted"):
+            cur_details["submit_attempted"] = True
+        cur["details"] = cur_details
+        cur["late_attempts"] = [*(cur.get("late_attempts") or [])[-4:], late]
+        app.outcome = cur
     session.add(app)
     session.commit()
     return result

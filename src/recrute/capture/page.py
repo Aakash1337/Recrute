@@ -84,15 +84,33 @@ def _walk(node: Any):
                 yield from _walk(node[key])
 
 
-def find_job_posting(soup: BeautifulSoup) -> dict[str, Any] | None:
+def _same_page(a: str, b: str) -> bool:
+    def key(u: str) -> str:
+        p = urlparse(u.strip())
+        return f"{p.netloc.lower().removeprefix('www.')}{p.path.rstrip('/').lower()}"
+    return bool(a and b) and key(a) == key(b)
+
+
+def find_job_posting(soup: BeautifulSoup, url: str = "") -> dict[str, Any] | None:
+    """The JobPosting of THIS page. Pages listing several (related jobs, a search page) only
+    yield the one whose url / @id / mainEntityOfPage is the captured URL; if none is, and
+    there are several, nothing is guessed."""
+    found: list[dict[str, Any]] = []
     for script in soup.find_all("script", attrs={"type": re.compile(r"ld\+json", re.I)}):
         data = _load_jsonld(script.string or script.get_text() or "")
         if data is None:
             continue
-        for node in _walk(data):
-            if _is_type(node, "JobPosting"):
-                return node
-    return None
+        found += [node for node in _walk(data) if _is_type(node, "JobPosting")]
+    if len(found) <= 1:
+        return found[0] if found else None
+
+    def ids(node: dict[str, Any]) -> list[str]:
+        main = node.get("mainEntityOfPage")
+        main = main.get("@id") if isinstance(main, dict) else main
+        return [str(v) for v in (node.get("url"), node.get("@id"), main) if v]
+
+    matching = [n for n in found if any(_same_page(i, url) for i in ids(n))]
+    return matching[0] if len(matching) == 1 else None
 
 
 def _text(v: Any) -> str | None:
@@ -503,7 +521,7 @@ def raw_job_from_capture(url: str, html: str, title: str | None = None) -> RawJo
     except Exception as e:  # pragma: no cover - lxml is very forgiving
         log.warning("capture: unparseable HTML from %s: %s", url, e)
         return None
-    jp = find_job_posting(soup)
+    jp = find_job_posting(soup, url)
     parsed = urlparse(url)
     if "linkedin.com" in parsed.netloc.lower() and linkedin_job_id(url):
         job = _from_linkedin(url, soup, jp)

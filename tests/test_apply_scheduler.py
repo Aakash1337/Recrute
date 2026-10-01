@@ -939,3 +939,28 @@ def test_target_change_during_an_attempt_stops_the_submit(engine, session, paths
             return
         packets.rebuild(s, job_id)
         assert s.get(Job, job_id).status == JobStatus.SHORTLISTED
+
+
+def test_late_finalize_keeps_a_newer_request_and_submission_evidence(session):
+    from recrute.apply.scheduler import finalize
+
+    app, job = add_app(session, 1, status=JobStatus.NEEDS_HUMAN)
+    # the attempt was recovered (its lease expired) and you then asked for a pre-fill
+    app.outcome = {"status": "needs_human", "assist_requested": "tok9",
+                   "details": {"attempt_id": "recovery", "submit_attempted": False}}
+    session.add(app)
+    session.commit()
+
+    class LostLease:
+        def held(self):
+            return False
+
+    late = ApplyOutcome(status="needs_human", reason="error after submit was clicked",
+                        details={"submit_attempted": True})
+    result = finalize(session, app_id=app.id, job_id=job.id, attempt_id="old", lease=LostLease(),
+                      outcome=late, adapter_name="greenhouse", max_attempts=3, now=at(12))
+    assert result.startswith("status_left_unchanged")
+    session.refresh(app)
+    assert app.outcome["assist_requested"] == "tok9"  # the newer request survives
+    assert app.outcome["details"]["submit_attempted"] is True  # never downgraded
+    assert app.outcome["late_attempts"][-1]["reason"] == "error after submit was clicked"

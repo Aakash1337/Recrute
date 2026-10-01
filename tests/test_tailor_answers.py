@@ -860,3 +860,44 @@ def test_options_with_extra_qualifiers_are_not_picked_for_a_bare_value():
     a = profile_answer(FormQuestion(id="d", label="Highest degree", type="select",
                                     options=opts), p)
     assert a is None  # left for you, never "Computer Science"
+
+
+@pytest.mark.parametrize("value,options", [
+    ("University of York", ["University of New York", "Other"]),
+    ("Bachelor of Science", ["Bachelor of Science (CS)", "Master of Science"]),
+    ("C++", ["C#", "Java"]),
+])
+def test_profile_facts_are_never_fuzzily_changed(value, options):
+    from recrute.tailor.answers import format_value, match_option
+
+    assert match_option(value, options) is None
+    assert format_value(FormQuestion(id="x", label="x", type="select", options=options),
+                        value) is None
+    assert match_option(value, [value.upper(), "Other"]) == value.upper()  # exact still works
+
+
+@pytest.mark.parametrize("label", [
+    "Are you currently receiving visa sponsorship?",
+    "Are you currently being sponsored by your employer?",
+    "Is your current employer sponsoring you?",
+    "Do you have sponsorship?",
+])
+def test_sponsorship_status_questions_are_not_answered_from_needs(label):
+    from recrute.tailor.answers import WorkAuthorization, sponsorship_answer
+
+    wa = WorkAuthorization(authorized_to_work_in_us=True, requires_sponsorship_now=True,
+                           requires_sponsorship_future=True)
+    assert sponsorship_answer(label, wa) is None
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("Will you now or in the future require visa sponsorship?", True),
+    ("Do you need sponsorship to work in the US?", True),
+    ("Are you able to work in the US without sponsorship?", False),
+])
+def test_sponsorship_need_questions_still_answered(label, expected):
+    from recrute.tailor.answers import WorkAuthorization, sponsorship_answer
+
+    wa = WorkAuthorization(authorized_to_work_in_us=True, requires_sponsorship_now=True,
+                           requires_sponsorship_future=True)
+    assert sponsorship_answer(label, wa) is expected

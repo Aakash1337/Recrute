@@ -324,11 +324,12 @@ def _coerce(q: FormQuestion, text: str) -> str | list[str] | bool | None:
     if not text:
         return None
     if q.type == "multiselect":
-        hits = [match_option(p, q.options) for p in re.split(r"\s*\|\s*|\n", text)]
+        hits = [match_option(p, q.options, fuzzy=True)
+                for p in re.split(r"\s*\|\s*|\n", text)]
         picked = list(dict.fromkeys(h for h in hits if h))
         return picked or None
     if q.options:
-        return match_option(text, q.options)
+        return match_option(text, q.options, fuzzy=True)  # LLM text: reviewed at CP2
     if q.type == "checkbox":
         return bool(re.match(r"\s*(yes|true)\b", text, re.IGNORECASE))
     if q.type == "number":

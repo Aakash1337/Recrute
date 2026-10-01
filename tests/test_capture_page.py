@@ -179,3 +179,22 @@ def test_remote_applicant_location_requirements_decide_eligibility(office, appli
               description_md=raw.description_text or "")
     result = apply_hard_filters(job, "Acme", Criteria())
     assert (result.reason is None or "location" not in result.reason) is kept
+
+
+def test_capture_picks_the_posting_of_the_captured_url():
+    import json
+
+    def posting(slug, title):
+        return {"@type": "JobPosting", "title": title, "url": f"https://acme.example/jobs/{slug}",
+                "hiringOrganization": {"name": "Acme"}, "directApply": True,
+                "description": "<p>Security work.</p>"}
+
+    page = ('<script type="application/ld+json">'
+            + json.dumps({"@graph": [posting("a", "Data Analyst"),
+                                     posting("b", "Security Engineer")]}) + "</script>")
+    job = raw_job_from_capture("https://acme.example/jobs/b", page, "x")
+    assert job.title == "Security Engineer" and job.apply_url.endswith("/jobs/b")
+    # several postings, none of them this page: nothing is guessed
+    assert raw_job_from_capture("https://acme.example/jobs/c", page, "x") is None \
+        or raw_job_from_capture("https://acme.example/jobs/c", page, "x").title not in (
+            "Data Analyst", "Security Engineer")
