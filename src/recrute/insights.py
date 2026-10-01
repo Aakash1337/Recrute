@@ -134,8 +134,10 @@ def auto_approve_reason(job: Job, packet: Packet, rule: dict) -> str | None:
         return None  # never verified/rendered by the packet builder
     if packet.flags:
         return None
-    if packet.resume.summary or any(e.rewrites for e in packet.resume.experience
-                                    + packet.resume.projects):
+    # (your own, unchanged profile summary is not new wording; older packets lacking the
+    # provenance flag default to "generated")
+    if (packet.resume.summary and packet.resume.summary_generated) or any(
+            e.rewrites for e in packet.resume.experience + packet.resume.projects):
         return None  # generated wording on the resume: a human reads it first
     if any(a.needs_review or a.source == "llm_new" for a in packet.answers):
         return None

@@ -132,6 +132,11 @@ class Detail:
     easy_apply: bool | None = None
 
 
+# a posting LinkedIn says is closed: nothing more to fetch, ever
+_CLOSED_RE = re.compile(r"no longer accepting applications|this job is no longer available",
+                        re.I)
+
+
 def parse_detail(html: str) -> Detail:
     soup = BeautifulSoup(html, "lxml")
     d = Detail()
@@ -327,7 +332,8 @@ class LinkedInGuestSource:
                 continue
             self.stats["details"] += 1
             try:
-                detail = parse_detail(self._get(http, DETAIL.format(id=card.job_id)))
+                page = self._get(http, DETAIL.format(id=card.job_id))
+                detail = parse_detail(page)
             except GuestBlocked as e:
                 self._blocked(ctx, e)
                 for c in pending[i:]:
@@ -336,6 +342,13 @@ class LinkedInGuestSource:
                 return
             except HttpError as e:  # retried on a later run (not marked seen)
                 log.debug("linkedin_guest detail %s: %s", card.job_id, e)
+                cut_short(card.job_id)
+                yield to_rawjob(card, None)
+                continue
+            if not detail.description_html and not _CLOSED_RE.search(page):
+                # an empty / malformed page (no posting in it): not "fetched in full", so it
+                # is retried later rather than remembered as done
+                ctx.errors[f"linkedin_guest:detail:{card.job_id}"] = "incomplete job page"
                 cut_short(card.job_id)
                 yield to_rawjob(card, None)
                 continue

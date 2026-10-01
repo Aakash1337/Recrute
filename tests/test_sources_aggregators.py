@@ -379,3 +379,16 @@ def test_hn_backlog_beyond_max_comments_is_drained_by_later_runs():
     src.done = done
     list(src.fetch(SourceContext(http=hn_http(), criteria=Criteria())))
     assert src.processed == [] and src.backlog == 0
+
+
+def test_hn_header_role_list_is_not_a_section_boundary():
+    from recrute.sources.hn import role_sections
+
+    text = ("Acme | Remote (US) | Senior Security Engineer, Security Analyst\n"
+            "We protect hospitals.\n"
+            "Senior Security Engineer: 10+ years of experience required.\n"
+            "Security Analyst: 2+ years of SOC experience.")
+    secs = role_sections(text, ["Senior Security Engineer", "Security Analyst"])
+    assert "2+" in secs["Security Analyst"] and "10+" not in secs["Security Analyst"]
+    senior = secs["Senior Security Engineer"]
+    assert "10+" in senior and "2+" not in senior

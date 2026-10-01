@@ -448,7 +448,9 @@ def test_guest_detail_cache_survives_between_runs(engine, monkeypatch):
         def get(url):
             if "jobPosting/" in url:
                 fetched.append(url.rsplit("/", 1)[-1])
-            return '<html><body data-entity-urn="urn:li:jobPosting:1"></body></html>'
+            return ('<html><body data-entity-urn="urn:li:jobPosting:1">'
+                    '<div class="show-more-less-html__markup"><p>Detect threats.</p></div>'
+                    "</body></html>")
         return FakeHttp({"seeMoreJobPostings": get, "jobPosting/": get})
 
     monkeypatch.setattr(discovery, "get_source", lambda name: lg.LinkedInGuestSource(

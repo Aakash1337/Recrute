@@ -90,3 +90,24 @@ def test_auto_approve_rejects_unverified_or_generated_resume_text():
     rw = ResumeSelection(experience=[SelectedEntry(id="e", bullet_ids=["b"],
                                                    rewrites={"b": "new words"})])
     assert auto_approve_reason(job, Packet(**base, resume=rw), rule) is None
+
+
+def test_unchanged_profile_summary_keeps_auto_approval():
+    from datetime import UTC, datetime
+
+    from test_tailor_support import make_profile
+
+    from recrute.schemas import ResumeSelection
+    from recrute.tailor.select import validate_selection
+
+    prof = make_profile()
+    raw = {"summary": "", "experience": [], "projects": [], "education_ids": [],
+           "certification_ids": [], "skills": []}
+    sel = validate_selection(prof, raw)  # empty generated summary -> the profile's own
+    assert sel.summary == prof.summary and sel.summary_generated is False
+    job = Job(title="t", apply_url="u", canonical_url="u", priority=Priority.P1, score=95)
+    rule = {"enabled": True, "min_score": 85, "priorities": ["P1"]}
+    base = dict(job_id=1, resume_pdf="p.pdf", generated_at=datetime.now(UTC))
+    assert auto_approve_reason(job, Packet(**base, resume=sel), rule) is not None
+    fresh = ResumeSelection(summary="Brand-new wording.")
+    assert auto_approve_reason(job, Packet(**base, resume=fresh), rule) is None

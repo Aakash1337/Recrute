@@ -538,3 +538,21 @@ def test_guest_query_with_unfetched_details_is_not_covered():
     src2.seen_ids = set(src.seen_ids)
     list(src2.fetch(SourceContext(http=FakeHttp({}), criteria=crit)))
     assert len(src2.seen_ids) == 3 and len(src2.searched_ok) == 1
+
+
+def test_guest_empty_detail_page_is_retried_not_remembered():
+    from recrute.sources.base import SourceContext
+    from recrute.sources.linkedin_guest import LinkedInGuestSource
+
+    def routes():
+        return FakeHttp({"seeMoreJobPostings": read("linkedin_guest_search.html"),
+                         "jobPosting/": '<html><body data-entity-urn="urn:li:jobPosting:1">'
+                                        "</body></html>"})
+
+    src = LinkedInGuestSource(http_factory=routes, min_interval=0, max_searches=1,
+                              max_details=5)
+    sctx = SourceContext(http=FakeHttp({}), criteria=Criteria())
+    jobs = list(src.fetch(sctx))
+    assert jobs and src.seen_ids == set()  # nothing remembered as fetched
+    assert src.searched_ok == []  # the query keeps its old checkpoint
+    assert any(k.startswith("linkedin_guest:detail:") for k in sctx.errors)

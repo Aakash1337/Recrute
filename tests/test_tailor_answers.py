@@ -901,3 +901,13 @@ def test_sponsorship_need_questions_still_answered(label, expected):
     wa = WorkAuthorization(authorized_to_work_in_us=True, requires_sponsorship_now=True,
                            requires_sponsorship_future=True)
     assert sponsorship_answer(label, wa) is expected
+
+
+def test_unchanged_template_answers_no_personal_yes_no(paths):
+    example = Path(__file__).parents[1] / "resources" / "answers.example.yaml"
+    answers_path(paths).write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+    bank = load_answer_bank(paths)
+    for label in ("Are you legally authorized to work in the United States?",
+                  "Are you willing to relocate?"):
+        hit = match_question(q(label, "radio", YES_NO), bank)
+        assert hit is None or hit.needs_review  # never a trusted "Yes" from the template

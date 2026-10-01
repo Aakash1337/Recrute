@@ -232,9 +232,17 @@ def _split_roles(text: str, titles: list[str]) -> tuple[str, dict[str, str]]:
     """(shared header, {title: that role's own section}) for a multi-role comment."""
     # every whole-word occurrence of every title; where titles overlap ("Senior Security
     # Engineer" contains "Security Engineer") the longest one owns the text
+    def heading(m: re.Match[str]) -> bool:  # the title starts its own line ("- Analyst: ...")
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        return re.fullmatch(r"[\s\-*•#>\d.)]*", text[line_start:m.start()]) is not None
+
     def occurrences(t: str) -> list[re.Match[str]]:
         whole = list(re.finditer(r"(?<!\w)" + re.escape(t) + r"(?!\w)", text, re.I))
-        return whole or list(re.finditer(re.escape(t), text, re.I))
+        found = whole or list(re.finditer(re.escape(t), text, re.I))
+        # a role's section starts where it is a HEADING; mentions inside a list of roles
+        # ("Acme | Senior Security Engineer, Security Analyst") are not section boundaries
+        headings = [m for m in found if heading(m)]
+        return headings or found
 
     cands = sorted((m.start(), -len(t), m.end(), t) for t in dict.fromkeys(titles) if t
                    for m in occurrences(t))
