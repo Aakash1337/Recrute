@@ -1158,6 +1158,8 @@ def test_bank_city_is_not_overridden_by_a_stale_profile_location():
     "Do you require sponsorship to work in Panama?",
     "Will you need sponsorship to work in Uruguay or the US?",
     "Will you need sponsorship to work in the US or Uruguay?",
+    "Will you need sponsorship to work in the U.S. or Uruguay?",
+    "Will you need sponsorship to work in the U.S.A. or Uruguay?",
     "Do you require sponsorship for employment in the United States and Panama?",
 ])
 def test_sponsorship_for_another_country_is_not_answered(label):
@@ -1167,3 +1169,23 @@ def test_sponsorship_for_another_country_is_not_answered(label):
     assert sponsorship_answer(label, _real_bank().work_authorization) is None
     assert sponsorship_answer("Will you require sponsorship to work in the United States?",
                               _real_bank().work_authorization) is False
+
+
+def test_bank_contact_that_fits_no_option_is_not_replaced_by_the_profile():
+    """Audit: the bank's city/email not among a select's options let the profile's OLD value
+    be picked instead, unflagged."""
+    from recrute.tailor.answers import Contact
+
+    profile = make_profile()
+    profile.location, profile.email = "Austin, TX", "old@example.com"
+    bank = AnswerBank(contact=Contact(current_city="Toronto, ON", email="new@example.com"))
+    questions = [q("Current location", "select", ["Austin, TX"], id="loc"),
+                 q("Email", "select", ["old@example.com"], id="em")]
+    a = {x.question_id: x for x in answer_questions(questions, profile=profile, bank=bank,
+                                                     router=None).answers}
+    assert a["loc"].value is None and a["loc"].needs_review
+    assert a["em"].value is None and a["em"].needs_review
+    # with nothing in the bank, the profile still answers
+    a = {x.question_id: x for x in answer_questions(questions, profile=profile,
+                                                     bank=AnswerBank(), router=None).answers}
+    assert a["loc"].value == "Austin, TX" and a["em"].value == "old@example.com"

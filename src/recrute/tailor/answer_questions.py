@@ -18,6 +18,7 @@ from recrute.tailor.answers import (
     CONTACT_KINDS,
     SENSITIVE_KINDS,
     AnswerBank,
+    bank_has_fact,
     classify_question,
     country_from_city,
     drafting_context,
@@ -403,8 +404,8 @@ def _bank_decides(q: FormQuestion, bank: AnswerBank) -> bool:
     phone (the bank's number) is never taken from another number in the profile."""
     kind = classify_question(q)
     c = bank.contact
-    return (kind in _GEO_KINDS and bool(c.country or c.current_city)) or (
-        kind == "phone_country" and bool(c.phone))
+    return bank_has_fact(q, bank) or (kind in _GEO_KINDS and bool(c.country or c.current_city)) \
+        or (kind == "phone_country" and bool(c.phone))
 
 
 def _is_signature_date(q: FormQuestion, questions: list[FormQuestion]) -> bool:

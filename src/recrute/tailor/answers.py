@@ -390,6 +390,15 @@ _NOT_RESIDENCE = re.compile(r"citizen|nationalit|\bbirth|\bborn\b|passport|\biss
                             r"\bvisa\b|\bpermit\b", re.I)
 
 
+def bank_has_fact(q: FormQuestion, bank: AnswerBank) -> bool:
+    """Does the bank hold the contact fact this question asks for (even if that value can't
+    be put into this control)? Then an older profile value must not stand in for it."""
+    kind = classify_question(q)
+    if kind not in CONTACT_KINDS:
+        return False
+    return _bank_raw(kind, q, bank, None) not in (None, "", [])
+
+
 def classify_question(q: FormQuestion) -> str | None:
     """The bank/profile field a question asks for, or None (-> grounded LLM drafting)."""
     if q.type == "file":
@@ -448,7 +457,8 @@ def _either(a: bool | None, b: bool | None) -> bool | None:
 _SCOPE_RE = re.compile(r"\b(?:work\w*|employ\w*|jobs?|positions?|roles?|sponsor\w*|visas?|"
                        r"support|authori[sz]\w*|permits?|live|living|reside)\s+(?:in|within)\s+"
                        r"((?:the\s+)?[a-z][\w.'-]*(?:\s+[a-z][\w.'-]*){0,3})")
-_US_SCOPE = re.compile(r"(the\s+)?(united states( of america)?|u\.?s\.?(a\.?)?|america)\b")
+_US_SCOPE = re.compile(r"(the\s+)?(united states( of america)?|u\.s\.a\.?|u\.s\.?|usa|us|"
+                       r"america)(?!\w)")  # (the whole "U.S.": the period is part of it)
 _NOT_A_PLACE = re.compile(r"(the\s+)?(future|order|this|that|these|those|any|all|our|your|my|"
                           r"which|a|an|connection|regards?|addition|case|person|office|"
                           r"accordance|the next|the coming|the following|the role|the position|"
