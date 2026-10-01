@@ -749,12 +749,11 @@ def process_messages(session: Session, router: Router, messages: Iterable[MailMe
     retried on a later sync."""
     msgs = list(messages)
     seen = known_message_ids(session, (m.message_id for m in msgs))
-    rows = session.exec(
-        select(Company.name, Company.domain).join(Job, Job.company_id == Company.id)
-        .where(Job.status.in_(MATCHABLE_STATUSES))  # type: ignore[attr-defined]
-    ).all()
-    names = [n for n, _ in rows if n]
-    domains = [d for _, d in rows if d]
+    # the employers of EVERY application an email could be about: the same candidates
+    # matching uses, including unconfirmed submissions (their events still need you)
+    companies = [c.company for c in _candidates(session) if c.company is not None]
+    names = list(dict.fromkeys(c.name for c in companies if c.name))
+    domains = list(dict.fromkeys(c.domain for c in companies if c.domain))
     todo = [m for m in msgs if m.message_id not in seen
             and prefilter(m, known_companies=names, known_domains=domains)]
     if not todo:

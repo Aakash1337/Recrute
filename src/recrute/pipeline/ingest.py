@@ -163,55 +163,69 @@ def _prefer(raw: RawJob) -> bool:
     return raw.ats in {"greenhouse", "lever", "ashby", "workable", "smartrecruiters"}
 
 
+def _redecide(session: Session, job: Job, only_from: tuple, note: str | None) -> bool:
+    """Send a job back through the rules and triage (status DISCOVERED, derived fields
+    cleared), conditional on its CURRENT status still being one of `only_from`: a decision
+    you made meanwhile (restore, reject, approve) is never undone by a stale copy."""
+    from sqlalchemy import update
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    cleared = {"status": JobStatus.DISCOVERED, "priority": None, "score": None,
+               "filter_reason": None, "years_required": None, "closed_at": None}
+    res = session.execute(update(Job).where(Job.id == job.id, col(Job.status).in_(only_from))
+                          .values(**cleared).execution_options(synchronize_session=False))
+    if res.rowcount != 1:
+        return False
+    for attr, value in cleared.items():
+        set_committed_value(job, attr, value)
+    if note:
+        session.add(StatusEvent(job_id=job.id, status=JobStatus.DISCOVERED, note=note))
+    return True
+
+
 def _retarget_unsent_application(session: Session, job: Job) -> None:
     """The apply target moved (e.g. a LinkedIn listing merged into the company's own ATS
-    posting). An unsent packet was built for the old form: void any approval and rebuild it for
-    the new target (new questions, new adapter)."""
+    posting). Whatever was prepared for the OLD form must not be used on the new one. Every
+    step is a conditional update on the CURRENT rows (never the status loaded earlier: a build
+    may have been published, or approved, in between):
+      * any in-progress packet build is voided (its claim token cleared);
+      * an unsent packet (PACKET_READY / APPROVED) goes back to SHORTLISTED, approval revoked;
+      * an attempt running right now (APPLYING) has its approval revoked, so the submit gate
+        refuses to click and it ends at CP3.
+    A sent application is never touched."""
     from sqlalchemy import update
+    from sqlalchemy.orm.attributes import set_committed_value
 
     from recrute.models import Application
 
-    if job.status == JobStatus.SHORTLISTED:
-        # a build in progress fetched the OLD form's questions: void its claim so it can't
-        # publish (the next packets run rebuilds for the new target)
-        session.execute(update(Application).where(Application.job_id == job.id,
-                                                  col(Application.submitted_at).is_(None))
-                        .values(build_token="")
-                        .execution_options(synchronize_session=False))
-        return
-    if job.status == JobStatus.APPLYING:
-        # an attempt is running against the OLD form: revoke its approval (the submit gate
-        # then refuses to click) so it ends at CP3; the packet is rebuilt for the new target
-        res = session.execute(update(Application).where(
-            Application.job_id == job.id, col(Application.submitted_at).is_(None),
-            col(Application.approved_at).is_not(None))
-            .values(approved_at=None, scheduled_for=None)
-            .execution_options(synchronize_session=False))
-        if res.rowcount:
-            session.add(StatusEvent(job_id=job.id, status=JobStatus.APPLYING,
-                                    note="apply target changed during the attempt: approval "
-                                         "revoked, it will not be submitted"))
-        return
-    from sqlalchemy.orm.attributes import set_committed_value
-
-    # conditional on the CURRENT row: a decision made meanwhile (you marked it applied or
-    # skipped it) is never overwritten, and a sent application is never reopened
-    unsent = ~select(Application.id).where(Application.job_id == job.id,
-                                           col(Application.submitted_at).is_not(None)).exists()
+    unsent_app = (Application.job_id == job.id, col(Application.submitted_at).is_(None))
+    session.execute(update(Application).where(*unsent_app).values(build_token="")
+                    .execution_options(synchronize_session=False))
+    nothing_sent = ~select(Application.id).where(
+        Application.job_id == job.id, col(Application.submitted_at).is_not(None)).exists()
     res = session.execute(
         update(Job).where(Job.id == job.id,
                           col(Job.status).in_([JobStatus.PACKET_READY, JobStatus.APPROVED]),
-                          unsent)
+                          nothing_sent)
         .values(status=JobStatus.SHORTLISTED).execution_options(synchronize_session=False))
-    if res.rowcount != 1:
+    if res.rowcount == 1:
+        set_committed_value(job, "status", JobStatus.SHORTLISTED)
+        session.execute(update(Application).where(*unsent_app)
+                        .values(approved_at=None, scheduled_for=None)
+                        .execution_options(synchronize_session=False))
+        session.add(StatusEvent(job_id=job.id, status=JobStatus.SHORTLISTED,
+                                note="apply target changed; packet will be rebuilt for the "
+                                     "new form"))
         return
-    set_committed_value(job, "status", JobStatus.SHORTLISTED)
-    session.execute(update(Application).where(Application.job_id == job.id,
-                                              col(Application.submitted_at).is_(None))
-                    .values(approved_at=None, scheduled_for=None, build_token="")
-                    .execution_options(synchronize_session=False))
-    session.add(StatusEvent(job_id=job.id, status=JobStatus.SHORTLISTED,
-                            note="apply target changed; packet will be rebuilt for the new form"))
+    applying = select(Job.id).where(Job.id == job.id, Job.status == JobStatus.APPLYING).exists()
+    res = session.execute(update(Application).where(
+        *unsent_app, col(Application.approved_at).is_not(None), applying)
+        .values(approved_at=None, scheduled_for=None)
+        .execution_options(synchronize_session=False))
+    if res.rowcount:
+        session.add(StatusEvent(job_id=job.id, status=JobStatus.APPLYING,
+                                note="apply target changed during the attempt: approval "
+                                     "revoked, it will not be submitted"))
 
 
 def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
@@ -243,14 +257,9 @@ def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
         else:
             stats.updated += 1
         job.last_seen = now
-        if job.status == JobStatus.CLOSED:
-            job.status = JobStatus.DISCOVERED
-            job.priority = None  # re-run rules and triage for the reopened posting
-            job.score = None
-            job.filter_reason = None
-            session.add(StatusEvent(job_id=job.id, status=JobStatus.DISCOVERED,
-                                    note=f"posting reopened (source={raw.source})"))
-        job.closed_at = None
+        if job.status == JobStatus.CLOSED:  # re-run rules and triage for the reopened posting
+            _redecide(session, job, (JobStatus.CLOSED,),
+                      f"posting reopened (source={raw.source})")
         company = session.get(Company, job.company_id) if job.company_id else None
         if company is not None:
             learn_company_board(session, company, raw)
@@ -296,9 +305,7 @@ def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
                                       job.locations)
             if job.status in RESCORABLE:
                 # Inputs to the rules/triage changed: decide again from scratch.
-                job.status = JobStatus.DISCOVERED
-                job.priority = job.score = job.filter_reason = None
-                job.years_required = None
+                _redecide(session, job, tuple(RESCORABLE), None)
         session.add(job)
     surl = source_url(raw)
     src = session.exec(select(JobSource).where(JobSource.source == raw.source,

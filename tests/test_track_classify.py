@@ -569,3 +569,29 @@ def test_newer_uncertain_submission_is_matched_but_never_auto_updated(engine):
         process_messages(s, router, [msg("r", "talent@globex.example",
                                          "Update on Security Engineer", "Not moving forward.")])
         assert s.get(Job, old.id).status == JobStatus.APPLIED  # not declined by mistake
+
+
+def test_vague_reply_about_an_unconfirmed_submission_is_not_skipped(engine):
+    from recrute.models import Application
+    from recrute.track.classify import process_messages
+
+    with Session(engine) as s:
+        c = Company(name="Initech", domain="initech.example")
+        s.add(c)
+        s.flush()
+        job = Job(company_id=c.id, title="Security Engineer", apply_url="u",
+                  canonical_url="i1", status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.flush()
+        s.add(Application(job_id=job.id, channel="greenhouse",
+                          outcome={"status": "needs_human",
+                                   "details": {"submit_attempted": True}}))
+        s.commit()
+        router = FakeRouter(lambda p: {"results": [{
+            "index": 0, "kind": "interview", "company": "Initech", "job_title": "",
+            "confidence": 0.9, "summary": "wants a chat"}]})
+        process_messages(s, router, [msg("v", "jane@initech.example", "Hello",
+                                         "Would you have time for a quick chat this week?")])
+        assert len(router.calls) == 1  # classified, not silently skipped
+        ev = s.exec(select(EmailEvent)).one()
+        assert ev.job_id == job.id and not ev.confirmed  # suggested; you confirm it

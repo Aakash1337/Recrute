@@ -843,3 +843,20 @@ def test_qualified_yes_options_are_not_picked_from_the_bank():
     hit = match_question(q("Are you legally authorized to work in the United States?", "radio",
                            ["Yes, I am a US citizen or permanent resident", "No"]), bank)
     assert hit is None or hit.value != "Yes, I am a US citizen or permanent resident"
+
+
+def test_options_with_extra_qualifiers_are_not_picked_for_a_bare_value():
+    from recrute.schemas import Education, FormQuestion, Profile
+    from recrute.tailor.answer_questions import profile_answer
+    from recrute.tailor.answers import match_option
+
+    opts = ["Bachelor of Science (Computer Science)", "Bachelor of Science (Other)",
+            "Master of Science"]
+    assert match_option("Bachelor of Science", opts) is None
+    assert match_option("Master of Science", opts) == "Master of Science"
+    p = Profile(name="Ada", education=[Education(id="e", school="State U",
+                                                 degree="Bachelor of Science", end="2021",
+                                                 field="Mathematics")])
+    a = profile_answer(FormQuestion(id="d", label="Highest degree", type="select",
+                                    options=opts), p)
+    assert a is None  # left for you, never "Computer Science"

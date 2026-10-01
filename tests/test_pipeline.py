@@ -821,3 +821,57 @@ def test_long_hn_role_titles_sharing_a_prefix_stay_separate(engine):
     with Session(engine) as s:
         ingest(s, raws)
         assert len(s.exec(select(Job)).all()) == 2
+
+
+def test_retarget_after_a_packet_was_published_meanwhile(engine):
+    from recrute.models import Application
+    from recrute.pipeline.ingest import _retarget_unsent_application
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://www.linkedin.com/jobs/view/1",
+                  canonical_url="li-pub", status=JobStatus.SHORTLISTED)
+        s.add(job)
+        s.flush()
+        s.add(Application(job_id=job.id, channel="linkedin_easy_apply"))
+        s.commit()
+        job_id = job.id
+    with Session(engine) as a:
+        job = a.get(Job, job_id)  # ingestion read it while still SHORTLISTED...
+        with Session(engine) as b:  # ...then a build published and was auto-approved
+            j = b.get(Job, job_id)
+            j.status = JobStatus.APPROVED
+            app = b.exec(select(Application)).one()
+            app.packet, app.approved_at = {"a": 1}, datetime(2026, 1, 1, tzinfo=UTC)
+            b.add(j)
+            b.add(app)
+            b.commit()
+        _retarget_unsent_application(a, job)
+        a.commit()
+    with Session(engine) as s:
+        assert s.get(Job, job_id).status == JobStatus.SHORTLISTED
+        assert s.exec(select(Application)).one().approved_at is None
+
+
+@pytest.mark.parametrize("stale", [JobStatus.FILTERED_OUT, JobStatus.CLOSED])
+def test_ingest_never_undoes_a_concurrent_decision(engine, stale):
+    from recrute.pipeline.ingest import RESCORABLE, _redecide
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="u", canonical_url=f"c-{stale}", status=stale)
+        s.add(job)
+        s.commit()
+        job_id = job.id
+    with Session(engine) as a:
+        job = a.get(Job, job_id)  # ingestion holds a copy saying FILTERED_OUT / CLOSED...
+        a.commit()
+        with Session(engine) as b:  # ...you restore + reject it meanwhile
+            j = b.get(Job, job_id)
+            j.status = JobStatus.REJECTED
+            b.add(j)
+            b.commit()
+        from_ = (JobStatus.CLOSED,) if stale == JobStatus.CLOSED else tuple(RESCORABLE)
+        assert _redecide(a, job, from_, "posting reopened") is False
+        a.add(job)
+        a.commit()
+    with Session(engine) as s:
+        assert s.get(Job, job_id).status == JobStatus.REJECTED

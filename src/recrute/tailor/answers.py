@@ -491,9 +491,17 @@ _NO_RE = re.compile(r"^\s*(no|n|false)\b", re.IGNORECASE)
 
 
 def _norm_option(text: str) -> str:
-    t = re.sub(r"\([^)]*\)", " ", text.lower().replace("’", "'"))
-    t = re.sub(r"[^a-z0-9/+'\- ]", " ", t)
+    """Case/punctuation-insensitive form of an option. Parenthetical text is KEPT: "Bachelor of
+    Science (Computer Science)" claims a major that a bare "Bachelor of Science" doesn't."""
+    t = text.lower().replace("’", "'").replace("(", " ").replace(")", " ")
+    t = re.sub(r"[^a-z0-9/+#'\- ]", " ", t)
     return " ".join(t.split())
+
+
+def _norm_eeo(text: str) -> str:
+    """EEO categories carry standard clarifications in parentheses ("White (Not Hispanic or
+    Latino)"): the category itself is what is compared."""
+    return _norm_option(re.sub(r"\([^)]*\)", " ", text))
 
 
 _BARE_REST = re.compile(r"(?:i\s+(?:am|do|will|can|have|would|could|may))?(?:\s+not)?",
@@ -558,7 +566,7 @@ _EEO_TOPIC = {"eeo_veteran": "veteran", "eeo_disability": "disabilit",
 def _polarity(kind: str, text: str) -> str | None:
     if _DECLINE_RE.search(text):
         return None
-    n = _norm_option(text)
+    n = _norm_eeo(text)
     if re.match(r"yes\b", n):
         return "yes"
     if re.match(r"no\b", n):
@@ -575,13 +583,13 @@ def match_eeo_option(kind: str, value: str, options: list[str]) -> str | None:
         return None
     if value.strip().lower() == "decline" or _DECLINE_RE.search(value):
         return _decline_option(options)
-    low = _norm_option(value)
-    exact = [o for o in options if _norm_option(o) == low]
+    low = _norm_eeo(value)
+    exact = [o for o in options if _norm_eeo(o) == low]
     if len(exact) == 1:
         return exact[0]
     if kind in _EEO_ALIASES:
         group = next((g for g in _EEO_ALIASES[kind] if low in g), {low})
-        hits = [o for o in options if _norm_option(o) in group]
+        hits = [o for o in options if _norm_eeo(o) in group]
     elif kind in _EEO_TOPIC:
         want = _polarity(kind, value)
         hits = [o for o in options if want is not None and _polarity(kind, o) == want]
