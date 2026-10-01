@@ -144,6 +144,7 @@ def discover_search(ctx) -> dict:
                     src.done = state.get("done") or {}
                 if name == "linkedin_guest":  # postings already fetched in full: not again
                     src.seen_ids = set(state.get("seen_ids") or [])
+                    src.known_closed = set(state.get("closed_ids") or [])
                 rotating = hasattr(src, "query_offset")
                 if rotating:
                     import math
@@ -190,7 +191,8 @@ def discover_search(ctx) -> dict:
                         out[name] = ingest(s, raws).as_dict()
                         state = {"last_ok": now.isoformat(),
                                  **{k: state[k] for k in ("query_ok", "query_failures", "done",
-                                                          "seen_ids") if k in state}}
+                                                          "seen_ids", "closed_ids")
+                                    if k in state}}
                         ingested_ok = True
                 except HttpError as e:
                     s.rollback()
@@ -204,7 +206,10 @@ def discover_search(ctx) -> dict:
                 if sctx.errors:
                     state["errors"] = dict(list(sctx.errors.items())[:5])
                 if ingested_ok and getattr(src, "closed_ids", None):
-                    _close_listings(s, name, src.closed_ids)
+                    _close_listings(s, getattr(src, "raw_source", name), src.closed_ids)
+                    known = list(state.get("closed_ids") or [])
+                    known += [i for i in sorted(src.closed_ids) if i not in set(known)]
+                    state["closed_ids"] = known[-5000:]
                 if ingested_ok and name == "linkedin_guest":
                     # their postings are stored now: remember them (bounded, newest kept)
                     known = list(state.get("seen_ids") or [])

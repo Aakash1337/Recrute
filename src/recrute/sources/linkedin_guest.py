@@ -208,6 +208,7 @@ def to_rawjob(card: Card, detail: Detail | None) -> RawJob:
 
 
 class LinkedInGuestSource:
+    raw_source = "linkedin"  # the `source` its RawJobs carry (JobSource rows)
     name = "linkedin_guest"
     cadence = timedelta(hours=12)
 
@@ -221,6 +222,7 @@ class LinkedInGuestSource:
         self.location = location
         self.seen_ids = seen_ids if seen_ids is not None else set()
         self.closed_ids: set[str] = set()  # postings LinkedIn says are closed (this run)
+        self.known_closed: set[str] = set()  # ...and all known so far (kept by the caller)
         self.http_factory = http_factory
         self.stats: dict[str, Any] = {"searches": 0, "details": 0, "blocked": None}  # last run
         # Rotation through the configured queries across runs (the caller persists it): with a
@@ -319,6 +321,8 @@ class LinkedInGuestSource:
                 if not failed:
                     self.next_offset = (self.next_offset + 1) % len(queries)
                 for c in parse_search_cards(html):
+                    if c.job_id in self.known_closed:
+                        continue  # LinkedIn said it's closed: never emitted again, any path
                     cards.setdefault(c.job_id, c)
                     origin.setdefault(c.job_id, set()).add(q)
         except GuestBlocked as e:
@@ -358,6 +362,7 @@ class LinkedInGuestSource:
                 # be reopened by it): reported for closing, never yielded
                 self.seen_ids.add(card.job_id)
                 self.closed_ids.add(card.job_id)
+                self.known_closed.add(card.job_id)
                 continue
             if not _meaningful(detail.description_html):
                 # an empty / malformed page (no posting in it): not "fetched in full", so it

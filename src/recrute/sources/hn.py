@@ -226,11 +226,18 @@ def role_sections(text: str, titles: list[str]) -> dict[str, str]:
     senior role's "10+ years"). A title not found in the text gets just the shared header."""
     header, own = _split_roles(text, titles)
     if any(own.values()):
-        # the shared header keeps company-wide lines only: a line naming roles ("Senior
-        # Security Engineer (10+ years), Security Analyst") carries role-specific details
+        # the shared header keeps company-wide information only: the SEGMENT listing roles
+        # ("Senior Security Engineer (10+ years), Security Analyst") carries role-specific
+        # details and goes; the rest of that line ("Remote (US) | US citizenship required")
+        # applies to every role and stays
         low_titles = [t.lower() for t in titles if t]
-        header = "\n".join(line for line in header.splitlines()
-                           if not any(t in line.lower() for t in low_titles))
+
+        def keep(line: str) -> str:
+            parts = re.split(r"(\s+[|•·]\s+|;\s+)", line)
+            out = [p for p in parts[::2] if not any(t in p.lower() for t in low_titles)]
+            return " | ".join(p.strip() for p in out if p.strip())
+
+        header = "\n".join(kept for line in header.splitlines() if (kept := keep(line)))
     return {t: (header + "\n\n" + own[t]).strip() if own.get(t) else header for t in titles}
 
 

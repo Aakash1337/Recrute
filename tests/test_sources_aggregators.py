@@ -422,3 +422,16 @@ def test_hn_markdown_linked_role_headings():
     assert jobs["Senior Security Engineer"].ats_job_id == "111"
     assert jobs["Security Analyst"].ats_job_id == "222"
     assert "10+" not in (jobs["Security Analyst"].description_text or "")
+
+
+def test_hn_shared_requirements_in_the_header_survive_role_splitting():
+    from recrute.badges.sponsorship import eligibility_flags
+    from recrute.sources.hn import role_sections
+
+    text = ("Acme | Security Engineer, Security Analyst | Remote (US) | "
+            "US citizenship required\n"
+            "Security Engineer: build detections.\nSecurity Analyst: triage alerts.")
+    secs = role_sections(text, ["Security Engineer", "Security Analyst"])
+    for t in ("Security Engineer", "Security Analyst"):
+        assert "citizenship_required" in eligibility_flags(secs[t])
+    assert "triage" not in secs["Security Engineer"]

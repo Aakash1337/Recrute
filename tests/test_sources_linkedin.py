@@ -600,8 +600,55 @@ def test_guest_closed_posting_is_not_emitted_and_closes_a_known_job(engine, monk
         job = Job(title="t", apply_url="u", canonical_url="cl", status=JobStatus.DISCOVERED)
         s.add(job)
         s.flush()
-        s.add(JobSource(job_id=job.id, source="linkedin_guest",
+        s.add(JobSource(job_id=job.id, source=src.raw_source,
                         source_job_id=cards[0].job_id, url="u"))
         s.commit()
-        assert discovery._close_listings(s, "linkedin_guest", src.closed_ids) == 1
+        assert discovery._close_listings(s, src.raw_source, src.closed_ids) == 1
         assert s.exec(select(Job)).one().status == JobStatus.CLOSED
+
+
+def test_closed_guest_posting_closes_the_real_ingested_job_and_stays_suppressed(engine,
+                                                                                monkeypatch):
+    from sqlmodel import Session, select
+
+    from recrute import discovery
+    from recrute.models import Job, JobStatus
+    from recrute.settings import get_state, set_setting, set_state
+    from recrute.sources import linkedin_guest as lg
+
+    state = {"page": read("linkedin_guest_detail.html")}
+
+    def routes():
+        return FakeHttp({"seeMoreJobPostings": read("linkedin_guest_search.html"),
+                         "jobPosting/": lambda url: state["page"]})
+
+    monkeypatch.setattr(discovery, "get_source", lambda name: lg.LinkedInGuestSource(
+        http_factory=routes, min_interval=0, max_searches=1, max_details=10))
+    monkeypatch.setattr(discovery, "Http", lambda **kw: FakeHttp({}))
+    ctx = __import__("types").SimpleNamespace(
+        session=lambda: Session(engine), criteria=Criteria(), router=None,
+        stop=__import__("threading").Event())
+
+    def due():
+        with Session(engine) as s:
+            st = get_state(s, "source:linkedin_guest") or {}
+            st.pop("last_ok", None)
+            st.pop("backoff_until", None)
+            st.pop("seen_ids", None)  # force the detail pages to be fetched again
+            set_state(s, "source:linkedin_guest", st)
+
+    with Session(engine) as s:
+        set_setting(s, "sources_enabled", {k: False for k in discovery.SEARCH_SOURCES}
+                    | {"linkedin_guest": True})
+    discovery.discover_search(ctx)  # ingested for real
+    with Session(engine) as s:
+        assert s.exec(select(Job)).all()
+    state["page"] = "<html><body><p>No longer accepting applications</p></body></html>"
+    due()
+    discovery.discover_search(ctx)
+    with Session(engine) as s:
+        assert all(j.status == JobStatus.CLOSED for j in s.exec(select(Job)).all())
+    due()
+    discovery.discover_search(ctx)  # the same closed cards again: not reopened
+    with Session(engine) as s:
+        assert all(j.status == JobStatus.CLOSED for j in s.exec(select(Job)).all())
