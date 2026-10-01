@@ -246,9 +246,17 @@ def _record_assist(session: Session, app: Application, outcome) -> None:
     channel suspension when the site showed a security check."""
     from datetime import UTC, datetime
 
+    from sqlalchemy import update
+
     from recrute.apply.state import suspend
 
     details = outcome.details or {}
+    # merge into the CURRENT row, under its write lock: a new "Open & pre-fill" request (or
+    # any other change) made while this fill ran must survive
+    session.commit()
+    session.execute(update(Application).where(Application.id == app.id)
+                    .values(id=Application.id).execution_options(synchronize_session=False))
+    session.refresh(app)
     prior = dict(app.outcome or {})
     new = outcome.model_dump(mode="json")
     history = list(prior.get("assist_history", []))[-9:] + [

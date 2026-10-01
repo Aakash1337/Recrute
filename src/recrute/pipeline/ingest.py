@@ -217,15 +217,20 @@ def _retarget_unsent_application(session: Session, job: Job) -> None:
                                 note="apply target changed; packet will be rebuilt for the "
                                      "new form"))
         return
-    applying = select(Job.id).where(Job.id == job.id, Job.status == JobStatus.APPLYING).exists()
-    res = session.execute(update(Application).where(
-        *unsent_app, col(Application.approved_at).is_not(None), applying)
-        .values(approved_at=None, scheduled_for=None)
-        .execution_options(synchronize_session=False))
-    if res.rowcount:
-        session.add(StatusEvent(job_id=job.id, status=JobStatus.APPLYING,
-                                note="apply target changed during the attempt: approval "
-                                     "revoked, it will not be submitted"))
+    # an attempt running now (APPLYING) or a form handed to you (NEEDS_HUMAN): the approval
+    # was for the old form, so it goes (no submit, no assisted fill on the new form). A
+    # finished, never-sent one can then be rebuilt; an uncertain one stays for you to resolve.
+    for status, note in ((JobStatus.APPLYING, "apply target changed during the attempt: "
+                          "approval revoked, it will not be submitted"),
+                         (JobStatus.NEEDS_HUMAN, "apply target changed: approval revoked; "
+                          "rebuild the packet for the new form")):
+        current = select(Job.id).where(Job.id == job.id, Job.status == status).exists()
+        res = session.execute(update(Application).where(
+            *unsent_app, col(Application.approved_at).is_not(None), current)
+            .values(approved_at=None, scheduled_for=None)
+            .execution_options(synchronize_session=False))
+        if res.rowcount:
+            session.add(StatusEvent(job_id=job.id, status=status, note=note))
 
 
 def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:

@@ -223,3 +223,29 @@ def test_assist_request_rechecked_under_the_lease(engine, paths, monkeypatch, ch
     with Session(engine) as s:
         assert _run_assist_request(SimpleNamespace(router=None, paths=paths), s,
                                    SimpleNamespace()) is None
+
+
+def test_finishing_an_assist_keeps_a_newer_request(engine):
+    from datetime import UTC, datetime
+
+    from recrute.applying import _record_assist
+    from recrute.models import Application, Job, JobStatus
+    from recrute.schemas import ApplyOutcome, Packet
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="u", canonical_url="c", status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.flush()
+        s.add(Application(job_id=job.id, channel="greenhouse", approved_at=datetime.now(UTC),
+                          packet=Packet(job_id=job.id).model_dump(mode="json"), outcome={}))
+        s.commit()
+        app = s.exec(select(Application)).one()  # the worker's copy, loaded before filling
+        with Session(engine) as ui:  # you click "Open & pre-fill" again meanwhile
+            a2 = ui.exec(select(Application)).one()
+            a2.outcome = {**(a2.outcome or {}), "assist_requested": "tok2"}
+            ui.add(a2)
+            ui.commit()
+        _record_assist(s, app, ApplyOutcome(status="needs_human", reason="filled; your turn",
+                                            details={"submit_attempted": False}))
+    with Session(engine) as s:
+        assert s.exec(select(Application)).one().outcome["assist_requested"] == "tok2"

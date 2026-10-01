@@ -875,3 +875,29 @@ def test_ingest_never_undoes_a_concurrent_decision(engine, stale):
         a.commit()
     with Session(engine) as s:
         assert s.get(Job, job_id).status == JobStatus.REJECTED
+
+
+def test_retarget_after_handoff_revokes_approval_and_blocks_assist(engine):
+    import pytest
+
+    from recrute import packets
+    from recrute.models import Application
+    from recrute.pipeline.ingest import _retarget_unsent_application
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://www.linkedin.com/jobs/view/7",
+                  canonical_url="li-cp3", status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.flush()
+        s.add(Application(job_id=job.id, channel="linkedin_easy_apply", packet={"a": 1},
+                          approved_at=datetime(2026, 1, 1, tzinfo=UTC)))
+        s.commit()
+        job.apply_url = "https://boards.greenhouse.io/acme/jobs/7"
+        _retarget_unsent_application(s, job)
+        s.add(job)
+        s.commit()
+        assert s.exec(select(Application)).one().approved_at is None
+        with pytest.raises(packets.PacketError):
+            packets.request_assist(s, job.id)  # no assisted fill of the old packet
+        packets.rebuild(s, job.id)  # recovery: a fresh packet for the new form
+        assert s.get(Job, job.id).status == JobStatus.SHORTLISTED
