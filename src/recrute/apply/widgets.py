@@ -238,18 +238,41 @@ def fill_multi_combobox(root: Page | Frame, f: LiveField, value: Any, human: Hum
     values = list(value) if isinstance(value, list | tuple) else [value]
     if not values:
         raise FillError("no approved value")
-    picked = [fill_combobox(root, f, v, human) for v in values]
-    chips = root.locator(f.selector).first.evaluate(
-        """e => {
-             const c = e.closest('.select-shell') || e.closest('[class*="control"]')
-                       || e.parentElement;
-             return [...c.querySelectorAll('[class*="multi-value__label"], '
-                                           + '[class*="multiValue"] [class*="label"]')]
-                    .map(x => x.innerText.trim()).filter(Boolean);
-           }""")
+    loc = root.locator(f.selector).first
+    # what is already selected (saved / prefilled): keep approved chips, remove the rest
+    for chip in _chips(loc):
+        if dom.resolve_option(chip, [as_text(v) for v in values]) is None:
+            remove = loc.locator(_CHIP_SHELL).locator(
+                _CHIP_REMOVE.format(label=chip.replace("\\", "\\\\").replace('"', '\\"'))).first
+            if not remove.count():
+                raise FillError(f"can't remove the unapproved selection {chip!r}")
+            human.click(remove)
+            human.pause(0.1, 0.3)
+    have = _chips(loc)
+    picked = []
+    for v in values:
+        held = next((c for c in have if dom.resolve_option(v, [c]) is not None), None)
+        picked.append(held if held is not None else fill_combobox(root, f, v, human))
+    chips = _chips(loc)
     if sorted(chips) != sorted(picked):
         raise FillError(f"multi-select shows {chips!r}, approved {picked!r}")
     return picked
+
+
+_CHIPS_JS = """e => {
+  const c = e.closest('.select-shell') || e.closest('[class*="control"]') || e.parentElement;
+  return [...c.querySelectorAll('[class*="multi-value__label"], '
+                                + '[class*="multiValue"] [class*="label"]')]
+         .map(x => x.innerText.trim()).filter(Boolean);
+}"""
+# from the input up to its widget, then the chip with that label and its remove button
+_CHIP_SHELL = "xpath=ancestor::*[contains(@class,'select-shell') or contains(@class,'control')][1]"
+_CHIP_REMOVE = ('[class*="multi-value"]:has(> [class*="multi-value__label"]:text-is("{label}")) '
+                '[class*="multi-value__remove"]')
+
+
+def _chips(loc: Locator) -> list[str]:
+    return loc.evaluate(_CHIPS_JS)
 
 
 def fill_file(root: Page | Frame, f: LiveField, path: Path, human: Human) -> str:

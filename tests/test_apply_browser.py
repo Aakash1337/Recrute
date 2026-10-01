@@ -1430,3 +1430,69 @@ def test_lever_location_text_without_a_picked_place_is_refilled(srv, context, pa
     assert "location" in report.filled and "location" not in report.problems
     assert '"San Francisco, CA, USA"' in page.input_value('input[name="selectedLocation"]')
     page.close()
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("saved,approved", [
+    (["Linkedin"], ["Linkedin", "Referral"]),  # partly there already
+    (["Glassdoor"], ["Referral"]),  # an unapproved saved selection
+])
+def test_multi_value_combobox_reconciles_saved_selections(context, human, saved, approved):
+    """Audit: chips already selected (saved from an earlier application) must be kept when
+    approved and removed when not; react-select hides selected options from the menu."""
+    from recrute.apply import dom
+    from recrute.apply.widgets import fill_one
+
+    page = context.new_page()
+    opts = "".join(f'<div role="option" class="select__option">{o}</div>'
+                   for o in ("Glassdoor", "Linkedin", "Referral"))
+    chip = ("vals.insertAdjacentHTML('beforeend', `<div class='select__multi-value'>"
+            "<div class='select__multi-value__label'>${o.innerText}</div>"
+            "<div class='select__multi-value__remove' "
+            "onclick='this.parentElement.remove()'>x</div></div>`)")
+    page.set_content(_REACT_SELECT.format(multi="select__value-container--is-multi",
+                                          options=opts, pick=chip))
+    for label in saved:  # what the site restored
+        page.locator(".select__option", has_text=label).dispatch_event("click")
+    f = next(x for x in dom.extract_fields(page) if x.id == "hear")
+    assert sorted(f.current) == sorted(saved)
+    assert sorted(fill_one(page, f, approved, human)) == sorted(approved)
+    f = next(x for x in dom.extract_fields(page) if x.id == "hear")
+    assert sorted(f.current) == sorted(approved)
+    page.close()
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("after", ["removed", "replaced"])
+def test_attachment_whose_input_was_removed_is_verified_before_submit(context, human, resume,
+                                                                     after):
+    """Audit: Greenhouse removes the file input once a file is attached and shows its name
+    instead. If that attachment then disappears or changes, the form must not pass."""
+    page = context.new_page()
+    page.set_content("""<form id="application-form">
+      <label for="first_name">First Name</label><input id="first_name" name="first_name">
+      <div id="resume-box"><label for="resume">Resume/CV</label>
+        <input type="file" id="resume" name="resume"></div></form>
+      <script>
+        document.getElementById('resume').addEventListener('change', e => {
+          const name = e.target.files[0].name;
+          document.getElementById('resume-box').innerHTML =
+            `<span id="attached">${name}</span>`;
+        });
+      </script>""")
+    packet = Packet(job_id=1, resume_pdf=str(resume), questions=parse_questions({
+        "questions": [{"label": "First Name", "required": True,
+                       "fields": [{"name": "first_name", "type": "input_text"}]},
+                      {"label": "Resume/CV", "required": True,
+                       "fields": [{"name": "resume", "type": "input_file"}]}]}),
+        answers=[a("first_name", "Ada"), a("resume", str(resume))])
+    adapter = GreenhouseAdapter()
+    report = adapter.fill(page, job("https://x", "greenhouse"), packet, {"resume": resume},
+                          human=human)
+    assert report.filled.get("resume") == resume.name and report.ready_to_submit, report
+    assert adapter.presubmit_problems(page, packet, {"resume": resume}) == {}
+    page.evaluate("""after => { const s = document.getElementById('attached');
+      if (after === 'removed') s.remove(); else s.textContent = 'Someone_Else.pdf'; }""", after)
+    problems = adapter.presubmit_problems(page, packet, {"resume": resume})
+    assert "resume" in problems and resume.name in problems["resume"]
+    page.close()

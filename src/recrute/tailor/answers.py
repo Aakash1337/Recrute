@@ -444,6 +444,27 @@ def _either(a: bool | None, b: bool | None) -> bool | None:
     return False if (a is False and b is False) else None
 
 
+# "... to work in X" / "employment in X" / "sponsorship within X": the place the question is about
+_SCOPE_RE = re.compile(r"\b(?:work\w*|employ\w*|jobs?|positions?|roles?|sponsor\w*|visas?|"
+                       r"support|authori[sz]\w*|permits?|live|living|reside)\s+(?:in|within)\s+"
+                       r"((?:the\s+)?[a-z][\w.'-]*(?:\s+[a-z][\w.'-]*){0,3})")
+_US_SCOPE = re.compile(r"(the\s+)?(united states( of america)?|u\.?s\.?(a\.?)?|america)\b")
+_NOT_A_PLACE = re.compile(r"(the\s+)?(future|order|this|that|these|those|any|all|our|your|my|"
+                          r"which|a|an|connection|regards?|addition|case|person|office|"
+                          r"accordance|the next|the coming|the following|the role|the position|"
+                          r"the job|the company|the past|the meantime)\b")
+
+
+def _non_us_scope(t: str) -> bool:
+    """The question names a place to work/live in that isn't the US ("visa support for
+    employment in Costa Rica"): the bank's US facts don't answer it."""
+    for m in _SCOPE_RE.finditer(t):
+        place = m.group(1)
+        if not (_US_SCOPE.match(place) or _NOT_A_PLACE.match(place)):
+            return True
+    return False
+
+
 def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
     """Yes/No for a sponsorship question, strictly from the bank; None when unsure.
 
@@ -465,7 +486,7 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
     # bank doesn't hold
     from recrute.location import _FOREIGN
 
-    if _FOREIGN.search(t) or re.search(r"\btravel", t):
+    if _FOREIGN.search(t) or re.search(r"\btravel", t) or _non_us_scope(t):
         return None  # another country's sponsorship / a travel visa: not the bank's US facts
     if "sponsor" not in t and not re.search(r"\b(work\w*|employ\w*|jobs?|roles?|positions?|"
                                              r"hir\w*)\b", t):

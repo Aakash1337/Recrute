@@ -1151,3 +1151,17 @@ def test_bank_city_is_not_overridden_by_a_stale_profile_location():
     a = {x.question_id: x for x in answer_questions(questions, profile=profile, bank=bank,
                                                      router=None).answers}
     assert a["c"].value is None and a["s"].value is None
+
+
+@pytest.mark.parametrize("label", [
+    "Do you require visa support for employment in Costa Rica?",
+    "Do you require sponsorship to work in Panama?",
+    "Will you need sponsorship to work in Uruguay or the US?",
+])
+def test_sponsorship_for_another_country_is_not_answered(label):
+    """Audit: countries missing from the foreign-place list got trusted US answers."""
+    from recrute.tailor.answers import sponsorship_answer
+
+    assert sponsorship_answer(label, _real_bank().work_authorization) is None
+    assert sponsorship_answer("Will you require sponsorship to work in the United States?",
+                              _real_bank().work_authorization) is False

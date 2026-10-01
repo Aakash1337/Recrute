@@ -398,6 +398,10 @@ def coverage_check(questions_on_page: Sequence[FormQuestion], packet: Packet, *,
                                                    accept_prefilled=accept_prefilled, files=files)]
 
 
+# id(page) -> {question id: file name} attached during the current fill of that page
+_UPLOADS: dict[int, dict[str, str]] = {}
+
+
 # country names an approved answer may use -> the flag code a phone-country picker shows
 _COUNTRY_CODES = {"united states": "us", "united states of america": "us", "usa": "us",
                   "us": "us", "u.s": "us", "canada": "ca", "united kingdom": "gb",
@@ -624,6 +628,32 @@ class BaseAdapter:
     def postprocess(self, fields: list[LiveField]) -> list[LiveField]:
         return fields
 
+    def _uploaded(self, page: Page, root: Page | Frame, f: LiveField, packet: Packet,
+                  files: Mapping[str, Path]) -> None:
+        path = file_for(f, packet, files, self.aliases)
+        if path is not None:
+            _UPLOADS.setdefault(id(page), {})[f.id] = path.name
+        self.after_upload(root, f)
+
+    def attachment_problems(self, page: Page, fields: Sequence[LiveField]) -> dict[str, str]:
+        """Files attached in this run whose input is GONE from the form (some widgets remove
+        it and show the file's name instead): the name must still be on the form, else the
+        attachment can't be verified (it may have failed, been removed or replaced)."""
+        live = {f.id for f in fields}
+        gone = {qid: name for qid, name in _UPLOADS.get(id(page), {}).items()
+                if qid not in live}
+        if not gone:
+            return {}
+        root = self.form_root(page)
+        try:
+            form = root.locator(self.form_selector).first if self.form_selector else None
+            text = form.inner_text(timeout=3000) if form is not None and form.count() \
+                else dom.page_text(root, 200000)
+        except Exception:  # noqa: BLE001 - unreadable form: nothing verified
+            text = ""
+        return {qid: f"the attached {name} is no longer shown on the form"
+                for qid, name in gone.items() if name not in text}
+
     def after_upload(self, root: Page | Frame, f: LiveField) -> None:
         """Called after a file was attached (sites that parse it and autofill the form wait
         here, so their autofill can't race the typing)."""
@@ -636,12 +666,14 @@ class BaseAdapter:
     def fill(self, page: Page, job: Job, packet: Packet, files: Mapping[str, Path], *,
              human: Human, pause_only: bool = False) -> FillReport:
         root = self.form_root(page)
+        _UPLOADS[id(page)] = {}
         report = self.fill_rounds(page, root, packet, files, human)
         if report.blocker:
             return report
         final = self.read_form(page)
         report.unmatched = self.coverage(final, packet, files)
         report.problems.update(self.verify(final, packet, files))
+        report.problems.update(self.attachment_problems(page, final))
         if not final and self.requires_fields:
             report.problems[NO_FIELDS] = "no form fields found: the form could not be verified"
         report.ready_to_submit = not (report.unmatched or report.failed or report.problems)
@@ -665,7 +697,8 @@ class BaseAdapter:
             report.merge(fill_fields(root, fields, packet, files, human, aliases=self.aliases,
                                      accept_prefilled=self.accept_prefilled,
                                      blocker_check=lambda: self.detect_blockers(page),
-                                     after_upload=lambda f: self.after_upload(root, f)))
+                                     after_upload=lambda f: self._uploaded(
+                                         page, root, f, packet, files)))
             if report.blocker:
                 break
             # a challenge can pop up while typing (behavioural scoring): stop right there
@@ -691,6 +724,8 @@ class BaseAdapter:
             # nothing was read: the form disappeared / rerendered, so nothing was verified
             problems[NO_FIELDS] = "no form fields found: the form could not be verified"
         for k, v in self.verify(fields, packet, files).items():
+            problems.setdefault(k, v)
+        for k, v in self.attachment_problems(page, fields).items():
             problems.setdefault(k, v)
         return problems
 
