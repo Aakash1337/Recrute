@@ -220,3 +220,41 @@ def test_repeated_saved_answers_are_evidence_for_the_llm_verifier():
     router = FakeRouter({"verify": {"flags": []}})
     verify(profile, claims, router=router, saved=[("unrelated_question", "Something else")])
     assert "PREVIOUSLY APPROVED" not in router.calls[0][1]
+
+
+def test_paraphrased_saved_answers_on_the_same_topic_are_evidence():
+    """Audit: 'I built five Go microservices.' (saved) was dropped from the evidence once the
+    draft reworded it as 'I have built five microservices in Go.'"""
+    profile = make_profile()
+    questions = [FormQuestion(id="go", label="Describe your Go experience")]
+    answers = [FormAnswer(question_id="go", value="I have built five microservices in Go.",
+                          source="llm_new")]
+    saved = [("describe_your_go_experience", "I built five Go microservices."),
+             ("what_are_your_hobbies", "Climbing and chess")]
+    router = FakeRouter({"verify": {"flags": []}})
+    verify(profile, collect_claims(profile, answers=answers, questions=questions),
+           router=router, saved=saved)
+    prompt = router.calls[0][1]
+    assert "(Q: describe your go experience) I built five Go microservices." in prompt
+    assert "Climbing and chess" not in prompt  # unrelated topic
+
+
+def test_saved_address_is_not_evidence_for_an_unrelated_answer():
+    profile = make_profile()
+    questions = [FormQuestion(id="py", label="What is your experience with Python?")]
+    answers = [FormAnswer(question_id="py", value="Five years of Python", source="llm_new")]
+    router = FakeRouter({"verify": {"flags": []}})
+    verify(profile, collect_claims(profile, answers=answers, questions=questions),
+           router=router, saved=[("what_is_your_address", "100 Congress Ave, Austin, TX")])
+    assert "Congress" not in router.calls[0][1]
+
+
+def test_address_as_a_verb_is_not_evidence_for_the_saved_address():
+    profile = make_profile()
+    questions = [FormQuestion(id="inc", label="How do you address production incidents?")]
+    answers = [FormAnswer(question_id="inc", value="I triage and write postmortems",
+                          source="llm_new")]
+    router = FakeRouter({"verify": {"flags": []}})
+    verify(profile, collect_claims(profile, answers=answers, questions=questions),
+           router=router, saved=[("what_is_your_address", "100 Congress Ave, Austin, TX")])
+    assert "Congress" not in router.calls[0][1]

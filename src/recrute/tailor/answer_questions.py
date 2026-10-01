@@ -46,18 +46,45 @@ from recrute.tailor.cover_letter import is_cover_letter_field
 
 _RESUME_RE = re.compile(r"resume|résumé|\bcv\b|curriculum", re.IGNORECASE)
 _CONSENT_RE = re.compile(r"\b(agree|acknowledge|consent|certify|confirm|attest)\b", re.IGNORECASE)
-_POLICY_RE = re.compile(r"\b(?:privacy|policy|policies|terms|consent|acknowledg\w*|"
-                        r"read and understand|have read|agree)\b", re.IGNORECASE)
+_POLICY_RE = re.compile(r"\b(?:privacy|policy|policies|terms|consent|notice|"
+                        r"read and understand|have read)\b", re.IGNORECASE)
 _AGREE_OPTION = re.compile(r"^\s*(?:yes|i agree|agree|i acknowledge|acknowledge(?:d)?|"
                            r"i accept|accept|i consent|i understand|confirm(?:ed)?|"
                            r"acknowledge/confirm)\b", re.IGNORECASE)
+
+
+# "I confirm that I have completed a bachelor's degree": a fact about you, not a consent
+_FACTUAL_ATTESTATION = re.compile(
+    r"\b(?:confirm|certify|attest|declare|affirm|agree|acknowledge|understand)\w*\s+"
+    r"(?:that\s+)?(?:i|i'm|i've|i am|i have)\s+"
+    r"(?!(?:have\s+)?(?:read|reviewed|understood|understand|agree|accept|consent|acknowledge)\b)",
+    re.IGNORECASE)
+
+
+_ACCURACY_RE = re.compile(
+    r"\b(?:the\s+)?(?:information|answers?|statements?|details?|everything)\s+(?:that\s+)?"
+    r"(?:i\s+(?:have\s+)?(?:provided|submitted|given|entered)|(?:provided|submitted|given|"
+    r"entered|contained|herein|in this application)[\w\s]{0,30}?)\s*(?:is|are)\s+(?:true|"
+    r"accurate|complete|correct)", re.IGNORECASE)
+
+
+def _is_consent(q: FormQuestion) -> bool:
+    """A bare checkbox that accepts a policy/terms ("I agree to the privacy policy", "I
+    consent to ...", "I have read and understand ..."), not one that states a fact about you."""
+    text = f"{q.label} {q.description}"
+    if not _CONSENT_RE.search(q.label):
+        return False
+    if _ACCURACY_RE.search(q.label):  # "... the information provided is accurate": about the
+        return True  # application itself, the attestation every form asks for
+    return bool(_POLICY_RE.search(text) and not _FACTUAL_ATTESTATION.search(q.label))
 
 
 def _acknowledgement_option(q: FormQuestion) -> str | None:
     """The single 'I agree' option of a policy acknowledgement (no 'No' alternative)."""
     if not q.options or q.type not in ("select", "radio", "multiselect", "checkbox"):
         return None
-    if not _POLICY_RE.search(f"{q.label} {q.description}"):
+    if not _POLICY_RE.search(f"{q.label} {q.description}") or _FACTUAL_ATTESTATION.search(
+            q.label):
         return None
     agree = [o for o in q.options if _AGREE_OPTION.match(o)]
     return agree[0] if len(agree) == 1 and len(q.options) == 1 else None
@@ -100,8 +127,15 @@ _MONTHS = {m: i for i, m in enumerate(
 
 def completion_date(end: str):
     """The date an education entry was completed, from "2024", "2024-05", "05/2024",
-    "May 2024", "2024-05-17"; None when it's ongoing or can't be parsed. A month means the end
-    of that month; a bare year means the end of that year."""
+    "May 2024", "2024-05-17"; None when it's ongoing or can't be parsed (or isn't a real
+    date: "2024-02-30"). A month means the end of that month; a bare year, of that year."""
+    try:
+        return _completion_date(end)
+    except ValueError:
+        return None
+
+
+def _completion_date(end: str):
     import calendar
     import re
     from datetime import date
@@ -171,11 +205,13 @@ def _profile_value(kind: str, profile: Profile) -> str | None:
         "gpa": ed.gpa if ed else None,
         "grad_date": ed.end if ed else None,
         "major": ed.field if ed else None,
-        "degree": highest_completed_degree(profile),
+        "degree": None,  # (computed below, only when asked: it parses education dates)
         "school": ed.school if ed else None,
         "current_company": ex.company if ex and ex.end.lower() in ("", "present") else None,
         "current_title": ex.title if ex and ex.end.lower() in ("", "present") else None,
     }
+    if kind == "degree":
+        return highest_completed_degree(profile)
     return values.get(kind) or None
 
 
@@ -396,6 +432,7 @@ _SIGNATURE_DATE_LABEL = re.compile(
 
 
 _GEO_KINDS = frozenset({"phone_country", "country", "us_state"})
+_NAME_KINDS = frozenset({"first_name", "last_name", "full_name"})
 
 
 def _bank_decides(q: FormQuestion, bank: AnswerBank) -> bool:
@@ -405,7 +442,8 @@ def _bank_decides(q: FormQuestion, bank: AnswerBank) -> bool:
     kind = classify_question(q)
     c = bank.contact
     return bank_has_fact(q, bank) or (kind in _GEO_KINDS and bool(c.country or c.current_city)) \
-        or (kind == "phone_country" and bool(c.phone))
+        or (kind == "phone_country" and bool(c.phone)) \
+        or (kind in _NAME_KINDS and bool(c.full_name.strip()))  # never half another name
 
 
 def _is_signature_date(q: FormQuestion, questions: list[FormQuestion]) -> bool:
@@ -471,7 +509,7 @@ def answer_questions(questions: list[FormQuestion], *, profile: Profile, bank: A
                 or is_sensitive_question(q)):
             done[q.id] = FormAnswer(question_id=q.id, value=None, source="default",
                                     confidence=0.0, needs_review=True)
-        elif q.type == "checkbox" and not q.options and _CONSENT_RE.search(q.label):
+        elif q.type == "checkbox" and not q.options and _is_consent(q):
             done[q.id] = FormAnswer(question_id=q.id, value=True, source="default",
                                     confidence=0.6, needs_review=True)
         elif (agree := _acknowledgement_option(q)) is not None:

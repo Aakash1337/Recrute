@@ -1189,3 +1189,109 @@ def test_bank_contact_that_fits_no_option_is_not_replaced_by_the_profile():
     a = {x.question_id: x for x in answer_questions(questions, profile=profile,
                                                      bank=AnswerBank(), router=None).answers}
     assert a["loc"].value == "Austin, TX" and a["em"].value == "old@example.com"
+
+
+def test_single_word_bank_name_never_takes_a_profile_surname():
+    """Audit: bank 'Madonna' + profile 'Ada Lovelace' gave 'Madonna' / 'Lovelace'."""
+    from recrute.tailor.answers import Contact
+
+    profile = make_profile()
+    profile.name = "Ada Lovelace"
+    bank = AnswerBank(contact=Contact(full_name="Madonna"))
+    questions = [q("First Name", id="fn"), q("Last Name", id="ln")]
+    a = {x.question_id: x for x in answer_questions(questions, profile=profile, bank=bank,
+                                                     router=None).answers}
+    assert a["fn"].value == "Madonna"
+    assert a["ln"].value is None and a["ln"].needs_review
+
+
+@pytest.mark.parametrize("label", [
+    "Will you require visa sponsorship for a work visa for Panama?",
+    "Will you require sponsorship in your country of employment?",
+    "Will you require sponsorship to relocate to Canada?",
+])
+def test_unresolved_or_foreign_destinations_are_left_for_you(label):
+    """Audit: 'visa for Panama' / 'your country of employment' got trusted US answers."""
+    res = answer_questions([q(label, "select", YES_NO)], profile=make_profile(),
+                           bank=_real_bank(), router=None, job=make_job())
+    assert res.answers[0].value is None
+
+
+@pytest.mark.parametrize("label", [
+    "Will you require sponsorship for a Panama work visa?",
+    "Will you need sponsorship to work outside the United States?",
+])
+def test_foreign_visa_and_outside_us_scopes_are_left_for_you(label):
+    res = answer_questions([q(label, "select", YES_NO)], profile=make_profile(),
+                           bank=_real_bank(), router=None)
+    assert res.answers[0].value is None and res.answers[0].needs_review
+
+
+def test_saved_address_is_never_shared_for_unrelated_questions():
+    """Audit: 'What is your address' scored as related to 'What is your experience with
+    Python?' on the generic wording, sending a home address to the LLM."""
+    from recrute.tailor.answers import drafting_context
+
+    bank = make_bank()
+    bank.common["what_is_your_address"] = "100 Congress Ave, Austin, TX 78701"
+    bank.common["describe_your_python_experience"] = "Five years of Python tooling"
+    ctx = dict(drafting_context(bank, [q("What is your experience with Python?", "textarea")]))
+    assert "what_is_your_address" not in ctx
+    assert "describe_your_python_experience" in ctx
+    ctx = dict(drafting_context(bank, [q("Mailing address", "textarea")]))
+    assert "what_is_your_address" in ctx
+
+
+def test_factual_attestation_is_not_pre_checked():
+    """Audit: 'I confirm that I have completed a bachelor's degree.' was checked as consent."""
+    res = answer_questions([q("I confirm that I have completed a bachelor's degree.",
+                              "checkbox", id="deg")], profile=make_profile(), bank=make_bank(),
+                           router=None)
+    assert res.answers[0].value is not True
+
+
+def test_invalid_education_date_does_not_crash_drafting():
+    """Audit: an education end date of 2024-02-30 crashed answering even an Email question."""
+    from recrute.tailor.answer_questions import completion_date
+
+    assert completion_date("2024-02-30") is None
+    profile = make_profile()
+    profile.education[0].end = "2024-02-30"
+    res = answer_questions([q("Email", "email", id="em"), q("Highest degree", id="deg")],
+                           profile=profile, bank=AnswerBank(), router=None)
+    assert res.answers[0].value == profile.email
+
+
+@pytest.mark.parametrize("label", [
+    "will you require sponsorship for a panama work visa?",
+    "WILL YOU REQUIRE SPONSORSHIP FOR A PANAMA WORK VISA?",
+])
+def test_foreign_visa_in_any_capitalization_is_left_for_you(label):
+    from recrute.tailor.answers import sponsorship_answer
+
+    wa = _real_bank().work_authorization
+    assert sponsorship_answer(label, wa) is None
+    assert sponsorship_answer("Will you require sponsorship for an H-1B visa?", wa) is False
+
+
+@pytest.mark.parametrize("label", [
+    "How do you address production incidents?",
+    "How would you address Python performance problems?",
+])
+def test_address_as_a_verb_never_shares_the_saved_address(label):
+    from recrute.tailor.answers import drafting_context
+
+    bank = make_bank()
+    bank.common["what_is_your_address"] = "100 Congress Ave, Austin, TX 78701"
+    assert "what_is_your_address" not in dict(drafting_context(bank, [q(label, "textarea")]))
+
+
+@pytest.mark.parametrize("label", [
+    "I acknowledge that I have completed a bachelor's degree.",
+    "I agree that I meet the minimum qualifications for this position.",
+])
+def test_factual_agreements_are_not_pre_checked(label):
+    for question in (q(label, "checkbox", id="x"), q(label, "select", ["I Agree"], id="x")):
+        res = answer_questions([question], profile=make_profile(), bank=make_bank(),
+                               router=None)
+        assert res.answers[0].value in (None, False, [])
