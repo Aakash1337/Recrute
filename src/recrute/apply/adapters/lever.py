@@ -19,15 +19,16 @@ from typing import TYPE_CHECKING, ClassVar
 from bs4 import BeautifulSoup
 
 from recrute.apply import dom
-from recrute.apply.base import BaseAdapter
+from recrute.apply.base import BaseAdapter, LiveField
 from recrute.schemas import FormQuestion
 
 if TYPE_CHECKING:
-    from patchright.sync_api import Page
+    from patchright.sync_api import Frame, Page
 
     from recrute.http import Http
     from recrute.models import Job
 
+NOT_PICKED = "(no place picked)"
 _CARD_RE = re.compile(r"^cards\[([^\]]+)\]\[baseTemplate\]$")
 _CARD_TYPES = {"text": "text", "textarea": "textarea", "multiple-choice": "radio",
                "multiple-select": "multiselect", "dropdown": "select", "file-upload": "file"}
@@ -44,8 +45,9 @@ def parse_apply_html(html: str) -> list[FormQuestion]:
             continue
         ctl = li.find(["input", "textarea", "select"],
                       attrs={"name": True, "type": lambda t: t != "hidden"})
-        if ctl is None or ctl["name"] in seen:
-            continue
+        if ctl is None or ctl["name"] in seen or (
+                ctl.name == "select" and str(ctl["name"]).startswith("eeo[")):
+            continue  # (EEO selects: parsed below, with their option definitions)
         name = str(ctl["name"])
         lab_el = li.select_one(".application-label")
         label = lab_el.get_text(" ", strip=True) if lab_el else name
@@ -53,7 +55,8 @@ def parse_apply_html(html: str) -> list[FormQuestion]:
         t = (ctl.get("type") or "").lower()
         qt = ("file" if t == "file" else "email" if t == "email" or name == "email"
               else "tel" if name == "phone" else "textarea" if ctl.name == "textarea"
-              else "select" if ctl.name == "select" else "text")
+              else ("multiselect" if ctl.has_attr("multiple") else "select")
+              if ctl.name == "select" else "text")
         opts = ([o.get_text(strip=True) for o in ctl.find_all("option") if o.get("value")]
                 if ctl.name == "select" else [])
         seen.add(name)
@@ -74,7 +77,24 @@ def parse_apply_html(html: str) -> list[FormQuestion]:
                 required=bool(fld.get("required")),
                 options=[str(o.get("text")) for o in fld.get("options") or []],
                 description=(fld.get("description") or "").strip()))
-    # anything else (EEO selects, "Additional information")
+    # EEO selects: the whole question sits inside one <label> (so its text would include every
+    # option); read it as the live form shows it: the .application-label, plus the (collapsed)
+    # option definitions as its description
+    for sel in form.find_all("select", attrs={"name": re.compile(r"^eeo\[")}):
+        name = str(sel["name"])
+        box = sel.find_parent(class_="application-question")
+        if box is None or name in seen:
+            continue
+        lab_el = box.select_one(".application-label")
+        desc_el = box.select_one('[class*="description"]')
+        seen.add(name)
+        out.append(FormQuestion(
+            id=name, label=lab_el.get_text(" ", strip=True) if lab_el else name,
+            type="multiselect" if sel.has_attr("multiple") else "select",
+            required=sel.has_attr("required"),
+            options=[o.get_text(strip=True) for o in sel.find_all("option") if o.get("value")],
+            description=" ".join(desc_el.get_text().split())[:500] if desc_el else ""))
+    # anything else ("Additional information", the disability form's signature)
     for q in dom.parse_static_form(str(form)):
         if q.id in seen or q.id.startswith("cards[") or q.id in (
                 "h-captcha-response", "g-recaptcha-response"):
@@ -92,8 +112,11 @@ class LeverAdapter(BaseAdapter):
     submit_selector = ("#btn-submit, button[data-qa=btn-submit], "
                        "#application-form button[type=submit]")
     key_prefer = ("name", "id")
-    # each question card carries its serialized definition (the questions, not answers)
-    transport_fields = (r"cards\[[0-9a-f-]+\]\[baseTemplate\]",)
+    # each question card carries its serialized definition (the questions, not answers); the
+    # page's scripts also set the board's account id, the browser's time zone and the stored
+    # upload's id
+    transport_fields = (r"cards\[[0-9a-f-]+\]\[baseTemplate\]", r"accountId", r"timezone",
+                        r"resumeStorageId")
     aliases: ClassVar[dict[str, list[str]]] = {}
     confirm_url_re = re.compile(r"/(thanks|confirmation)\b", re.I)
 
@@ -107,6 +130,49 @@ class LeverAdapter(BaseAdapter):
         if "lever.co" in parts.netloc and not parts.path.rstrip("/").endswith("/apply"):
             parts = parts._replace(path=parts.path.rstrip("/") + "/apply")
         return urlunsplit(parts)
+
+    def postprocess(self, fields: list[LiveField]) -> list[LiveField]:
+        # "Current location" is a typeahead without ARIA roles: typed text alone is dropped,
+        # and its open suggestion list swallows the next click (picking a random place)
+        return [f.model_copy(update={"widget": "combobox"})
+                if f.id == "location" and f.widget == "text" else f for f in fields]
+
+    def read_form(self, page: Page) -> list[LiveField]:
+        """The location counts as a place only when a suggestion was picked: the hidden
+        selectedLocation ({"name": ..., "id": ...}, submitted with the form) must name the place
+        the field shows. Otherwise the field reports what's there WITH a marker, so it never
+        equals an approved value (it's refilled) and never passes as empty or as approved (an
+        unapproved one stops the application: a typeahead can't be safely cleared)."""
+        fields = super().read_form(page)
+        loc = next((f for f in fields if f.id == "location"), None)
+        if loc is None:
+            return fields
+        try:
+            backing = self.form_root(page).locator('input[name="selectedLocation"]')
+            raw = backing.first.input_value(timeout=2000) if backing.count() else ""
+            picked = json.loads(raw).get("name") if raw else None
+        except Exception:  # noqa: BLE001 - unreadable: treat as not picked
+            raw, picked = "?", None
+        shown = loc.current if isinstance(loc.current, str) else ""
+        if shown and picked != shown:  # typed text / a stale pick behind it
+            current = f"{shown} {NOT_PICKED}"
+        elif not shown and raw:  # an earlier pick still submitted behind an empty field
+            current = f"{picked or raw} {NOT_PICKED}"
+        else:
+            return fields
+        return [f.model_copy(update={"current": current}) if f is loc else f for f in fields]
+
+    def after_upload(self, root: Page | Frame, f: LiveField) -> None:
+        # Lever reads the resume ("Analyzing resume...") and then autofills name, email,
+        # phone, ...: typing before it is done gets mixed with its autofill
+        if f.id != "resume":
+            return
+        try:
+            root.wait_for_function(
+                "() => { const w = document.querySelector('.resume-upload-working');"
+                " return !w || getComputedStyle(w).display === 'none'; }", timeout=20000)
+        except Exception:  # noqa: BLE001 - still analyzing: the typing re-checks every field
+            pass
 
     def fetch_questions(self, job: Job, http: Http | None, *, page: Page | None = None,
                         ) -> list[FormQuestion]:

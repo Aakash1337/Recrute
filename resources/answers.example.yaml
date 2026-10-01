@@ -6,6 +6,7 @@ contact:
   email: ""
   phone: ""
   current_city: ""        # e.g. "Austin, TX"
+  country: ""             # of residence, e.g. "United States" (derived from a US city if blank)
   linkedin: ""
   github: ""
   portfolio: ""

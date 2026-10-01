@@ -785,7 +785,7 @@ def test_linkedin_baseline_contacts_are_answered_and_cover_the_live_form():
     from recrute.tailor.answers import AnswerBank, Contact
 
     bank = AnswerBank(contact=Contact(full_name="Ada Lovelace", email="ada@example.com",
-                                      phone="+1 415 555 0100"))
+                                      phone="+1 415 555 0100", current_city="Austin, TX"))
     qs = [q for q in BASELINE_QUESTIONS if q.type != "file"]
     res = answer_questions(qs, profile=Profile(name="Ada Lovelace"), bank=bank, router=None)
     answers = {a.question_id: a.value for a in res.answers}

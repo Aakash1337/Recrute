@@ -367,7 +367,7 @@ def test_lever_submit(srv, context, paths, human, resume):
     assert out.status == "submitted", out
     assert len(srv.posts) == 1 and srv.posts[0]["path"] == "/lever/acme/abc-123/apply"
     body = srv.posts[0]["body"].decode("utf-8", "replace")
-    for name, value in [("name", "Ada Lovelace"), ("location", "San Francisco, CA"),
+    for name, value in [("name", "Ada Lovelace"), ("location", "San Francisco, CA, USA"),
                         (f"{LEVER_WA}[field0]", "Yes"), (f"{LEVER_WA}[field1]", "No"),
                         (f"{LEVER_HEAR}[field0]", "LinkedIn"), (f"{LEVER_ADD}[field1]", "Hindi"),
                         ("eeo[gender]", "Decline to self-identify")]:
@@ -1250,4 +1250,281 @@ def test_iframe_navigation_drops_queued_input(context, paths):
     live.apply_inputs(paths, page)
     assert page.input_value("#q") == ""  # nothing typed after the frame changed
     live.clear(paths)
+    page.close()
+
+
+@pytest.mark.browser
+def test_radio_under_a_fixed_cookie_banner_is_scrolled_clear(context):
+    """Seen live on Lever: a cookie banner pinned to the bottom of the viewport swallowed the
+    clicks on radios that scrolling had left underneath it. The banner is never clicked."""
+    page = context.new_page()
+    page.set_content("""<div style="height:1400px"></div>
+      <form><label><input type="radio" name="spon" value="No" id="no"> No</label></form>
+      <div style="height:1400px"></div>
+      <div id="banner" style="position:fixed;left:0;right:0;bottom:0;height:420px;
+           background:#333" onclick="window.bannerClicked = true">We use cookies</div>""")
+    box = page.locator("#no")
+    # the radio at y=650 of 900: "comfortably in view" for scrolling, but under the banner
+    page.evaluate("y => window.scrollTo(0, y)", 1400 - 650)
+    Human(rng=random.Random(3), fast=True).check(box, True)
+    assert box.is_checked()
+    assert not page.evaluate("window.bannerClicked === true")
+    page.close()
+
+
+_REACT_SELECT = """<form><div class="field"><label for="hear">How did you hear?</label>
+  <div class="select-shell"><div class="select__control {multi}">
+    <div class="vals"></div>
+    <input id="hear" role="combobox" aria-controls="hear-listbox"></div>
+    <div id="hear-listbox" role="listbox" style="display:none">
+      {options}</div></div></div></form>
+<script>
+  const inp = document.getElementById('hear'), lb = document.getElementById('hear-listbox');
+  const vals = document.querySelector('.vals');
+  const show = () => {{ lb.style.display = 'block';
+    for (const o of lb.children) o.style.display =
+      o.innerText.toLowerCase().includes(inp.value.toLowerCase()) ? 'block' : 'none'; }};
+  inp.addEventListener('input', show); inp.addEventListener('focus', show);
+  for (const o of lb.children) o.addEventListener('click', () => {{
+    {pick}; inp.value = ''; lb.style.display = 'none'; }});
+</script>"""
+
+
+@pytest.mark.browser
+def test_multi_value_combobox_picks_each_value(context, human):
+    from recrute.apply import dom
+    from recrute.apply.widgets import fill_one
+
+    page = context.new_page()
+    opts = "".join(f'<div role="option" class="select__option">{o}</div>'
+                   for o in ("Glassdoor", "Linkedin", "Referral"))
+    page.set_content(_REACT_SELECT.format(
+        multi="select__value-container--is-multi", options=opts,
+        pick="vals.insertAdjacentHTML('beforeend', "
+             "`<div class=\"select__multi-value__label\">${o.innerText}</div>`)"))
+    f = next(x for x in dom.extract_fields(page) if x.id == "hear")
+    assert f.type == "multiselect" and f.widget == "combobox"
+    assert fill_one(page, f, ["Linkedin", "Referral"], human) == ["Linkedin", "Referral"]
+    f = next(x for x in dom.extract_fields(page) if x.id == "hear")
+    assert sorted(f.current) == ["Linkedin", "Referral"]
+    page.close()
+
+
+@pytest.mark.browser
+def test_phone_country_picker_showing_only_a_flag_is_verified(context, human):
+    from recrute.apply import dom
+    from recrute.apply.base import value_matches
+    from recrute.apply.widgets import fill_one
+
+    page = context.new_page()
+    opts = "".join(f'<div role="option" class="select__option" data-cc="{cc}">{o}</div>'
+                   for o, cc in (("Canada +1", "ca"), ("United States +1", "us")))
+    page.set_content(_REACT_SELECT.format(
+        multi="", options=opts,
+        pick="vals.innerHTML = `<div class=\"select__single-value\"><div "
+             "class=\"iti__flag iti__${o.dataset.cc}\"></div>+1</div>`"))
+    f = next(x for x in dom.extract_fields(page) if x.id == "hear")
+    assert fill_one(page, f, "United States (+1)", human) == "United States +1"
+    f = next(x for x in dom.extract_fields(page) if x.id == "hear")
+    assert f.current == "+1 [us]"
+    assert value_matches(f, f.current, "United States")
+    assert not value_matches(f, f.current, "Canada")
+    page.close()
+
+
+@pytest.mark.browser
+def test_text_typed_while_a_page_script_autofills_is_retyped(context, human):
+    """Seen live on Lever: its resume parser filled the name while we typed it, leaving
+    'Test CandidateCandidate'. The field is retyped once and still checked."""
+    from recrute.apply import dom
+    from recrute.apply.widgets import fill_one
+
+    page = context.new_page()
+    page.set_content("""<form><label for="name">Full name</label><input id="name" name="name">
+      </form><script>
+      let done = false;
+      document.getElementById('name').addEventListener('input', e => {
+        if (!done && e.target.value.length === 3) { done = true; e.target.value = 'Ada Lovelace'; }
+      });</script>""")
+    f = next(x for x in dom.extract_fields(page) if x.id == "name")
+    assert fill_one(page, f, "Ada Lovelace", human) == "Ada Lovelace"
+    assert page.input_value("#name") == "Ada Lovelace"
+    page.close()
+
+
+def test_lever_submit_with_parsed_questions_in_the_packet(srv, context, paths, human, resume):
+    """Audit: answers are checked against the APPROVED questions (as parsed before the form
+    was opened); a multi-select EEO question parsed as a single select was never filled."""
+    from recrute.apply.adapters.lever import parse_apply_html
+
+    questions = parse_apply_html((FIX / "lever.html").read_text(encoding="utf-8"))
+    assert {x.id: x for x in questions}["eeo[race]"].type == "multiselect"
+    packet = lever_packet(resume).model_copy(update={"questions": questions})
+    packet.answers.append(a("eeo[race]", ["Decline to self-identify"]))
+    j = job(f"{srv.url}/lever/acme/abc-123/apply", "lever", job_id=2)
+    out = run(j, packet, context, paths, human)
+    assert out.status == "submitted", out
+    body = srv.posts[0]["body"].decode("utf-8", "replace")
+    assert 'name="eeo[race]"\r\n\r\nDecline to self-identify\r\n' in body
+
+
+@pytest.mark.browser
+def test_overlay_that_cannot_be_scrolled_clear_is_never_clicked(context):
+    """Audit: when scrolling can't move the element out from under a fixed footer, the click
+    must not go through to the overlay."""
+    from recrute.apply.human import CoveredError
+
+    page = context.new_page()
+    page.set_content("""<body style="margin:0">
+      <form style="position:absolute;top:700px"><label>
+        <input type="checkbox" id="agree"> I agree</label></form>
+      <div style="position:fixed;left:0;right:0;bottom:0;height:400px;background:#333"
+           onclick="window.bannerClicked = true">We use cookies</div></body>""")
+    box = page.locator("#agree")
+    with pytest.raises(CoveredError):
+        Human(rng=random.Random(5), fast=True).check(box, True)
+    assert not box.is_checked()
+    assert not page.evaluate("window.bannerClicked === true")
+    page.close()
+
+
+@pytest.mark.browser
+def test_field_half_under_a_banner_is_scrolled_fully_clear(context):
+    """Seen live on Lever: a field's centre was clear but its lower edge was under the cookie
+    banner, where the (randomized) click point landed."""
+    from recrute.apply import dom
+    from recrute.apply.widgets import fill_one
+
+    page = context.new_page()
+    page.set_content("""<div style="height:1400px"></div>
+      <form><label for="li">LinkedIn URL</label>
+        <input id="li" name="li" style="height:60px;width:400px"></form>
+      <div style="height:1400px"></div>
+      <div style="position:fixed;left:0;right:0;bottom:0;height:300px;background:#333"
+           onclick="window.bannerClicked = true">We use cookies</div>""")
+    # the input spans y=580..640 of the 900px viewport; the banner starts at y=600
+    page.evaluate("y => window.scrollTo(0, y)", 1400 + 22 - 580)
+    f = next(x for x in dom.extract_fields(page) if x.id == "li")
+    for seed in range(5):  # whichever point inside the field is picked
+        human = Human(rng=random.Random(seed), fast=True)
+        assert fill_one(page, f, f"https://linkedin.com/in/ada{seed}", human)
+    assert not page.evaluate("window.bannerClicked === true")
+    page.close()
+
+
+def test_lever_location_text_without_a_picked_place_is_refilled(srv, context, paths, human,
+                                                               resume):
+    """Audit: typed text equal to the approved place, with no suggestion picked (empty
+    selectedLocation), must not pass as filled."""
+    from recrute.apply.adapters.lever import LeverAdapter
+
+    adapter = LeverAdapter()
+    page = context.new_page()
+    page.goto(f"{srv.url}/lever/acme/abc-123/apply")
+    page.fill("#location-input", "San Francisco, CA, USA")  # typed, never picked
+    loc = next(f for f in adapter.read_form(page) if f.id == "location")
+    assert loc.current == "San Francisco, CA, USA (no place picked)"  # not a place yet
+    packet = lever_packet(resume)
+    report = adapter.fill(page, job(srv.url, "lever"), packet, {"resume": resume},
+                          human=human)
+    assert "location" in report.filled and "location" not in report.problems
+    assert '"San Francisco, CA, USA"' in page.input_value('input[name="selectedLocation"]')
+    page.close()
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("saved,approved", [
+    (["Linkedin"], ["Linkedin", "Referral"]),  # partly there already
+    (["Glassdoor"], ["Referral"]),  # an unapproved saved selection
+])
+def test_multi_value_combobox_reconciles_saved_selections(context, human, saved, approved):
+    """Audit: chips already selected (saved from an earlier application) must be kept when
+    approved and removed when not; react-select hides selected options from the menu."""
+    from recrute.apply import dom
+    from recrute.apply.widgets import fill_one
+
+    page = context.new_page()
+    opts = "".join(f'<div role="option" class="select__option">{o}</div>'
+                   for o in ("Glassdoor", "Linkedin", "Referral"))
+    chip = ("vals.insertAdjacentHTML('beforeend', `<div class='select__multi-value'>"
+            "<div class='select__multi-value__label'>${o.innerText}</div>"
+            "<div class='select__multi-value__remove' "
+            "onclick='this.parentElement.remove()'>x</div></div>`)")
+    page.set_content(_REACT_SELECT.format(multi="select__value-container--is-multi",
+                                          options=opts, pick=chip))
+    for label in saved:  # what the site restored
+        page.locator(".select__option", has_text=label).dispatch_event("click")
+    f = next(x for x in dom.extract_fields(page) if x.id == "hear")
+    assert sorted(f.current) == sorted(saved)
+    assert sorted(fill_one(page, f, approved, human)) == sorted(approved)
+    f = next(x for x in dom.extract_fields(page) if x.id == "hear")
+    assert sorted(f.current) == sorted(approved)
+    page.close()
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("after", ["removed", "replaced"])
+def test_attachment_whose_input_was_removed_is_verified_before_submit(context, human, resume,
+                                                                     after):
+    """Audit: Greenhouse removes the file input once a file is attached and shows its name
+    instead. If that attachment then disappears or changes, the form must not pass."""
+    page = context.new_page()
+    page.set_content("""<form id="application-form">
+      <label for="first_name">First Name</label><input id="first_name" name="first_name">
+      <div id="resume-box"><label for="resume">Resume/CV</label>
+        <input type="file" id="resume" name="resume"></div></form>
+      <script>
+        document.getElementById('resume').addEventListener('change', e => {
+          const name = e.target.files[0].name;
+          document.getElementById('resume-box').innerHTML =
+            `<span id="attached">${name}</span>`;
+        });
+      </script>""")
+    packet = Packet(job_id=1, resume_pdf=str(resume), questions=parse_questions({
+        "questions": [{"label": "First Name", "required": True,
+                       "fields": [{"name": "first_name", "type": "input_text"}]},
+                      {"label": "Resume/CV", "required": True,
+                       "fields": [{"name": "resume", "type": "input_file"}]}]}),
+        answers=[a("first_name", "Ada"), a("resume", str(resume))])
+    adapter = GreenhouseAdapter()
+    report = adapter.fill(page, job("https://x", "greenhouse"), packet, {"resume": resume},
+                          human=human)
+    assert report.filled.get("resume") == resume.name and report.ready_to_submit, report
+    assert adapter.presubmit_problems(page, packet, {"resume": resume}) == {}
+    page.evaluate("""after => { const s = document.getElementById('attached');
+      if (after === 'removed') s.remove(); else s.textContent = 'Someone_Else.pdf'; }""", after)
+    problems = adapter.presubmit_problems(page, packet, {"resume": resume})
+    assert "resume" in problems and resume.name in problems["resume"]
+    page.close()
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("state", ["typed", "stale", "hidden_pick"])
+def test_unapproved_lever_location_never_passes(srv, context, paths, human, resume, state):
+    """Audit (critical): with NO approved location, typed text, a stale pick, or a pick behind
+    an empty field (all submitted with the form) must stop the application, never pass."""
+    from recrute.apply.adapters.lever import LeverAdapter
+
+    adapter = LeverAdapter()
+    page = context.new_page()
+    page.goto(f"{srv.url}/lever/acme/abc-123/apply")
+    backing = 'input[name="selectedLocation"]'
+    page.evaluate("() => { const e = document.getElementById('location-input');"
+                  " e.removeAttribute('required');"
+                  " e.closest('label').querySelector('.required')?.remove(); }")  # optional
+    if state in ("typed", "stale"):
+        page.fill("#location-input", "San Francisco, CA, USA")
+    if state in ("stale", "hidden_pick"):
+        page.evaluate("s => document.querySelector(s).value = "
+                      "JSON.stringify({name: 'Austin, TX, USA'})", backing)
+    packet = lever_packet(resume)
+    packet = packet.model_copy(update={
+        "answers": [x for x in packet.answers if x.question_id != "location"]})
+    report = adapter.fill(page, job(srv.url, "lever"), packet, {"resume": resume},
+                          human=human)
+    assert not report.ready_to_submit
+    assert "location" in report.failed or "location" in report.problems \
+        or "location" in report.unmatched
+    problems = adapter.presubmit_problems(page, packet, {"resume": resume})
+    assert "location" in problems
     page.close()

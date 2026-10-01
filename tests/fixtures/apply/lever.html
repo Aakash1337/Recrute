@@ -57,7 +57,9 @@
       <li class="application-question">
         <label><div class="application-label">Current location<span class="required">✱</span></div>
         <div class="application-field"><input class="location-input" data-qa="location-input" id="location-input" name="location" required type="text">
-        <input id="selected-location" name="selectedLocation" type="hidden"></div></label>
+        <input id="selected-location" name="selectedLocation" type="hidden">
+        <div class="dropdown-container" style="display:none">
+          <div class="dropdown-results width-full cursor-pointer"></div></div></div></label>
       </li>
       <li class="application-question">
         <label><div class="application-label">Current company</div>
@@ -158,6 +160,27 @@
 
 <script>
 (function () {
+  // the location typeahead, as on the real page: suggestions name the country; text typed
+  // without picking one is not a location
+  const locInput = document.getElementById('location-input');
+  const box = document.querySelector('.dropdown-container');
+  const results = box.querySelector('.dropdown-results');
+  const PLACES = ['San Francisco, CA, USA', 'South San Francisco, CA, USA',
+                  'San Francisco, Córdoba, ARG'];
+  locInput.addEventListener('input', () => {
+    const q = locInput.value.toLowerCase().split(',')[0].trim();
+    results.innerHTML = PLACES.filter(p => q && p.toLowerCase().includes(q))
+      .map(p => `<div class="break-word dropdown-location width-full py1 px2">${p}</div>`).join('');
+    box.style.display = results.children.length ? 'block' : 'none';
+    document.getElementById('selected-location').value = '';
+  });
+  results.addEventListener('click', e => {
+    const opt = e.target.closest('.dropdown-location');
+    if (!opt) return;
+    locInput.value = opt.innerText;
+    document.getElementById('selected-location').value = JSON.stringify({name: opt.innerText});
+    box.style.display = 'none';
+  });
   const form = document.getElementById('application-form');
   form.setAttribute('action', location.pathname);
   if (new URLSearchParams(location.search).get('extra') === '1') {

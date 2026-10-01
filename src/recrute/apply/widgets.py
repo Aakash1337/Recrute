@@ -17,6 +17,7 @@ from recrute.apply.base import (
     FillReport,
     LiveField,
     file_for,
+    flag_country,
     has_value,
     prefill_ok,
     resolve_answer,
@@ -29,7 +30,8 @@ if TYPE_CHECKING:
 
     from recrute.apply.human import Human
 
-OPTION_SELECTOR = '[role="option"], .select__option, [class*="option"][id*="option"]'
+OPTION_SELECTOR = ('[role="option"], .select__option, [class*="option"][id*="option"], '
+                   '.dropdown-location')  # (the last: Lever's location typeahead)
 
 
 class FillError(RuntimeError):
@@ -74,10 +76,21 @@ def fill_text(root: Page | Frame, f: LiveField, value: Any, human: Human) -> str
     if f.max_length and len(text) > f.max_length:
         raise FillError(f"approved answer is {len(text)} chars; field allows {f.max_length}")
     loc = root.locator(f.selector).first
+
+    def typed_ok() -> tuple[bool, str]:
+        got = loc.input_value()
+        return (got == text or got.strip() == text.strip()
+                or (f.type == "tel" and _digits(got).endswith(_digits(text)[-7:]))), got
+
     human.type_text(loc, text)
-    got = loc.input_value()
-    ok = got == text or (f.type == "tel" and _digits(got).endswith(_digits(text)[-7:]))
-    if not ok and got.strip() != text.strip():
+    ok, got = typed_ok()
+    if not ok:
+        # a page script wrote into the field while we typed (e.g. autofill from the uploaded
+        # resume): let it settle, then type it again, once
+        human.sleep(1.0)
+        human.type_text(loc, text)
+        ok, got = typed_ok()
+    if not ok:
         raise FillError(f"field shows {got!r} after typing")
     return text
 
@@ -142,14 +155,38 @@ def fill_yesno(root: Page | Frame, f: LiveField, value: Any, human: Human) -> st
     return label
 
 
-def _visible_options(root: Page | Frame) -> list[tuple[str, Locator]]:
-    opts = root.locator(OPTION_SELECTOR)
-    out = []
-    for i in range(min(opts.count(), 200)):
-        o = opts.nth(i)
-        if o.is_visible():
-            out.append(((o.inner_text() or "").strip(), o))
-    return out
+_VISIBLE_OPTIONS_JS = """([sel, listbox]) => {
+  const scope = listbox ? document.getElementById(listbox) : document;
+  if (!scope) return null;  // this control's own list isn't rendered (yet)
+  const all = [...scope.querySelectorAll(sel)];
+  const out = [];
+  all.forEach((e, i) => {
+    const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+    if (r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none')
+      out.push([i, (e.innerText || '').trim()]);
+  });
+  return out;
+}"""
+
+
+def _visible_options(root: Page | Frame, combo: Locator | None = None
+                     ) -> list[tuple[str, Locator]]:
+    """The options of THIS dropdown that are on screen. Scoped to the listbox the control
+    points to (aria-controls / aria-owns / react-select's id), so another widget's hidden list
+    (e.g. 240 phone-country options) is never mistaken for it; visibility is read in ONE call."""
+    listbox = None
+    if combo is not None:
+        listbox = combo.get_attribute("aria-controls") or combo.get_attribute("aria-owns")
+        cid = combo.get_attribute("id")
+        if not listbox and cid:
+            listbox = f"react-select-{cid}-listbox"
+    found = root.evaluate(_VISIBLE_OPTIONS_JS, [OPTION_SELECTOR, listbox]) if listbox else None
+    if found is not None:
+        opts = root.locator(f'[id="{listbox}"]').locator(OPTION_SELECTOR)
+    else:  # no list of its own (yet): the page's visible options
+        found = root.evaluate(_VISIBLE_OPTIONS_JS, [OPTION_SELECTOR, None]) or []
+        opts = root.locator(OPTION_SELECTOR)
+    return [(text, opts.nth(i)) for i, text in found]
 
 
 def fill_combobox(root: Page | Frame, f: LiveField, value: Any, human: Human, *,
@@ -160,11 +197,13 @@ def fill_combobox(root: Page | Frame, f: LiveField, value: Any, human: Human, *,
     text = as_text(value)
     loc = root.locator(f.selector).first
     page = loc.page
-    human.type_text(loc, text)
+    # search by the name: "United States (+1)" finds nothing in a country picker's filter (the
+    # option is still matched against the whole approved value)
+    human.type_text(loc, re.sub(r"\s*\(?\+\d{1,4}\)?$", "", text) or text)
     deadline_step = 100
     choice: tuple[str, Locator] | None = None
     for _ in range(max(timeout_ms // deadline_step, 1)):
-        visible = _visible_options(root)
+        visible = _visible_options(root, loc)
         if visible:
             label = dom.resolve_option(value, [t for t, _ in visible])
             if label is not None:
@@ -177,15 +216,63 @@ def fill_combobox(root: Page | Frame, f: LiveField, value: Any, human: Human, *,
         raise FillError(f"no option matching {text!r}")
     human.pause(0.2, 0.6)
     human.click(choice[1])
-    shown = loc.evaluate(
+    shown, flag = loc.evaluate(
         """e => {
              const c = e.closest('.select-shell') || e.closest('[class*="control"]')
                        || e.closest('[class*="inputContainer"]') || e.parentElement;
-             return `${c ? c.innerText : ''} ${e.value || ''}`;
+             const fl = c && c.querySelector('[class*="iti__flag"]');
+             const cc = fl && [...fl.classList].map(k => (k.match(/^iti__([a-z]{2})$/) || [])[1])
+                                               .find(Boolean);
+             return [`${c ? c.innerText : ''} ${e.value || ''}`, cc || null];
            }""")
-    if dom.norm(choice[0]) not in dom.norm(shown):
+    # (a phone-country picker shows only "+1" and the chosen country's flag)
+    flag_ok = flag is not None and flag_country(choice[0]) == flag
+    if dom.norm(choice[0]) not in dom.norm(shown) and not flag_ok:
         raise FillError(f"combobox shows {shown.strip()!r}")
     return choice[0]
+
+
+def fill_multi_combobox(root: Page | Frame, f: LiveField, value: Any, human: Human) -> list[str]:
+    """A multi-value typeahead (react-select isMulti): pick each approved value in turn, then
+    the chips must be exactly those."""
+    values = list(value) if isinstance(value, list | tuple) else [value]
+    if not values:
+        raise FillError("no approved value")
+    loc = root.locator(f.selector).first
+    # what is already selected (saved / prefilled): keep approved chips, remove the rest
+    for chip in _chips(loc):
+        if dom.resolve_option(chip, [as_text(v) for v in values]) is None:
+            remove = loc.locator(_CHIP_SHELL).locator(
+                _CHIP_REMOVE.format(label=chip.replace("\\", "\\\\").replace('"', '\\"'))).first
+            if not remove.count():
+                raise FillError(f"can't remove the unapproved selection {chip!r}")
+            human.click(remove)
+            human.pause(0.1, 0.3)
+    have = _chips(loc)
+    picked = []
+    for v in values:
+        held = next((c for c in have if dom.resolve_option(v, [c]) is not None), None)
+        picked.append(held if held is not None else fill_combobox(root, f, v, human))
+    chips = _chips(loc)
+    if sorted(chips) != sorted(picked):
+        raise FillError(f"multi-select shows {chips!r}, approved {picked!r}")
+    return picked
+
+
+_CHIPS_JS = """e => {
+  const c = e.closest('.select-shell') || e.closest('[class*="control"]') || e.parentElement;
+  return [...c.querySelectorAll('[class*="multi-value__label"], '
+                                + '[class*="multiValue"] [class*="label"]')]
+         .map(x => x.innerText.trim()).filter(Boolean);
+}"""
+# from the input up to its widget, then the chip with that label and its remove button
+_CHIP_SHELL = "xpath=ancestor::*[contains(@class,'select-shell') or contains(@class,'control')][1]"
+_CHIP_REMOVE = ('[class*="multi-value"]:has(> [class*="multi-value__label"]:text-is("{label}")) '
+                '[class*="multi-value__remove"]')
+
+
+def _chips(loc: Locator) -> list[str]:
+    return loc.evaluate(_CHIPS_JS)
 
 
 def fill_file(root: Page | Frame, f: LiveField, path: Path, human: Human) -> str:
@@ -194,13 +281,19 @@ def fill_file(root: Page | Frame, f: LiveField, path: Path, human: Human) -> str
     loc = root.locator(f.selector).first
     trigger = root.locator(f.trigger) if f.trigger else None
     human.upload(loc, path, trigger=trigger)
-    names = loc.evaluate("e => [...(e.files || [])].map(f => f.name)")
+    # some widgets (Greenhouse's current form) REMOVE the input once the file is attached and
+    # show its name instead: never wait on a gone element
+    names = (loc.evaluate("e => [...(e.files || [])].map(f => f.name)", timeout=5000)
+             if loc.count() else [])
     if names and names != [path.name]:
         raise FillError(f"the upload holds {names!r}, not exactly the approved file")
     if path.name not in names:
-        # some widgets move the file elsewhere and reset the input; accept if the name shows up
-        if path.name not in dom.page_text(root, 50000):
-            raise FillError("upload did not register")
+        # moved elsewhere / input reset: accept once the file's name shows up on the page
+        for _ in range(20):
+            if path.name in dom.page_text(root, 50000):
+                return path.name
+            human.sleep(0.25)
+        raise FillError("upload did not register")
     return path.name
 
 
@@ -228,6 +321,8 @@ def fill_one(root: Page | Frame, f: LiveField, value: Any, human: Human) -> Any:
     if f.widget == "yesno":
         return fill_yesno(root, f, value, human)
     if f.widget == "combobox":
+        if f.type == "multiselect":
+            return fill_multi_combobox(root, f, value, human)
         return fill_combobox(root, f, value, human)
     raise FillError(f"unsupported widget {f.widget!r}")
 
@@ -278,7 +373,8 @@ def clear_field(root: Page | Frame, f: LiveField, human: Human) -> None:
 def fill_fields(root: Page | Frame, fields: Sequence[LiveField], packet: Packet,
                 files: Mapping[str, Path], human: Human, *,
                 aliases: Mapping[str, Sequence[str]] = {}, accept_prefilled: bool = False,
-                blocker_check: Callable[[], str | None] | None = None) -> FillReport:
+                blocker_check: Callable[[], str | None] | None = None,
+                after_upload: Callable[[LiveField], None] | None = None) -> FillReport:
     """Fill every live field that has an approved answer. Fields without one are left empty:
     an unapproved value already there is cleared (or, if that isn't safe, reported as failed so
     the run pauses at CP3). Only allowlisted contact fields may keep a site prefill."""
@@ -314,8 +410,12 @@ def fill_fields(root: Page | Frame, fields: Sequence[LiveField], packet: Packet,
                     else:
                         report.skipped.append(f.id)
                     continue
-                report.filled[f.id] = (path.name if f.current == path.name
-                                       else fill_file(root, f, path, human))
+                if f.current == path.name:
+                    report.filled[f.id] = path.name
+                    continue
+                report.filled[f.id] = fill_file(root, f, path, human)
+                if after_upload is not None:
+                    after_upload(f)  # e.g. let the site finish reading the resume
                 human.dwell()
                 continue
             answer = resolve_answer(f, packet, aliases)

@@ -48,6 +48,7 @@ class Contact(_Section):
     email: str = ""
     phone: str = ""
     current_city: str = ""
+    country: str = ""  # of residence, e.g. "United States" (derived from a US city if blank)
     linkedin: str = ""
     github: str = ""
     portfolio: str = ""
@@ -268,6 +269,10 @@ _FIELD_RULES: list[tuple[str, re.Pattern[str]]] = [
         ("email", r"e-?mail( address)?"),
         ("phone_country", r"(mobile |phone )?(country|dialing|calling) (calling )?code|"
                           r"phone (number )?country( code)?"),
+        ("country", r"(current )?country( of (current )?residence)?|country you (live|reside) in|"
+                    r"(current )?country of residence"),
+        ("us_state", r"(current )?state( of residence)?|state/province|"
+                     r"(please )?select the state (where|in which) you (currently )?(reside|live)"),
         ("phone", r"((mobile|cell|home|primary) )?(phone|telephone)( number)?|"
                   r"(mobile|cell)( number)?"),
         ("linkedin", r"linked ?in( profile)?( url| link)?"),
@@ -282,7 +287,8 @@ _FIELD_RULES: list[tuple[str, re.Pattern[str]]] = [
 # Keyword rules for screening questions, in priority order.
 _SCREEN_RULES: list[tuple[str, re.Pattern[str]]] = [
     (kind, re.compile(rx)) for kind, rx in [
-        ("sponsorship", r"sponsor|h-?1b|visa support"),
+        ("sponsorship", r"sponsor|h-?1b|visa support|require[^?]{0,20}work permit|"
+                        r"visa[^?]{0,40}support"),
         ("work_auth", r"authori[sz]ed to work|legally (authori[sz]ed|eligible|permitted)|"
                       r"eligib\w* to work|right to work|work authori[sz]ation|"
                       r"employment eligibility"),
@@ -378,11 +384,30 @@ def drafting_context(bank: AnswerBank, pending: list[FormQuestion],
     return [(k, v) for _, k, v in scored[:limit]]
 
 
+# a place field asking about something other than where you live
+_GEO_KINDS_RE = re.compile(r".*\b(country|state|province|region|nation)\b.*")
+_NOT_RESIDENCE = re.compile(r"citizen|nationalit|\bbirth|\bborn\b|passport|\bissu(ed|ing)\b|"
+                            r"\bvisa\b|\bpermit\b", re.I)
+
+
+def bank_has_fact(q: FormQuestion, bank: AnswerBank) -> bool:
+    """Does the bank hold the contact fact this question asks for (even if that value can't
+    be put into this control)? Then an older profile value must not stand in for it."""
+    kind = classify_question(q)
+    if kind not in CONTACT_KINDS:
+        return False
+    return _bank_raw(kind, q, bank, None) not in (None, "", [])
+
+
 def classify_question(q: FormQuestion) -> str | None:
     """The bank/profile field a question asks for, or None (-> grounded LLM drafting)."""
     if q.type == "file":
         return None
     core = field_core(q.label)
+    if _GEO_KINDS_RE.fullmatch(core) and _NOT_RESIDENCE.search(f"{q.label} {q.description}"):
+        return "citizenship"  # "Country (of citizenship)": residence says nothing about it
+    if core == "country" and re.search(r"\b(phone|dialing|calling)\b", q.description, re.I):
+        return "phone_country"  # e.g. Greenhouse's picker next to the phone number
     if q.type not in ("checkbox", "multiselect"):  # "Email me about openings" is not a field
         for kind, rx in _FIELD_RULES:
             if rx.fullmatch(core):
@@ -428,6 +453,35 @@ def _either(a: bool | None, b: bool | None) -> bool | None:
     return False if (a is False and b is False) else None
 
 
+# "... to work in X" / "employment in X" / "sponsorship within X": the place the question is about
+_SCOPE_RE = re.compile(r"\b(?:work\w*|employ\w*|jobs?|positions?|roles?|sponsor\w*|visas?|"
+                       r"support|authori[sz]\w*|permits?|live|living|reside)\s+(?:in|within)\s+"
+                       r"((?:the\s+)?[a-z][\w.'-]*(?:\s+[a-z][\w.'-]*){0,3})")
+_US_SCOPE = re.compile(r"(the\s+)?(united states( of america)?|u\.s\.a\.?|u\.s\.?|usa|us|"
+                       r"america)(?!\w)")  # (the whole "U.S.": the period is part of it)
+_NOT_A_PLACE = re.compile(r"(the\s+)?(future|order|this|that|these|those|any|all|our|your|my|"
+                          r"which|a|an|connection|regards?|addition|case|person|office|"
+                          r"accordance|the next|the coming|the following|the role|the position|"
+                          r"the job|the company|the past|the meantime)\b")
+
+
+def _non_us_scope(t: str) -> bool:
+    """The question names a place to work/live in that isn't the US ("visa support for
+    employment in Costa Rica"): the bank's US facts don't answer it."""
+    for m in _SCOPE_RE.finditer(t):
+        place = m.group(1)
+        if _NOT_A_PLACE.match(place):
+            continue
+        us = _US_SCOPE.match(t, m.start(1))
+        if not us:
+            return True
+        # "the US or Uruguay" / "the United States and Panama": another place too
+        if re.match(r"\s*(,|/|&|\bor\b|\band\b|\bplus\b)\s*(?!(now|currently|in the future|"
+                    r"at any|for|in order|without|do|will|are|have|if|please)\b)\w", t[us.end():]):
+            return True
+    return False
+
+
 def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
     """Yes/No for a sponsorship question, strictly from the bank; None when unsure.
 
@@ -439,7 +493,7 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
     t = " ".join(label.lower().replace("*", " ").replace("’", "'").split())
     # only genuine employer-sponsorship questions; visa STATUS questions ("are you on an H-1B?")
     # and other countries' sponsorship are facts the bank doesn't have
-    if not re.search(r"sponsor", t) or re.search(
+    if not re.search(r"sponsor|work permit|visa[^?]{0,40}support", t) or re.search(
             r"\b(currently (on|hold)|do you (hold|have) an?|what is your|type of visa|"
             r"your visa (type|status))\b|canada|kingdom|\buk\b|europe|\beu\b|india|mexico|"
             r"australia|germany", t):
@@ -447,11 +501,28 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
     # only questions about NEEDING sponsorship (or working without it): "are you currently
     # receiving / being sponsored", "is your employer sponsoring you" ask about a status the
     # bank doesn't hold
-    if not (re.search(r"\b(?:requir\w*|need\w*|necessitat\w*)\b", t)
-            or _NEGATED_SPONSOR_RE.search(t)):
+    from recrute.location import _FOREIGN
+
+    if _FOREIGN.search(t) or re.search(r"\btravel", t) or _non_us_scope(t):
+        return None  # another country's sponsorship / a travel visa: not the bank's US facts
+    if "sponsor" not in t and not re.search(r"\b(work\w*|employ\w*|jobs?|roles?|positions?|"
+                                             r"hir\w*)\b", t):
+        return None  # "visa support" for what?
+    if "work permit" in t:
+        # a permit (e.g. an EAD) can be required without employer sponsorship: the bank's
+        # sponsorship flags don't say
+        return None
+    # "visa support" is sponsorship in other words: the same polarity rules apply to it
+    negated = bool(_NEGATED_SPONSOR_RE.search(re.sub(r"visa[^?]{0,40}?support", "sponsorship",
+                                                     t)))
+    if not (re.search(r"\b(?:requir\w*|need\w*|necessitat\w*)\b", t) or negated):
         return None
     if re.search(r"\b(?:receiv\w*|being sponsored|sponsored by|currently sponsored|"
                  r"on (?:a |an )?(?:employer )?sponsor\w*|sponsoring you)\b", t):
+        return None
+    # "the country where this role is located / you are applying": unless the job is US-only
+    # (then localize_question already wrote "the United States"), an unknown country
+    if _ROLE_COUNTRY.search(t):
         return None
     # authorization qualifiers the bank doesn't establish: permanent / indefinite /
     # unrestricted status, any employer
@@ -481,7 +552,7 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
         required = now if now is not None and now == fut else None
     if required is None:
         return None
-    if not _NEGATED_SPONSOR_RE.search(t):
+    if not negated:
         return required
     if _AUTH_WORDS_RE.search(t):  # "authorized to work without sponsorship"
         auth = wa.authorized_to_work_in_us
@@ -651,9 +722,9 @@ _NEGATED_Q = re.compile(r"\b(not|n't|never|unable|without)\b", re.IGNORECASE)
 
 
 _PLAIN_WORK_AUTH = re.compile(
-    r"(are you |is the candidate )?(currently )?(legally )?(authori[sz]ed|eligible|permitted)"
-    r" to (work|be employed)( lawfully)? (in|for employment in|within) (the )?"
-    r"(u\.?s\.?a?|united states( of america)?)"
+    r"(?:(are you |is the candidate )?(currently )?(legally )?(authori[sz]ed|eligible|permitted)"
+    r" to (work|be employed)( lawfully)?|(do you (currently )?have )?(the )?(legal )?right to "
+    r"work) (in|for employment in|within) (the )?(u\.?s\.?a?|united states( of america)?)"
     r"( (at this time|currently|today))?", re.IGNORECASE)
 
 
@@ -685,13 +756,53 @@ def relocation_answer(q: FormQuestion, willing: bool | None) -> bool | None:
     return willing if _PLAIN_RELOCATE.fullmatch(t) else None
 
 
-def phone_country(phone: str | None) -> str | None:
+def _us_state_code(city: str | None) -> str | None:
+    """The state code of a location that reads as US-only as a WHOLE ("Austin, TX",
+    "Austin, TX, USA"), never of "Perth, WA, Australia" or "Berlin, DE, Germany"."""
+    from recrute.location import US_STATES, us_exclusive
+
+    if not city or not us_exclusive(city):
+        return None
+    m = re.search(r",\s*([A-Z]{2})\b", city)
+    return m.group(1) if m and m.group(1) in US_STATES else None
+
+
+def state_from_city(city: str | None) -> str | None:
+    """"Austin, TX" -> "Texas" (from the US state code in your own city)."""
+    from recrute.location import US_STATES
+
+    code = _us_state_code(city)
+    return US_STATES[code] if code else None
+
+
+def country_from_city(city: str | None) -> str | None:
+    """"Austin, TX" -> "United States" (a US state code makes it a fact); else unknown."""
+    return "United States" if _us_state_code(city) else None
+
+
+_US_NAMES = {"united states", "united states of america", "usa", "us", "u.s", "u.s.a"}
+# +1 area codes outside the US: Canada and the Caribbean/Atlantic NANP countries
+_NON_US_NANP = frozenset("""204 226 236 249 250 257 263 289 306 343 354 365 367 368 382 387 403 416
+418 428 431 437 438 450 460 468 474 506 514 519 548 579 581 584 587 600 604 613 622 633 639 644
+647 655 672 677 683 688 705 709 742 753 778 780 782 807 819 825 867 873 879 902 905 942 242 246
+264 268 284 345 441 473 649 658 664 721 758 767 784 809 829 849 868 869 876""".split())
+
+
+def phone_country(phone: str | None, residence: str | None = None) -> str | None:
     """The phone country for a "Phone country code" picker, from YOUR number: only a US/NANP
-    number (+1 or ten digits) is answered; anything else is left for you to pick."""
+    number (+1 or ten digits), and only when you're known to live in the US (+1 is Canada's
+    and the Caribbean's code too); anything else is left for you to pick."""
+    if not residence or residence.strip().casefold().rstrip(".") not in _US_NAMES:
+        return None
     digits = re.sub(r"\D", "", phone or "")
     if (phone or "").strip().startswith("+"):
-        return "United States (+1)" if digits.startswith("1") and len(digits) == 11 else None
-    return "United States (+1)" if len(digits) == 10 else None
+        if not (digits.startswith("1") and len(digits) == 11):
+            return None
+        digits = digits[1:]
+    # a number kept from Canada / the Caribbean is not a US number, wherever you live now
+    if len(digits) != 10 or digits[:3] in _NON_US_NANP:
+        return None
+    return "United States (+1)"
 
 
 def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
@@ -748,7 +859,11 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
         case "city":
             return c.current_city or None
         case "phone_country":
-            return phone_country(c.phone)
+            return phone_country(c.phone, c.country or country_from_city(c.current_city))
+        case "country":
+            return c.country or country_from_city(c.current_city)
+        case "us_state":
+            return state_from_city(c.current_city)
     return None  # citizenship: deliberately not answered from the bank
 
 
@@ -782,9 +897,29 @@ def _common_answer(q: FormQuestion, bank: AnswerBank) -> tuple[str, bool] | None
     return bank.common[keys[best[2]]], False
 
 
+_ROLE_COUNTRY = re.compile(
+    r"\b(?:the|this) country (?:in which|where) (?:this|the) (?:role|position|job) is "
+    r"(?:located|based|listed)|\bthe country (?:in which|where) you (?:are|will be) "
+    r"(?:applying(?: to work)?|working)|\bwhere (?:this|the) (?:role|position|job) is "
+    r"(?:located|based|listed)", re.IGNORECASE)
+
+
+def localize_question(q: FormQuestion, us_role: bool) -> FormQuestion:
+    """For a job located ONLY in the US, "the country where this role is located" IS the
+    United States: the question is rewritten so the US work-authorization / sponsorship facts
+    apply. Otherwise unchanged (another or several countries: yours to answer)."""
+    if not us_role:
+        return q
+    label = _ROLE_COUNTRY.sub("the United States", q.label)
+    desc = _ROLE_COUNTRY.sub("the United States", q.description or "")
+    return q if (label, desc) == (q.label, q.description or "") else \
+        q.model_copy(update={"label": label, "description": desc})
+
+
 def match_question(q: FormQuestion, bank: AnswerBank, *,
-                   priority: str | None = None) -> FormAnswer | None:
+                   priority: str | None = None, us_role: bool = False) -> FormAnswer | None:
     """Answer `q` from the bank, or None if the bank can't answer it faithfully."""
+    q = localize_question(q, us_role)
     kind = classify_question(q)
     if kind is not None:
         raw = _bank_raw(kind, q, bank, priority)

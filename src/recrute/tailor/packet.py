@@ -179,7 +179,8 @@ def _generate(jc: JobContext, questions: list[FormQuestion], out_dir: Path, *,
                             cover_letter_ids=cover.cited_ids if cover else (),
                             answers=answer_set.answers, questions=questions,
                             cited=answer_set.cited)
-    flags += verify(profile, claims, router=router, job=jc, extra_support=bank.common.values())
+    flags += verify(profile, claims, router=router, job=jc, extra_support=bank.common.values(),
+                    saved=bank.common.items())
 
     packet = Packet(
         job_id=jc.job_id, resume=selection, resume_pdf=rel(resume.path),

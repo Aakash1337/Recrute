@@ -817,16 +817,18 @@ def test_gpa_scale_qualifiers(gpa, label, desc, expected):
     assert (a.value if a else None) == expected
 
 
-@pytest.mark.parametrize("phone,expected", [("+1 415 555 0100", "United States (+1)"),
-                                            ("(415) 555-0100", "United States (+1)"),
-                                            ("+44 20 7946 0958", None), ("", None)])
-def test_phone_country_is_answered_only_for_us_numbers(phone, expected):
+@pytest.mark.parametrize("phone,location,expected", [
+    ("+1 415 555 0100", "Austin, TX", "United States (+1)"),
+    ("(415) 555-0100", "Austin, TX", "United States (+1)"),
+    ("+1 415 555 0100", "", None),  # +1 is Canada's too: where you live must say US
+    ("+44 20 7946 0958", "Austin, TX", None), ("", "Austin, TX", None)])
+def test_phone_country_is_answered_only_for_us_numbers(phone, location, expected):
     from recrute.schemas import FormQuestion, Profile
     from recrute.tailor.answer_questions import profile_answer
 
     q = FormQuestion(id="pc", label="Phone country code", type="select",
                      options=["United States (+1)", "Canada (+1)", "United Kingdom (+44)"])
-    a = profile_answer(q, Profile(name="Ada", phone=phone))
+    a = profile_answer(q, Profile(name="Ada", phone=phone, location=location))
     assert (a.value if a else None) == expected
 
 
@@ -911,3 +913,279 @@ def test_unchanged_template_answers_no_personal_yes_no(paths):
                   "Are you willing to relocate?"):
         hit = match_question(q(label, "radio", YES_NO), bank)
         assert hit is None or hit.needs_review  # never a trusted "Yes" from the template
+
+
+# --- wording seen on real application forms (end-to-end test, Oct 2026) -------------------
+
+def _real_bank():
+    from recrute.tailor.answers import Contact, WorkAuthorization
+
+    return AnswerBank(contact=Contact(full_name="Test Candidate", current_city="Austin, TX"),
+                      work_authorization=WorkAuthorization(
+                          authorized_to_work_in_us=True, requires_sponsorship_now=False,
+                          requires_sponsorship_future=False))
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("Are you legally authorized to work in the country in which this role is located?", "Yes"),
+    ("Do you have the legal right to work in the country where you are applying to work?",
+     "Yes"),
+    ("Do you require visa sponsorship or additional right to work support for the country "
+     "where you are applying to work?", "No"),
+])
+def test_role_country_questions_for_us_only_jobs(label, expected):
+    bank = _real_bank()
+    question = q(label, "select", YES_NO)
+    hit = match_question(question, bank, us_role=True)
+    assert hit is not None and hit.value == expected and not hit.needs_review
+    # a job located elsewhere (or in several countries): left for you
+    assert match_question(question, bank, us_role=False) is None
+
+
+def test_country_answered_from_bank_or_us_city():
+    bank = _real_bank()
+    hit = match_question(q("Country", "select", []), bank)
+    assert hit is not None and hit.value == "United States"
+    from recrute.tailor.answers import Contact
+    abroad = AnswerBank(contact=Contact(current_city="Toronto"))
+    assert match_question(q("Country", "select", []), abroad) is None  # unknown: yours
+
+
+@pytest.mark.parametrize("label,qtype,options,desc", [
+    ("Zscaler Privacy Policy", "multiselect", ["I Agree"], "By proceeding with your application"),
+    ('I have read and understand Tailscale\'s "Candidate Privacy Policy"', "select", ["Yes"],
+     "Candidate Privacy Policy AI Policy"),
+])
+def test_policy_acknowledgements_are_preselected_for_review(label, qtype, options, desc):
+    res = answer_questions([q(label, qtype, options, description=desc)], profile=make_profile(),
+                           bank=_real_bank(), router=None)
+    a = res.answers[0]
+    assert a.source == "default" and a.needs_review
+    assert a.value in (options[0], [options[0]])
+
+
+def test_experience_questions_only_warn_in_the_verifier():
+    from recrute.schemas import FormAnswer
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    question = q("Do you have experience with Endpoint Detection and Response (EDR) products?",
+                 "select", YES_NO, id="edr")
+    claims = collect_claims(make_profile(), answers=[FormAnswer(
+        question_id="edr", value="Yes", source="llm_new")], questions=[question])
+    flags = deterministic_flags(make_profile(), claims)
+    assert flags and all(f.severity == "warn" for f in flags)
+    hold = q("Do you hold an active OSCP certification?", "select", YES_NO, id="oscp")
+    claims = collect_claims(make_profile(), answers=[FormAnswer(
+        question_id="oscp", value="Yes", source="llm_new")], questions=[hold])
+    assert any(f.severity == "block" for f in deterministic_flags(make_profile(), claims))
+
+
+@pytest.mark.parametrize("label", ["Please select the state where you currently reside",
+                                   "State/Province", "State"])
+def test_us_state_from_your_city(label):
+    hit = match_question(q(label, "select", ["Texas", "California"]), _real_bank())
+    assert hit is not None and hit.value == "Texas"
+
+
+
+def test_signature_date_is_today_for_review():
+    from datetime import date
+
+    profile, bank = make_profile(), make_bank()
+    questions = [q("Date", id="avail"), q("Signature", id="sig"), q("Date", id="signed_on"),
+                 q("Date", id="eeo[disabilitySignatureDate]"), q("Today's date", id="td")]
+    res = answer_questions(questions, profile=profile, bank=bank, router=None)
+    a = {x.question_id: x for x in res.answers}
+    today = date.today().strftime("%m/%d/%Y")
+    assert a["avail"].value is None  # a bare "Date" not next to a signature: not guessed
+    assert a["signed_on"].value == today  # right after the signature
+    assert a["eeo[disabilitySignatureDate]"].value == today and a["td"].value == today
+    assert a["td"].needs_review and a["td"].source == "default"
+
+
+@pytest.mark.parametrize("locations,expected", [
+    (["Austin, TX"], True), (["Remote - US", "New York, New York, United States"], True),
+    (["Worldwide"], False), (["North America"], False), (["US / Canada"], False),
+    (["Remote (United States | Canada)"], False), (["Americas"], False), (["Remote"], False),
+    (["Austin, TX", "London"], False), ([], False),
+    (["US / Costa Rica"], False), (["Tbilisi, Georgia"], False), (["Atlanta, GA"], True),
+    (["US / Georgia"], False), (["Atlanta, Georgia, USA"], True),
+    (["USA - Washington DC"], True),
+])
+def test_us_only_means_only_the_us(locations, expected):
+    """Audit: 'Worldwide' / 'North America' / 'US / Canada' admit US candidates but aren't
+    US-only, so "the country where this role is located" stays unknown for them."""
+    from recrute.tailor.common import _us_only
+
+    assert _us_only(locations) is expected
+
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("Are you able to work without requiring visa support?", True),
+    ("Do you not require visa support to work in the United States?", True),
+    ("Do you not require visa support?", None),  # support for what?
+    ("Do you require visa support for employment in the Netherlands?", None),
+    ("Do you require visa support to travel internationally?", None),
+    ("Will you require visa support to work for us?", False),
+    ("Are you able to work without a work permit?", None),  # a permit isn't sponsorship
+    ("Do you currently require a work permit?", None),  # (an EAD needs no sponsor)
+    ("Do you require a work permit, visa or additional right to work support for the United "
+     "States?", None),
+])
+def test_visa_support_polarity(label, expected):
+    from recrute.tailor.answers import sponsorship_answer
+
+    assert sponsorship_answer(label, _real_bank().work_authorization) is expected
+
+
+def test_greenhouse_phone_country_comes_from_the_phone_not_residence():
+    """Audit: Greenhouse's 'Country' next to the phone is the DIALING country."""
+    from recrute.apply.adapters.greenhouse import parse_questions
+    from recrute.tailor.answers import Contact
+
+    data = {"questions": [{"label": "Phone", "required": True,
+                           "fields": [{"name": "phone", "type": "input_text"}]}]}
+    country = next(x for x in parse_questions(data) if x.id == "country")
+    uk_phone = AnswerBank(contact=Contact(phone="+44 20 7946 0958", current_city="Austin, TX"))
+    assert match_question(country, uk_phone) is None  # +44: yours to pick
+    us_phone = AnswerBank(contact=Contact(phone="+1 415 555 0100", current_city="Austin, TX"))
+    hit = match_question(country, us_phone)
+    assert hit is not None and hit.value == "United States (+1)"
+    # a +1 number of someone living in Canada isn't claimed to be a US number
+    canada = AnswerBank(contact=Contact(phone="+1 416 555 0100", country="Canada"))
+    assert match_question(country, canada) is None
+
+
+@pytest.mark.parametrize("label,desc", [
+    ("Country (of citizenship)", ""), ("Country", "Select your country of citizenship."),
+    ("Country of birth", ""), ("State", "The state that issued your driver's license"),
+    ("Nationality", ""),
+])
+def test_residence_never_answers_citizenship_or_birthplace(label, desc):
+    """Audit: 'Country (of citizenship)' was answered with the country you live in."""
+    question = q(label, "select", [], description=desc)
+    assert match_question(question, _real_bank()) is None
+    res = answer_questions([question], profile=make_profile(), bank=_real_bank(), router=None)
+    assert res.answers[0].value is None
+
+
+def test_canadian_bank_country_is_not_overridden_by_the_profile():
+    """Audit: the bank refused a US phone country for a Canadian resident, then the profile
+    fallback supplied it anyway."""
+    from recrute.apply.adapters.greenhouse import PHONE_COUNTRY_NOTE
+    from recrute.tailor.answers import Contact
+
+    profile = make_profile()
+    profile.phone, profile.location = "+1 416 555 0100", "Austin, TX"
+    bank = AnswerBank(contact=Contact(phone="+1 416 555 0100", country="Canada"))
+    questions = [q("Country", "select", [], id="country", description=PHONE_COUNTRY_NOTE),
+                 q("Country of residence", "select", [], id="res"), q("State", id="st")]
+    a = {x.question_id: x for x in answer_questions(questions, profile=profile, bank=bank,
+                                                     router=None).answers}
+    assert a["country"].value is None and a["st"].value is None
+    assert a["res"].value == "Canada"
+    # nothing known about where you live: a +1 number isn't assumed to be a US one
+    unknown = AnswerBank(contact=Contact(phone="+1 416 555 0100"))
+    assert match_question(questions[0], unknown) is None
+
+
+@pytest.mark.parametrize("city", ["Perth, WA, Australia", "Berlin, DE, Germany"])
+def test_foreign_city_with_a_state_like_code_is_not_us(city):
+    """Audit: 'Perth, WA, Australia' was read as Washington, United States."""
+    from recrute.tailor.answers import country_from_city, state_from_city
+
+    assert country_from_city(city) is None and state_from_city(city) is None
+    assert country_from_city("Austin, TX, USA") == "United States"
+
+
+def test_phone_country_never_comes_from_a_different_number():
+    """Audit: a UK number in the bank + an older US number in the profile gave the UK phone a
+    'United States (+1)' country."""
+    from recrute.apply.adapters.greenhouse import PHONE_COUNTRY_NOTE
+    from recrute.tailor.answers import Contact
+
+    profile = make_profile()
+    profile.phone, profile.location = "+1 415 555 0100", "Austin, TX"
+    bank = AnswerBank(contact=Contact(phone="+44 20 7946 0958", current_city="Austin, TX"))
+    country = q("Country", "select", [], id="country", description=PHONE_COUNTRY_NOTE)
+    res = answer_questions([country], profile=profile, bank=bank, router=None)
+    assert res.answers[0].value is None
+    # with no number in the bank, the profile's own number (and city) still answer it
+    res = answer_questions([country], profile=profile, bank=AnswerBank(), router=None)
+    assert res.answers[0].value == "United States (+1)"
+
+
+def test_perth_wa_is_not_washington():
+    """Audit: 'Perth, WA' (Western Australia) read as Washington, US: neither the job nor
+    your own location may be taken as US from an ambiguous code."""
+    from recrute.tailor.answers import country_from_city, state_from_city
+    from recrute.tailor.common import _us_only
+
+    assert not _us_only(["Perth, WA"])
+    assert country_from_city("Perth, WA") is None and state_from_city("Perth, WA") is None
+    question = q("Are you legally authorized to work in the country in which this role is "
+                 "located?", "select", YES_NO)
+    assert match_question(question, _real_bank(), us_role=_us_only(["Perth, WA"])) is None
+    assert _us_only(["Seattle, WA"]) and state_from_city("Seattle, WA") == "Washington"
+
+
+def test_kept_canadian_number_is_not_a_us_number():
+    """Audit: a US resident who kept a +1 416 (Toronto) number got 'United States (+1)'."""
+    from recrute.tailor.answers import phone_country
+
+    assert phone_country("+1 416 555 0100", "United States") is None
+    assert phone_country("+1 876 555 0100", "United States") is None  # Jamaica
+    assert phone_country("+1 415 555 0100", "United States") == "United States (+1)"
+
+
+def test_bank_city_is_not_overridden_by_a_stale_profile_location():
+    """Audit: bank city 'Toronto, ON' + profile 'Austin, TX' answered United States / Texas."""
+    from recrute.tailor.answers import Contact
+
+    profile = make_profile()
+    profile.location = "Austin, TX"
+    bank = AnswerBank(contact=Contact(current_city="Toronto, ON"))
+    questions = [q("Country of residence", "select", [], id="c"),
+                 q("State/Province", id="s")]
+    a = {x.question_id: x for x in answer_questions(questions, profile=profile, bank=bank,
+                                                     router=None).answers}
+    assert a["c"].value is None and a["s"].value is None
+
+
+@pytest.mark.parametrize("label", [
+    "Do you require visa support for employment in Costa Rica?",
+    "Do you require sponsorship to work in Panama?",
+    "Will you need sponsorship to work in Uruguay or the US?",
+    "Will you need sponsorship to work in the US or Uruguay?",
+    "Will you need sponsorship to work in the U.S. or Uruguay?",
+    "Will you need sponsorship to work in the U.S.A. or Uruguay?",
+    "Do you require sponsorship for employment in the United States and Panama?",
+])
+def test_sponsorship_for_another_country_is_not_answered(label):
+    """Audit: countries missing from the foreign-place list got trusted US answers."""
+    from recrute.tailor.answers import sponsorship_answer
+
+    assert sponsorship_answer(label, _real_bank().work_authorization) is None
+    assert sponsorship_answer("Will you require sponsorship to work in the United States?",
+                              _real_bank().work_authorization) is False
+
+
+def test_bank_contact_that_fits_no_option_is_not_replaced_by_the_profile():
+    """Audit: the bank's city/email not among a select's options let the profile's OLD value
+    be picked instead, unflagged."""
+    from recrute.tailor.answers import Contact
+
+    profile = make_profile()
+    profile.location, profile.email = "Austin, TX", "old@example.com"
+    bank = AnswerBank(contact=Contact(current_city="Toronto, ON", email="new@example.com"))
+    questions = [q("Current location", "select", ["Austin, TX"], id="loc"),
+                 q("Email", "select", ["old@example.com"], id="em")]
+    a = {x.question_id: x for x in answer_questions(questions, profile=profile, bank=bank,
+                                                     router=None).answers}
+    assert a["loc"].value is None and a["loc"].needs_review
+    assert a["em"].value is None and a["em"].needs_review
+    # with nothing in the bank, the profile still answers
+    a = {x.question_id: x for x in answer_questions(questions, profile=profile,
+                                                     bank=AnswerBank(), router=None).answers}
+    assert a["loc"].value == "Austin, TX" and a["em"].value == "old@example.com"

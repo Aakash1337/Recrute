@@ -157,7 +157,9 @@
     let el = null;
     try { el = document.querySelector(f.selector); } catch (e) { el = null; }
     if (!el) return '';
-    const ids = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+    // help text only: a widget's own placeholder ("Select...") or error slot isn't a description
+    const ids = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean)
+      .filter(i => !/placeholder|error/i.test(i));
     let t = ids.map(i => document.getElementById(i)).filter(Boolean).map(txt).join(' ');
     if (!clean(t)) {
       const c = container(el);
@@ -311,7 +313,20 @@
       const shell = el.closest('.select-shell') || el.closest('[class*="control"]')
         || el.closest('[class*="inputContainer"]') || el.parentElement;
       const sv = shell && shell.querySelector('[class*="single-value"], [class*="singleValue"]');
-      Object.assign(rec, {type: 'select', widget: 'combobox', current: sv ? txt(sv).trim() : (el.value || null)});
+      const multi = shell && shell.querySelector('[class*="is-multi"], [class*="isMulti"]');
+      let cur = sv ? txt(sv).trim() : (el.value || null);
+      // a phone-country picker shows only "+1" and a flag once chosen: report the flag's
+      // country too ("+1 [us]") so the choice can be checked
+      const flag = sv && sv.querySelector('[class*="iti__flag"]');
+      const cc = flag && [...flag.classList].map(c => (c.match(/^iti__([a-z]{2})$/) || [])[1]).find(Boolean);
+      if (cur && cc) cur = `${cur} [${cc}]`;
+      if (multi) {
+        const picked = [...shell.querySelectorAll('[class*="multi-value__label"], [class*="multiValue"] [class*="label"]')]
+          .map(e => txt(e).trim()).filter(Boolean);
+        Object.assign(rec, {type: 'multiselect', widget: 'combobox', current: picked.length ? picked : null});
+      } else {
+        Object.assign(rec, {type: 'select', widget: 'combobox', current: cur});
+      }
     } else if (el.tagName === 'TEXTAREA') {
       Object.assign(rec, {type: 'textarea', widget: 'text', current: el.value || null});
     } else {

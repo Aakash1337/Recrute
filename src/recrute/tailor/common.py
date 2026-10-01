@@ -96,6 +96,14 @@ def keywords(text: str) -> list[str]:
 # --------------------------------------------------------------------------- job context
 
 
+def _us_only(locations: list[str]) -> bool:
+    """Every listed location is in the US and only the US (not "Worldwide", "US / Canada")."""
+    from recrute.location import us_exclusive
+
+    locs = [loc for loc in locations if loc and loc.strip()]
+    return bool(locs) and all(us_exclusive(loc) for loc in locs)
+
+
 @dataclass
 class JobContext:
     """The parts of a Job that tailoring needs (decoupled from the DB model)."""
@@ -106,6 +114,7 @@ class JobContext:
     priority: str | None = None  # "P0".."P3"
     years_required: int | None = None
     job_id: int | None = None
+    us_only: bool = False  # every location of the job is in the US
 
     @classmethod
     def from_job(cls, job: Any, company: str = "") -> JobContext:
@@ -117,6 +126,7 @@ class JobContext:
             priority=str(prio.value if hasattr(prio, "value") else prio) if prio else None,
             years_required=getattr(job, "years_required", None),
             job_id=getattr(job, "id", None),
+            us_only=_us_only(getattr(job, "locations", None) or []),
         )
 
     @property
