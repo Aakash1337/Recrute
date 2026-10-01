@@ -136,6 +136,23 @@ class LeverAdapter(BaseAdapter):
         return [f.model_copy(update={"widget": "combobox"})
                 if f.id == "location" and f.widget == "text" else f for f in fields]
 
+    def read_form(self, page: Page) -> list[LiveField]:
+        """The location counts as filled only when a suggestion was picked: the hidden
+        selectedLocation ({"name": ..., "id": ...}) must name the place the field shows."""
+        fields = super().read_form(page)
+        loc = next((f for f in fields if f.id == "location"), None)
+        if loc is None or loc.current in (None, ""):
+            return fields
+        try:
+            backing = self.form_root(page).locator('input[name="selectedLocation"]')
+            raw = backing.first.input_value(timeout=2000) if backing.count() else ""
+            picked = json.loads(raw).get("name") if raw else None
+        except Exception:  # noqa: BLE001 - unreadable: treat as not picked
+            picked = None
+        if picked != loc.current:  # typed text / stale pick: not a location yet
+            fields = [f.model_copy(update={"current": None}) if f is loc else f for f in fields]
+        return fields
+
     def after_upload(self, root: Page | Frame, f: LiveField) -> None:
         # Lever reads the resume ("Analyzing resume...") and then autofills name, email,
         # phone, ...: typing before it is done gets mixed with its autofill

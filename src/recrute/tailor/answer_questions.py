@@ -398,12 +398,13 @@ _GEO_KINDS = frozenset({"phone_country", "country", "us_state"})
 
 
 def _bank_decides(q: FormQuestion, bank: AnswerBank) -> bool:
-    """The bank's own facts settle this question even when they leave it unanswered: a country
-    you set isn't overridden by the profile's city, and the country of YOUR phone (the bank's
-    number) is never taken from another number in the profile."""
+    """The bank's own facts settle this question even when they leave it unanswered: where you
+    live (its country or city) isn't overridden by the profile's city, and the country of YOUR
+    phone (the bank's number) is never taken from another number in the profile."""
     kind = classify_question(q)
-    return (kind in _GEO_KINDS and bool(bank.contact.country)) or (
-        kind == "phone_country" and bool(bank.contact.phone))
+    c = bank.contact
+    return (kind in _GEO_KINDS and bool(c.country or c.current_city)) or (
+        kind == "phone_country" and bool(c.phone))
 
 
 def _is_signature_date(q: FormQuestion, questions: list[FormQuestion]) -> bool:

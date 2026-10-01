@@ -129,7 +129,13 @@ def us_exclusive(loc: str) -> bool:
     "US / Costa Rica", "Tbilisi, Georgia", "Remote", "Austin" -> False."""
     if _FOREIGN.search(loc) or _FOREIGN_AMERICAS.search(loc):
         return False
-    parts = [x for x in re.split(r"\s+-\s+|[,/|;()]|\s+(?:or|and|&)\s+", loc) if x.strip()]
+    # alternatives ("US / Georgia") are judged each on its own evidence
+    groups = [g for g in re.split(r"[/|;]|\s+(?:or|and|&)\s+", loc) if g.strip(" ()")]
+    return bool(groups) and all(_group_us_only(g) for g in groups)
+
+
+def _group_us_only(loc: str) -> bool:
+    parts = [x for x in re.split(r"\s+-\s+|[,()]", loc) if x.strip()]
     has_country = any(_part_kind(x, False) == "us" for x in parts)
     kinds = [_part_kind(x, has_country, " ".join(parts[i - 1].split()) if i else "")
              for i, x in enumerate(parts)]

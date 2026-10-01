@@ -1410,3 +1410,23 @@ def test_field_half_under_a_banner_is_scrolled_fully_clear(context):
         assert fill_one(page, f, f"https://linkedin.com/in/ada{seed}", human)
     assert not page.evaluate("window.bannerClicked === true")
     page.close()
+
+
+def test_lever_location_text_without_a_picked_place_is_refilled(srv, context, paths, human,
+                                                               resume):
+    """Audit: typed text equal to the approved place, with no suggestion picked (empty
+    selectedLocation), must not pass as filled."""
+    from recrute.apply.adapters.lever import LeverAdapter
+
+    adapter = LeverAdapter()
+    page = context.new_page()
+    page.goto(f"{srv.url}/lever/acme/abc-123/apply")
+    page.fill("#location-input", "San Francisco, CA, USA")  # typed, never picked
+    loc = next(f for f in adapter.read_form(page) if f.id == "location")
+    assert loc.current is None  # not a location yet: gets filled (and verified) properly
+    packet = lever_packet(resume)
+    report = adapter.fill(page, job(srv.url, "lever"), packet, {"resume": resume},
+                          human=human)
+    assert "location" in report.filled and "location" not in report.problems
+    assert '"San Francisco, CA, USA"' in page.input_value('input[name="selectedLocation"]')
+    page.close()

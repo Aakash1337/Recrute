@@ -1009,6 +1009,7 @@ def test_signature_date_is_today_for_review():
     (["Remote (United States | Canada)"], False), (["Americas"], False), (["Remote"], False),
     (["Austin, TX", "London"], False), ([], False),
     (["US / Costa Rica"], False), (["Tbilisi, Georgia"], False), (["Atlanta, GA"], True),
+    (["US / Georgia"], False), (["Atlanta, Georgia, USA"], True),
     (["USA - Washington DC"], True),
 ])
 def test_us_only_means_only_the_us(locations, expected):
@@ -1022,8 +1023,11 @@ def test_us_only_means_only_the_us(locations, expected):
 
 @pytest.mark.parametrize("label,expected", [
     ("Are you able to work without requiring visa support?", True),
-    ("Do you not require visa support?", True),
-    ("Will you require visa support?", False),
+    ("Do you not require visa support to work in the United States?", True),
+    ("Do you not require visa support?", None),  # support for what?
+    ("Do you require visa support for employment in the Netherlands?", None),
+    ("Do you require visa support to travel internationally?", None),
+    ("Will you require visa support to work for us?", False),
     ("Are you able to work without a work permit?", None),  # a permit isn't sponsorship
     ("Do you currently require a work permit?", None),  # (an EAD needs no sponsor)
     ("Do you require a work permit, visa or additional right to work support for the United "
@@ -1133,3 +1137,17 @@ def test_kept_canadian_number_is_not_a_us_number():
     assert phone_country("+1 416 555 0100", "United States") is None
     assert phone_country("+1 876 555 0100", "United States") is None  # Jamaica
     assert phone_country("+1 415 555 0100", "United States") == "United States (+1)"
+
+
+def test_bank_city_is_not_overridden_by_a_stale_profile_location():
+    """Audit: bank city 'Toronto, ON' + profile 'Austin, TX' answered United States / Texas."""
+    from recrute.tailor.answers import Contact
+
+    profile = make_profile()
+    profile.location = "Austin, TX"
+    bank = AnswerBank(contact=Contact(current_city="Toronto, ON"))
+    questions = [q("Country of residence", "select", [], id="c"),
+                 q("State/Province", id="s")]
+    a = {x.question_id: x for x in answer_questions(questions, profile=profile, bank=bank,
+                                                     router=None).answers}
+    assert a["c"].value is None and a["s"].value is None

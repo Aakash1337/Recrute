@@ -463,6 +463,13 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
     # only questions about NEEDING sponsorship (or working without it): "are you currently
     # receiving / being sponsored", "is your employer sponsoring you" ask about a status the
     # bank doesn't hold
+    from recrute.location import _FOREIGN
+
+    if _FOREIGN.search(t) or re.search(r"\btravel", t):
+        return None  # another country's sponsorship / a travel visa: not the bank's US facts
+    if "sponsor" not in t and not re.search(r"\b(work\w*|employ\w*|jobs?|roles?|positions?|"
+                                             r"hir\w*)\b", t):
+        return None  # "visa support" for what?
     if "work permit" in t:
         # a permit (e.g. an EAD) can be required without employer sponsorship: the bank's
         # sponsorship flags don't say
