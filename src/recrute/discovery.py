@@ -110,7 +110,11 @@ def _close_listings(session, source: str, job_ids) -> int:
                    JobStatus.PACKET_READY, JobStatus.FILTERED_OUT]
     ids = select(JobSource.job_id).where(JobSource.source == source,
                                          col(JobSource.source_job_id).in_(list(job_ids)))
-    res = session.execute(update(Job).where(col(Job.id).in_(ids),
+    # an expired LinkedIn listing says nothing about the employer's own posting: a job that
+    # is also known from ANOTHER source (its ATS board...) is left to that source to close
+    elsewhere = select(JobSource.id).where(JobSource.job_id == Job.id,
+                                           JobSource.source != source).exists()
+    res = session.execute(update(Job).where(col(Job.id).in_(ids), ~elsewhere,
                                             col(Job.status).in_(open_states))
                           .values(status=JobStatus.CLOSED, closed_at=datetime.now(UTC))
                           .execution_options(synchronize_session=False))

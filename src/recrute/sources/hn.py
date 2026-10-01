@@ -225,20 +225,52 @@ def role_sections(text: str, titles: list[str]) -> dict[str, str]:
     plus ONLY its own section, not other roles' requirements (a junior role mustn't inherit a
     senior role's "10+ years"). A title not found in the text gets just the shared header."""
     header, own = _split_roles(text, titles)
+    extra: dict[str, list[str]] = {t: [] for t in titles}
     if any(own.values()):
-        # the shared header keeps company-wide information only: the SEGMENT listing roles
-        # ("Senior Security Engineer (10+ years), Security Analyst") carries role-specific
-        # details and goes; the rest of that line ("Remote (US) | US citizenship required")
-        # applies to every role and stays
-        low_titles = [t.lower() for t in titles if t]
+        # A header that LISTS the roles ("Security Engineer (8+ years; US citizenship),
+        # Security Analyst | Remote (US) | US citizenship required"): every item naming a role
+        # goes to THAT role only; everything else (other segments, unnamed items) is shared.
+        low = [(t, t.lower()) for t in titles if t]
 
-        def keep(line: str) -> str:
-            parts = re.split(r"(\s+[|•·]\s+|;\s+)", line)
-            out = [p for p in parts[::2] if not any(t in p.lower() for t in low_titles)]
-            return " | ".join(p.strip() for p in out if p.strip())
+        def items(segment: str) -> list[str]:  # split on commas outside parentheses
+            out, depth, cur = [], 0, ""
+            for ch in segment:
+                depth += ch == "("
+                depth -= ch == ")"
+                if ch == "," and depth <= 0:
+                    out.append(cur)
+                    cur = ""
+                else:
+                    cur += ch
+            return [*out, cur]
 
-        header = "\n".join(kept for line in header.splitlines() if (kept := keep(line)))
-    return {t: (header + "\n\n" + own[t]).strip() if own.get(t) else header for t in titles}
+        shared_lines = []
+        for line in header.splitlines():
+            kept = []
+            for segment in re.split(r"\s+[|•·]\s+", line):
+                if not any(lt in segment.lower() for _, lt in low):
+                    kept.append(segment)
+                    continue
+                for item in items(segment):
+                    named = [t for t, lt in low if lt in item.lower()]
+                    # a title inside a longer named one ("Security Engineer" in "Senior
+                    # Security Engineer") isn't named on its own; an item naming several
+                    # roles applies to each of them
+                    owners = [t for t in named
+                              if not any(t != o and t.lower() in o.lower() for o in named)]
+                    if not owners:
+                        kept.append(item.strip())
+                    for o in owners:
+                        extra[o].append(item.strip())
+            if kept := [k.strip() for k in kept if k.strip()]:
+                shared_lines.append(" | ".join(kept))
+        header = "\n".join(shared_lines)
+
+    def describe(t: str) -> str:
+        parts = [header, *extra.get(t, []), own.get(t, "")]
+        return "\n\n".join(p for p in parts if p and p.strip()).strip()
+
+    return {t: describe(t) for t in titles}
 
 
 def _split_roles(text: str, titles: list[str]) -> tuple[str, dict[str, str]]:

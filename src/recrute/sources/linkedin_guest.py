@@ -137,6 +137,16 @@ _CLOSED_RE = re.compile(r"no longer accepting applications|this job is no longer
                         re.I)
 
 
+def is_closed_page(html: str) -> bool:
+    """LinkedIn's own closed-posting notice, judged OUTSIDE the job description (a description
+    saying "we're no longer accepting applications by email" is not a closed posting)."""
+    soup = BeautifulSoup(html or "", "lxml")
+    for el in soup.select(".show-more-less-html__markup, .description__text, "
+                          ".description, script, style"):
+        el.decompose()
+    return bool(_CLOSED_RE.search(soup.get_text(" ")))
+
+
 def _meaningful(html: str | None) -> bool:
     """A description with actual words in it (not "<p><br></p>" or a non-breaking space)."""
     text = BeautifulSoup(html or "", "lxml").get_text(" ")
@@ -357,7 +367,7 @@ class LinkedInGuestSource:
                 cut_short(card.job_id)
                 yield to_rawjob(card, None)
                 continue
-            if _CLOSED_RE.search(page):
+            if is_closed_page(page):
                 # positively closed: not an active job (and an already-known listing must not
                 # be reopened by it): reported for closing, never yielded
                 self.seen_ids.add(card.job_id)

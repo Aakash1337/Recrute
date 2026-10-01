@@ -652,3 +652,32 @@ def test_closed_guest_posting_closes_the_real_ingested_job_and_stays_suppressed(
     discovery.discover_search(ctx)  # the same closed cards again: not reopened
     with Session(engine) as s:
         assert all(j.status == JobStatus.CLOSED for j in s.exec(select(Job)).all())
+
+
+def test_closure_wording_inside_a_description_is_not_a_closed_posting():
+    from recrute.sources.linkedin_guest import is_closed_page
+
+    active = ('<html><body><div class="show-more-less-html__markup"><p>We are no longer '
+              "accepting applications by email; please use the Apply button.</p></div>"
+              '<a class="apply-button">Apply</a></body></html>')
+    closed = ('<html><body><figure class="closed-job"><figcaption>No longer accepting '
+              "applications</figcaption></figure></body></html>")
+    assert not is_closed_page(active) and is_closed_page(closed)
+
+
+def test_closed_linkedin_alias_does_not_close_the_ats_job(engine):
+    from sqlmodel import Session, select
+
+    from recrute import discovery
+    from recrute.models import Job, JobSource, JobStatus
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://boards.greenhouse.io/acme/jobs/1",
+                  canonical_url="gh1", status=JobStatus.SHORTLISTED)
+        s.add(job)
+        s.flush()
+        s.add(JobSource(job_id=job.id, source="greenhouse", source_job_id="1", url="g"))
+        s.add(JobSource(job_id=job.id, source="linkedin", source_job_id="555", url="l"))
+        s.commit()
+        assert discovery._close_listings(s, "linkedin", {"555"}) == 0
+        assert s.exec(select(Job)).one().status == JobStatus.SHORTLISTED

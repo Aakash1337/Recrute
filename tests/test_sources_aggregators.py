@@ -435,3 +435,26 @@ def test_hn_shared_requirements_in_the_header_survive_role_splitting():
     for t in ("Security Engineer", "Security Analyst"):
         assert "citizenship_required" in eligibility_flags(secs[t])
     assert "triage" not in secs["Security Engineer"]
+
+
+def test_hn_header_qualifiers_go_to_their_own_role_and_shared_ones_to_all():
+    from recrute.badges.sponsorship import eligibility_flags
+    from recrute.pipeline.filter import years_required
+    from recrute.sources.hn import role_sections
+
+    titles = ["Security Engineer", "Security Analyst"]
+    text = ("Acme | Security Engineer (8+ years of experience; US citizenship required), "
+            "Security Analyst | Remote (US)\n"
+            "Security Engineer: build detections.\nSecurity Analyst: 2+ years of SOC experience.")
+    secs = role_sections(text, titles)
+    assert years_required(secs["Security Engineer"]) == 8
+    assert "citizenship_required" in eligibility_flags(secs["Security Engineer"])
+    assert years_required(secs["Security Analyst"]) == 2
+    assert "citizenship_required" not in eligibility_flags(secs["Security Analyst"])
+
+    both = ("Acme | Remote (US)\nWe're hiring a Security Engineer and a Security Analyst; "
+            "US citizenship is required.\n"
+            "Security Engineer: build detections.\nSecurity Analyst: triage alerts.")
+    secs = role_sections(both, titles)
+    for t in titles:
+        assert "citizenship_required" in eligibility_flags(secs[t])
