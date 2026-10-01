@@ -392,3 +392,33 @@ def test_hn_header_role_list_is_not_a_section_boundary():
     assert "2+" in secs["Security Analyst"] and "10+" not in secs["Security Analyst"]
     senior = secs["Senior Security Engineer"]
     assert "10+" in senior and "2+" not in senior
+
+
+def test_hn_role_list_with_qualifiers_in_header_is_not_shared():
+    from recrute.pipeline.filter import years_required
+    from recrute.sources.hn import role_sections
+
+    text = ("Acme | Remote (US) | Senior Security Engineer (10+ years of experience), "
+            "Security Analyst\nWe protect hospitals.\n"
+            "Senior Security Engineer: lead detection engineering.\n"
+            "Security Analyst: 2+ years of SOC experience.")
+    secs = role_sections(text, ["Senior Security Engineer", "Security Analyst"])
+    assert years_required(secs["Security Analyst"]) == 2
+    assert "We protect hospitals" in secs["Security Analyst"]
+
+
+def test_hn_markdown_linked_role_headings():
+    from recrute.sources.hn import jobs_from_extraction
+
+    c = {"id": 88, "created_at_i": 1_750_000_000,
+         "text": "Acme | Remote (US) | Senior Security Engineer, Security Analyst<p>"
+                 '<a href="https://boards.greenhouse.io/acme/jobs/111">Senior Security '
+                 "Engineer</a>: 10+ years.<p>"
+                 '<a href="https://boards.greenhouse.io/acme/jobs/222">Security Analyst</a>: '
+                 "2+ years of SOC experience."}
+    rows = {"jobs": [{"comment_id": 88, "company": "Acme", "title": t, "apply_url": None}
+                     for t in ("Senior Security Engineer", "Security Analyst")]}
+    jobs = {j.title: j for j in jobs_from_extraction(rows, [c])}
+    assert jobs["Senior Security Engineer"].ats_job_id == "111"
+    assert jobs["Security Analyst"].ats_job_id == "222"
+    assert "10+" not in (jobs["Security Analyst"].description_text or "")

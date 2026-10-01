@@ -556,3 +556,52 @@ def test_guest_empty_detail_page_is_retried_not_remembered():
     assert jobs and src.seen_ids == set()  # nothing remembered as fetched
     assert src.searched_ok == []  # the query keeps its old checkpoint
     assert any(k.startswith("linkedin_guest:detail:") for k in sctx.errors)
+
+
+@pytest.mark.parametrize("markup", ["<p><br></p>", "<p>   </p>", "<p> </p>"])
+def test_guest_empty_description_markup_is_not_complete(markup):
+    from recrute.sources.base import SourceContext
+    from recrute.sources.linkedin_guest import LinkedInGuestSource
+
+    page = (f'<html><body data-entity-urn="urn:li:jobPosting:1">'
+            f'<div class="show-more-less-html__markup">{markup}</div></body></html>')
+
+    def routes():
+        return FakeHttp({"seeMoreJobPostings": read("linkedin_guest_search.html"),
+                         "jobPosting/": page})
+
+    src = LinkedInGuestSource(http_factory=routes, min_interval=0, max_searches=1,
+                              max_details=5)
+    list(src.fetch(SourceContext(http=FakeHttp({}), criteria=Criteria())))
+    assert src.seen_ids == set() and src.searched_ok == []
+
+
+def test_guest_closed_posting_is_not_emitted_and_closes_a_known_job(engine, monkeypatch):
+    from sqlmodel import Session, select
+
+    from recrute import discovery
+    from recrute.models import Job, JobSource, JobStatus
+    from recrute.sources.base import SourceContext
+    from recrute.sources.linkedin_guest import LinkedInGuestSource, parse_search_cards
+
+    cards = parse_search_cards(read("linkedin_guest_search.html"))
+    closed_page = ('<html><body data-entity-urn="urn:li:jobPosting:1"><p>No longer accepting '
+                   "applications</p></body></html>")
+
+    def routes():
+        return FakeHttp({"seeMoreJobPostings": read("linkedin_guest_search.html"),
+                         "jobPosting/": closed_page})
+
+    src = LinkedInGuestSource(http_factory=routes, min_interval=0, max_searches=1,
+                              max_details=5)
+    jobs = list(src.fetch(SourceContext(http=FakeHttp({}), criteria=Criteria())))
+    assert jobs == [] and src.closed_ids == {c.job_id for c in cards}
+    with Session(engine) as s:  # an already-known open listing is closed, not reopened
+        job = Job(title="t", apply_url="u", canonical_url="cl", status=JobStatus.DISCOVERED)
+        s.add(job)
+        s.flush()
+        s.add(JobSource(job_id=job.id, source="linkedin_guest",
+                        source_job_id=cards[0].job_id, url="u"))
+        s.commit()
+        assert discovery._close_listings(s, "linkedin_guest", src.closed_ids) == 1
+        assert s.exec(select(Job)).one().status == JobStatus.CLOSED

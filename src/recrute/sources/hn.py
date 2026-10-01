@@ -225,6 +225,12 @@ def role_sections(text: str, titles: list[str]) -> dict[str, str]:
     plus ONLY its own section, not other roles' requirements (a junior role mustn't inherit a
     senior role's "10+ years"). A title not found in the text gets just the shared header."""
     header, own = _split_roles(text, titles)
+    if any(own.values()):
+        # the shared header keeps company-wide lines only: a line naming roles ("Senior
+        # Security Engineer (10+ years), Security Analyst") carries role-specific details
+        low_titles = [t.lower() for t in titles if t]
+        header = "\n".join(line for line in header.splitlines()
+                           if not any(t in line.lower() for t in low_titles))
     return {t: (header + "\n\n" + own[t]).strip() if own.get(t) else header for t in titles}
 
 
@@ -234,7 +240,8 @@ def _split_roles(text: str, titles: list[str]) -> tuple[str, dict[str, str]]:
     # Engineer" contains "Security Engineer") the longest one owns the text
     def heading(m: re.Match[str]) -> bool:  # the title starts its own line ("- Analyst: ...")
         line_start = text.rfind("\n", 0, m.start()) + 1
-        return re.fullmatch(r"[\s\-*•#>\d.)]*", text[line_start:m.start()]) is not None
+        # (a Markdown link around the title, "[Security Analyst](url): ...", is a heading too)
+        return re.fullmatch(r"[\s\-*•#>\d.)\[]*", text[line_start:m.start()]) is not None
 
     def occurrences(t: str) -> list[re.Match[str]]:
         whole = list(re.finditer(r"(?<!\w)" + re.escape(t) + r"(?!\w)", text, re.I))
