@@ -1324,7 +1324,7 @@ def test_phone_country_picker_showing_only_a_flag_is_verified(context, human):
         pick="vals.innerHTML = `<div class=\"select__single-value\"><div "
              "class=\"iti__flag iti__${o.dataset.cc}\"></div>+1</div>`"))
     f = next(x for x in dom.extract_fields(page) if x.id == "hear")
-    assert fill_one(page, f, "United States", human) == "United States +1"
+    assert fill_one(page, f, "United States (+1)", human) == "United States +1"
     f = next(x for x in dom.extract_fields(page) if x.id == "hear")
     assert f.current == "+1 [us]"
     assert value_matches(f, f.current, "United States")

@@ -160,7 +160,7 @@ def _profile_value(kind: str, profile: Profile) -> str | None:
         "full_name": profile.name or None,
         "email": profile.email or None,
         "phone": profile.phone or None,
-        "phone_country": phone_country(profile.phone),
+        "phone_country": phone_country(profile.phone, country_from_city(profile.location)),
         "city": profile.location or None,
         "country": country_from_city(profile.location),
         "us_state": state_from_city(profile.location),
@@ -364,9 +364,7 @@ def _llm_answers(pending: list[FormQuestion], *, profile: Profile, bank: AnswerB
         ids = [i for e in selection.experience + selection.projects for i in (e.id, *e.bullet_ids)]
     else:
         ids = list(profile.all_items())[:25]
-    shown = drafting_context(bank, pending)
-    common = "\n".join(f"- {k}: {truncate(v, 400)}" for k, v in shown)
-    approved = {norm(v) for _, v in shown if norm(v)}
+    common = "\n".join(f"- {k}: {truncate(v, 400)}" for k, v in drafting_context(bank, pending))
     note = f"USER NOTE (follow it): {user_note.strip()}\n" if user_note.strip() else ""
     prompt = ANSWER_PROMPT.format(
         note=note, title=job.title if job else "", company=f" @ {job.company}" if job and
@@ -383,12 +381,8 @@ def _llm_answers(pending: list[FormQuestion], *, profile: Profile, bank: AnswerB
     for q in pending:
         a = by_id.get(q.id)
         value = _coerce(q, a.answer) if a else None
-        # a previously approved answer reused VERBATIM is the user's own fact, not a new claim
-        # (the verifier only fact-checks new ones); still highlighted: it's a new question
-        reused = isinstance(value, str) and norm(value) in approved
-        answers.append(FormAnswer(question_id=q.id, value=value,
-                                  source="answer_bank" if reused else "llm_new",
-                                  confidence=0.8 if reused else 0.5 if value is not None else 0.0,
+        answers.append(FormAnswer(question_id=q.id, value=value, source="llm_new",
+                                  confidence=0.5 if value is not None else 0.0,
                                   needs_review=True))
         if a and value is not None:
             cited[q.id] = [i for i in a.cited_ids if i in known]

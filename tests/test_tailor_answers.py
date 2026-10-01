@@ -985,22 +985,6 @@ def test_us_state_from_your_city(label):
     assert hit is not None and hit.value == "Texas"
 
 
-def test_llm_reusing_an_approved_answer_verbatim_is_not_a_new_claim():
-    """Seen live: an address the user typed at CP2 for one form, drafted by the LLM onto another
-    form's differently-worded question, was blocked by the verifier as 'not in the profile'."""
-    profile, bank = make_profile(), make_bank()
-    addr = "100 Congress Ave, Austin, TX 78701, United States"
-    bank.common["home_address_please_enter_your_full_address"] = addr
-    questions = [q("Current address", id="addr"), q("Anything else?", "textarea", id="other")]
-    router = FakeRouter({"answers": {"answers": [
-        {"id": "addr", "answer": addr, "cited_ids": []},
-        {"id": "other", "answer": "I live at 1 Main St", "cited_ids": []}]}})
-    res = answer_questions(questions, profile=profile, bank=bank, router=router)
-    a = {x.question_id: x for x in res.answers}
-    assert addr in router.calls[0][1]  # it was shown as a previously approved answer
-    assert a["addr"].source == "answer_bank" and a["addr"].needs_review
-    assert a["other"].source == "llm_new"  # anything else is still a new, checked claim
-
 
 def test_signature_date_is_today_for_review():
     from datetime import date
@@ -1015,3 +999,48 @@ def test_signature_date_is_today_for_review():
     assert a["signed_on"].value == today  # right after the signature
     assert a["eeo[disabilitySignatureDate]"].value == today and a["td"].value == today
     assert a["td"].needs_review and a["td"].source == "default"
+
+
+@pytest.mark.parametrize("locations,expected", [
+    (["Austin, TX"], True), (["Remote - US", "New York, New York, United States"], True),
+    (["Worldwide"], False), (["North America"], False), (["US / Canada"], False),
+    (["Remote (United States | Canada)"], False), (["Americas"], False), (["Remote"], False),
+    (["Austin, TX", "London"], False), ([], False),
+])
+def test_us_only_means_only_the_us(locations, expected):
+    """Audit: 'Worldwide' / 'North America' / 'US / Canada' admit US candidates but aren't
+    US-only, so "the country where this role is located" stays unknown for them."""
+    from recrute.tailor.common import _us_only
+
+    assert _us_only(locations) is expected
+
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("Are you able to work without requiring visa support?", True),
+    ("Do you not require visa support?", True),
+    ("Will you require visa support?", False),
+    ("Are you able to work without a work permit?", None),  # a permit isn't sponsorship
+])
+def test_visa_support_polarity(label, expected):
+    from recrute.tailor.answers import sponsorship_answer
+
+    assert sponsorship_answer(label, _real_bank().work_authorization) is expected
+
+
+def test_greenhouse_phone_country_comes_from_the_phone_not_residence():
+    """Audit: Greenhouse's 'Country' next to the phone is the DIALING country."""
+    from recrute.apply.adapters.greenhouse import parse_questions
+    from recrute.tailor.answers import Contact
+
+    data = {"questions": [{"label": "Phone", "required": True,
+                           "fields": [{"name": "phone", "type": "input_text"}]}]}
+    country = next(x for x in parse_questions(data) if x.id == "country")
+    uk_phone = AnswerBank(contact=Contact(phone="+44 20 7946 0958", current_city="Austin, TX"))
+    assert match_question(country, uk_phone) is None  # +44: yours to pick
+    us_phone = AnswerBank(contact=Contact(phone="+1 415 555 0100", current_city="Austin, TX"))
+    hit = match_question(country, us_phone)
+    assert hit is not None and hit.value == "United States (+1)"
+    # a +1 number of someone living in Canada isn't claimed to be a US number
+    canada = AnswerBank(contact=Contact(phone="+1 416 555 0100", country="Canada"))
+    assert match_question(country, canada) is None

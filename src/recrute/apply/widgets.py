@@ -197,7 +197,9 @@ def fill_combobox(root: Page | Frame, f: LiveField, value: Any, human: Human, *,
     text = as_text(value)
     loc = root.locator(f.selector).first
     page = loc.page
-    human.type_text(loc, text)
+    # search by the name: "United States (+1)" finds nothing in a country picker's filter (the
+    # option is still matched against the whole approved value)
+    human.type_text(loc, re.sub(r"\s*\(?\+\d{1,4}\)?$", "", text) or text)
     deadline_step = 100
     choice: tuple[str, Locator] | None = None
     for _ in range(max(timeout_ms // deadline_step, 1)):

@@ -97,10 +97,11 @@ def keywords(text: str) -> list[str]:
 
 
 def _us_only(locations: list[str]) -> bool:
-    from recrute.location import location_verdict
+    """Every listed location is in the US and only the US (not "Worldwide", "US / Canada")."""
+    from recrute.location import us_exclusive
 
     locs = [loc for loc in locations if loc and loc.strip()]
-    return bool(locs) and all(location_verdict(loc) is True for loc in locs)
+    return bool(locs) and all(us_exclusive(loc) for loc in locs)
 
 
 @dataclass

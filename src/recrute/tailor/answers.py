@@ -389,6 +389,8 @@ def classify_question(q: FormQuestion) -> str | None:
     if q.type == "file":
         return None
     core = field_core(q.label)
+    if core == "country" and re.search(r"\b(phone|dialing|calling)\b", q.description, re.I):
+        return "phone_country"  # e.g. Greenhouse's picker next to the phone number
     if q.type not in ("checkbox", "multiselect"):  # "Email me about openings" is not a field
         for kind, rx in _FIELD_RULES:
             if rx.fullmatch(core):
@@ -453,8 +455,12 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
     # only questions about NEEDING sponsorship (or working without it): "are you currently
     # receiving / being sponsored", "is your employer sponsoring you" ask about a status the
     # bank doesn't hold
-    if not (re.search(r"\b(?:requir\w*|need\w*|necessitat\w*)\b", t)
-            or _NEGATED_SPONSOR_RE.search(t)):
+    # "visa support" is sponsorship in other words: the same polarity rules apply to it
+    negated = bool(_NEGATED_SPONSOR_RE.search(
+        re.sub(r"visa[^?]{0,40}?support|work permit", "sponsorship", t)))
+    if negated and "work permit" in t:
+        return None  # "able to work without a work permit?": a permit isn't sponsorship
+    if not (re.search(r"\b(?:requir\w*|need\w*|necessitat\w*)\b", t) or negated):
         return None
     if re.search(r"\b(?:receiv\w*|being sponsored|sponsored by|currently sponsored|"
                  r"on (?:a |an )?(?:employer )?sponsor\w*|sponsoring you)\b", t):
@@ -491,7 +497,7 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
         required = now if now is not None and now == fut else None
     if required is None:
         return None
-    if not _NEGATED_SPONSOR_RE.search(t):
+    if not negated:
         return required
     if _AUTH_WORDS_RE.search(t):  # "authorized to work without sponsorship"
         auth = wa.authorized_to_work_in_us
@@ -711,9 +717,15 @@ def country_from_city(city: str | None) -> str | None:
     return "United States" if m and m.group(1) in US_STATES else None
 
 
-def phone_country(phone: str | None) -> str | None:
+_US_NAMES = {"united states", "united states of america", "usa", "us", "u.s", "u.s.a"}
+
+
+def phone_country(phone: str | None, residence: str | None = None) -> str | None:
     """The phone country for a "Phone country code" picker, from YOUR number: only a US/NANP
-    number (+1 or ten digits) is answered; anything else is left for you to pick."""
+    number (+1 or ten digits) is answered, and not when you live outside the US (+1 is
+    Canada's code too); anything else is left for you to pick."""
+    if residence and residence.strip().casefold().rstrip(".") not in _US_NAMES:
+        return None
     digits = re.sub(r"\D", "", phone or "")
     if (phone or "").strip().startswith("+"):
         return "United States (+1)" if digits.startswith("1") and len(digits) == 11 else None
@@ -774,7 +786,7 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
         case "city":
             return c.current_city or None
         case "phone_country":
-            return phone_country(c.phone)
+            return phone_country(c.phone, c.country or country_from_city(c.current_city))
         case "country":
             return c.country or country_from_city(c.current_city)
         case "us_state":

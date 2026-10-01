@@ -214,11 +214,12 @@ Report only problems:
   scope or stronger result than the source).
 Anything supported by the SOURCES or PROFILE FACTS is fine (even if not cited): do NOT report
 it. Rewording with the same meaning is fine; statements about the job or company are fine.
+{saved_rule}
 where = the claim's [where]; text = the offending phrase; reason = short. No problems: flags=[].
 
 PROFILE FACTS
 {background}
-
+{saved}
 SOURCES
 {sources}
 
@@ -237,7 +238,30 @@ class _Flags(BaseModel):
     flags: list[_Flag] = []
 
 
-def llm_flags(profile: Profile, claims: list[Claim], router: Completer) -> list[VerifierFlag]:
+_SAVED_RULE = ("A PREVIOUSLY APPROVED ANSWER (the candidate's own words) also supports a claim, "
+               "but only on the same subject as the question it answered (an answer about "
+               "Python says nothing about Kubernetes).")
+
+
+def _saved_evidence(claims: list[Claim], saved: Iterable[tuple[str, str]]) -> str:
+    """Your earlier approved answers that a claim repeats, each with the question it answered
+    (an address you typed for one form supports the same address drafted for another)."""
+    from recrute.tailor.answers import is_sensitive_text
+
+    texts = [" ".join(c.text.split()).casefold() for c in claims if c.kind == "answer"]
+    lines = []
+    for key, value in saved:
+        v = " ".join(str(value).split()).casefold()
+        if len(v) < 4 or is_sensitive_text(key) or is_sensitive_text(str(value)):
+            continue
+        if any(v in t for t in texts):
+            topic = re.sub(r"_[0-9a-f]{8}$", "", key).replace("_", " ")
+            lines.append(f"- (Q: {topic}) {value}")
+    return "PREVIOUSLY APPROVED ANSWERS\n" + "\n".join(lines) + "\n" if lines else ""
+
+
+def llm_flags(profile: Profile, claims: list[Claim], router: Completer,
+              saved: Iterable[tuple[str, str]] = ()) -> list[VerifierFlag]:
     if not claims:
         return []
     cited = [i for c in claims for i in c.cited_ids]
@@ -247,7 +271,9 @@ def llm_flags(profile: Profile, claims: list[Claim], router: Completer) -> list[
             if c.question else ""
         cites = f" cites {','.join(c.cited_ids)}" if c.cited_ids else ""
         claim_lines.append(f"[{c.where}]{q}{cites}: {c.text}")
-    prompt = VERIFY_PROMPT.format(background=background_facts(profile),
+    evidence = _saved_evidence(claims, saved)
+    prompt = VERIFY_PROMPT.format(background=background_facts(profile), saved=evidence,
+                                  saved_rule=_SAVED_RULE if evidence else "",
                                   sources="\n".join(item_lines(profile, cited)) or "(none)",
                                   claims="\n".join(claim_lines))
     raw = parse_llm(_Flags, router.complete("verify", prompt, schema=VERIFY_SCHEMA,
@@ -276,7 +302,10 @@ def merge_flags(*groups: Iterable[VerifierFlag]) -> list[VerifierFlag]:
 
 def verify(profile: Profile, claims: list[Claim], *, router: Completer | None = None,
            job: JobContext | None = None,
-           extra_support: Iterable[str] = ()) -> list[VerifierFlag]:
-    """Deterministic flags + (when a router is given) the LLM fact-check pass."""
+           extra_support: Iterable[str] = (),
+           saved: Iterable[tuple[str, str]] = ()) -> list[VerifierFlag]:
+    """Deterministic flags + (when a router is given) the LLM fact-check pass. `saved`: your
+    previously approved answers (question key, answer), evidence for claims that repeat them."""
     det = deterministic_flags(profile, claims, job=job, extra_support=extra_support)
-    return merge_flags(det, llm_flags(profile, claims, router) if router is not None else [])
+    return merge_flags(det, llm_flags(profile, claims, router, list(saved))
+                       if router is not None else [])

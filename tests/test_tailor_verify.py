@@ -190,3 +190,33 @@ def test_verifier_sees_requirements_in_the_question_description():
 
     llm_flags(make_profile(), claims, Router())
     assert "At least 10 years of paid professional Python experience" in captured["prompt"]
+
+
+def test_repeated_saved_answers_are_evidence_for_the_llm_verifier():
+    """Seen live: an address the user typed at CP2 for one form, drafted onto another form's
+    differently-worded question, was blocked as 'not in the profile'. The verifier now sees
+    the saved answer, with the question it answered, as evidence (audit: only for the same
+    subject; answers stay llm_new and are still checked)."""
+    profile = make_profile()
+    addr = "100 Congress Ave, Austin, TX 78701, United States"
+    questions = [FormQuestion(id="addr", label="Current address"),
+                 FormQuestion(id="k8s", label="Describe your Kubernetes experience")]
+    answers = [FormAnswer(question_id="addr", value=addr, source="llm_new"),
+               FormAnswer(question_id="k8s", value="Five years of Python tooling",
+                          source="llm_new")]
+    saved = {"home_address_please_enter_your_full_address_includi_ab6ca2f7": addr,
+             "describe_your_python_experience": "Five years of Python tooling",
+             "unrelated_question": "Something nobody repeated",
+             "what_is_your_visa_status": "Five years of Python tooling"}  # sensitive: never
+    router = FakeRouter({"verify": {"flags": []}})
+    claims = collect_claims(profile, answers=answers, questions=questions)
+    verify(profile, claims, router=router, saved=saved.items())
+    prompt = router.calls[0][1]
+    assert f"(Q: home address please enter your full address includi) {addr}" in prompt
+    assert "(Q: describe your python experience) Five years of Python tooling" in prompt
+    assert "only on the same subject" in prompt
+    assert "Something nobody repeated" not in prompt and "visa" not in prompt.lower()
+    # nothing repeated: no extra section, no extra rule
+    router = FakeRouter({"verify": {"flags": []}})
+    verify(profile, claims, router=router, saved=[("unrelated_question", "Something else")])
+    assert "PREVIOUSLY APPROVED" not in router.calls[0][1]
