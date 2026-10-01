@@ -215,8 +215,11 @@ def discover_search(ctx) -> dict:
                 if sctx.errors:
                     state["errors"] = dict(list(sctx.errors.items())[:5])
                 if ingested_ok and getattr(src, "closed_ids", None):
-                    _close_listings(s, getattr(src, "raw_source", name), src.closed_ids)
                     known = list(state.get("closed_ids") or [])
+                    # every listing known closed so far (a merged job's other listing may have
+                    # closed in an earlier run)
+                    _close_listings(s, getattr(src, "raw_source", name),
+                                    set(known) | set(src.closed_ids))
                     known += [i for i in sorted(src.closed_ids) if i not in set(known)]
                     state["closed_ids"] = known[-5000:]
                 if ingested_ok and name == "linkedin_guest":

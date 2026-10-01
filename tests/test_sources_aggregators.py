@@ -477,3 +477,43 @@ def test_hn_roles_without_headings_keep_the_shared_text(bodies):
     for t in ("Security Engineer", "Security Analyst"):
         assert "citizenship_required" in eligibility_flags(secs[t])
         assert years_required(secs[t]) == 2
+
+
+def test_hn_role_qualifiers_separated_without_body_headings():
+    from recrute.badges.sponsorship import eligibility_flags
+    from recrute.pipeline.filter import years_required
+    from recrute.sources.hn import role_sections
+
+    text = ("Acme | Security Engineer (8+ years of experience; US citizenship required), "
+            "Security Analyst | Remote (US)\nWe protect hospitals.")
+    secs = role_sections(text, ["Security Engineer", "Security Analyst"])
+    assert years_required(secs["Security Engineer"]) == 8
+    assert years_required(secs["Security Analyst"]) is None
+    assert "citizenship_required" not in eligibility_flags(secs["Security Analyst"])
+    assert "We protect hospitals" in secs["Security Analyst"]
+
+
+def test_hn_trailing_all_roles_requirement_is_shared():
+    from recrute.badges.sponsorship import eligibility_flags
+    from recrute.sources.hn import role_sections
+
+    text = ("Acme | Remote (US)\nSecurity Engineer: build detections.\n"
+            "Security Analyst: triage alerts.\nAll roles require US citizenship.")
+    secs = role_sections(text, ["Security Engineer", "Security Analyst"])
+    for t in ("Security Engineer", "Security Analyst"):
+        assert "citizenship_required" in eligibility_flags(secs[t])
+
+
+def test_hn_explicit_url_of_another_role_is_rejected():
+    from recrute.sources.hn import jobs_from_extraction
+
+    c = {"id": 91, "created_at_i": 1_750_000_000,
+         "text": "Acme | Remote (US)<p>Security Engineer: "
+                 "https://boards.greenhouse.io/acme/jobs/111<p>Data Analyst: "
+                 "https://boards.greenhouse.io/acme/jobs/222"}
+    wrong = "https://boards.greenhouse.io/acme/jobs/111"
+    rows = {"jobs": [{"comment_id": 91, "company": "Acme", "title": t, "apply_url": wrong}
+                     for t in ("Security Engineer", "Data Analyst")]}
+    jobs = {j.title: j for j in jobs_from_extraction(rows, [c])}
+    assert jobs["Security Engineer"].ats_job_id == "111"
+    assert jobs["Data Analyst"].ats_job_id == "222"  # its own link, not the other role's

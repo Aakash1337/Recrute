@@ -699,3 +699,23 @@ def test_one_closed_listing_of_a_merged_job_does_not_close_it(engine):
         assert discovery._close_listings(s, "linkedin", {"100"}) == 0  # 200 may be active
         assert discovery._close_listings(s, "linkedin", {"100", "200"}) == 1  # both closed
         assert s.exec(select(Job)).one().status == JobStatus.CLOSED
+
+
+def test_merged_job_closes_when_its_listings_close_in_separate_runs(engine, monkeypatch):
+    from sqlmodel import Session, select
+
+    from recrute import discovery
+    from recrute.models import Job, JobSource, JobStatus
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="u", canonical_url="li-sep", status=JobStatus.DISCOVERED)
+        s.add(job)
+        s.flush()
+        for i in ("100", "200"):
+            s.add(JobSource(job_id=job.id, source="linkedin", source_job_id=i, url=f"u{i}"))
+        s.commit()
+        known = set()
+        for closed_now in ({"100"}, {"200"}):  # two separate runs
+            discovery._close_listings(s, "linkedin", known | closed_now)
+            known |= closed_now
+        assert s.exec(select(Job)).one().status == JobStatus.CLOSED
