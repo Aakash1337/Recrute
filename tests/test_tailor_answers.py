@@ -1157,6 +1157,8 @@ def test_bank_city_is_not_overridden_by_a_stale_profile_location():
     "Do you require visa support for employment in Costa Rica?",
     "Do you require sponsorship to work in Panama?",
     "Will you need sponsorship to work in Uruguay or the US?",
+    "Will you need sponsorship to work in the US or Uruguay?",
+    "Do you require sponsorship for employment in the United States and Panama?",
 ])
 def test_sponsorship_for_another_country_is_not_answered(label):
     """Audit: countries missing from the foreign-place list got trusted US answers."""

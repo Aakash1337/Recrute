@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from recrute.http import Http
     from recrute.models import Job
 
+NOT_PICKED = "(no place picked)"
 _CARD_RE = re.compile(r"^cards\[([^\]]+)\]\[baseTemplate\]$")
 _CARD_TYPES = {"text": "text", "textarea": "textarea", "multiple-choice": "radio",
                "multiple-select": "multiselect", "dropdown": "select", "file-upload": "file"}
@@ -137,21 +138,29 @@ class LeverAdapter(BaseAdapter):
                 if f.id == "location" and f.widget == "text" else f for f in fields]
 
     def read_form(self, page: Page) -> list[LiveField]:
-        """The location counts as filled only when a suggestion was picked: the hidden
-        selectedLocation ({"name": ..., "id": ...}) must name the place the field shows."""
+        """The location counts as a place only when a suggestion was picked: the hidden
+        selectedLocation ({"name": ..., "id": ...}, submitted with the form) must name the place
+        the field shows. Otherwise the field reports what's there WITH a marker, so it never
+        equals an approved value (it's refilled) and never passes as empty or as approved (an
+        unapproved one stops the application: a typeahead can't be safely cleared)."""
         fields = super().read_form(page)
         loc = next((f for f in fields if f.id == "location"), None)
-        if loc is None or loc.current in (None, ""):
+        if loc is None:
             return fields
         try:
             backing = self.form_root(page).locator('input[name="selectedLocation"]')
             raw = backing.first.input_value(timeout=2000) if backing.count() else ""
             picked = json.loads(raw).get("name") if raw else None
         except Exception:  # noqa: BLE001 - unreadable: treat as not picked
-            picked = None
-        if picked != loc.current:  # typed text / stale pick: not a location yet
-            fields = [f.model_copy(update={"current": None}) if f is loc else f for f in fields]
-        return fields
+            raw, picked = "?", None
+        shown = loc.current if isinstance(loc.current, str) else ""
+        if shown and picked != shown:  # typed text / a stale pick behind it
+            current = f"{shown} {NOT_PICKED}"
+        elif not shown and raw:  # an earlier pick still submitted behind an empty field
+            current = f"{picked or raw} {NOT_PICKED}"
+        else:
+            return fields
+        return [f.model_copy(update={"current": current}) if f is loc else f for f in fields]
 
     def after_upload(self, root: Page | Frame, f: LiveField) -> None:
         # Lever reads the resume ("Analyzing resume...") and then autofills name, email,

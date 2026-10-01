@@ -1423,7 +1423,7 @@ def test_lever_location_text_without_a_picked_place_is_refilled(srv, context, pa
     page.goto(f"{srv.url}/lever/acme/abc-123/apply")
     page.fill("#location-input", "San Francisco, CA, USA")  # typed, never picked
     loc = next(f for f in adapter.read_form(page) if f.id == "location")
-    assert loc.current is None  # not a location yet: gets filled (and verified) properly
+    assert loc.current == "San Francisco, CA, USA (no place picked)"  # not a place yet
     packet = lever_packet(resume)
     report = adapter.fill(page, job(srv.url, "lever"), packet, {"resume": resume},
                           human=human)
@@ -1495,4 +1495,36 @@ def test_attachment_whose_input_was_removed_is_verified_before_submit(context, h
       if (after === 'removed') s.remove(); else s.textContent = 'Someone_Else.pdf'; }""", after)
     problems = adapter.presubmit_problems(page, packet, {"resume": resume})
     assert "resume" in problems and resume.name in problems["resume"]
+    page.close()
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("state", ["typed", "stale", "hidden_pick"])
+def test_unapproved_lever_location_never_passes(srv, context, paths, human, resume, state):
+    """Audit (critical): with NO approved location, typed text, a stale pick, or a pick behind
+    an empty field (all submitted with the form) must stop the application, never pass."""
+    from recrute.apply.adapters.lever import LeverAdapter
+
+    adapter = LeverAdapter()
+    page = context.new_page()
+    page.goto(f"{srv.url}/lever/acme/abc-123/apply")
+    backing = 'input[name="selectedLocation"]'
+    page.evaluate("() => { const e = document.getElementById('location-input');"
+                  " e.removeAttribute('required');"
+                  " e.closest('label').querySelector('.required')?.remove(); }")  # optional
+    if state in ("typed", "stale"):
+        page.fill("#location-input", "San Francisco, CA, USA")
+    if state in ("stale", "hidden_pick"):
+        page.evaluate("s => document.querySelector(s).value = "
+                      "JSON.stringify({name: 'Austin, TX, USA'})", backing)
+    packet = lever_packet(resume)
+    packet = packet.model_copy(update={
+        "answers": [x for x in packet.answers if x.question_id != "location"]})
+    report = adapter.fill(page, job(srv.url, "lever"), packet, {"resume": resume},
+                          human=human)
+    assert not report.ready_to_submit
+    assert "location" in report.failed or "location" in report.problems \
+        or "location" in report.unmatched
+    problems = adapter.presubmit_problems(page, packet, {"resume": resume})
+    assert "location" in problems
     page.close()

@@ -460,7 +460,14 @@ def _non_us_scope(t: str) -> bool:
     employment in Costa Rica"): the bank's US facts don't answer it."""
     for m in _SCOPE_RE.finditer(t):
         place = m.group(1)
-        if not (_US_SCOPE.match(place) or _NOT_A_PLACE.match(place)):
+        if _NOT_A_PLACE.match(place):
+            continue
+        us = _US_SCOPE.match(t, m.start(1))
+        if not us:
+            return True
+        # "the US or Uruguay" / "the United States and Panama": another place too
+        if re.match(r"\s*(,|/|&|\bor\b|\band\b|\bplus\b)\s*(?!(now|currently|in the future|"
+                    r"at any|for|in order|without|do|will|are|have|if|please)\b)\w", t[us.end():]):
             return True
     return False
 
