@@ -268,6 +268,23 @@ class LinkedInGuestSource:
         # query is retried, never skipped); `searched_ok` feeds per-query coverage tracking
         self.next_offset = start
         self.searched_ok = []
+        searched: list[str] = []
+        origin: dict[str, set[str]] = {}  # job id -> the queries that found it
+        incomplete: set[str] = set()  # queries with a posting whose details weren't fetched
+
+        def cut_short(job_id: str) -> None:
+            incomplete.update(origin.get(job_id, ()))
+
+        try:
+            yield from self._search_and_fetch(ctx, http, rotated, queries, tpr, cards, searched,
+                                              origin, cut_short)
+        finally:
+            # only queries ALL of whose postings were fetched in full count as covered: the
+            # rest keep their old checkpoint, so the next search still finds what was left
+            self.searched_ok = [q for q in searched if q not in incomplete]
+
+    def _search_and_fetch(self, ctx, http, rotated, queries, tpr, cards, searched, origin,
+                          cut_short) -> Iterator[RawJob]:
         failed = False
         try:
             for q in rotated:
@@ -285,19 +302,27 @@ class LinkedInGuestSource:
                     else:
                         failed = True
                     continue
-                self.searched_ok.append(q)
+                searched.append(q)
                 if not failed:
                     self.next_offset = (self.next_offset + 1) % len(queries)
                 for c in parse_search_cards(html):
                     cards.setdefault(c.job_id, c)
+                    origin.setdefault(c.job_id, set()).add(q)
         except GuestBlocked as e:
             self._blocked(ctx, e)
+            for c in cards.values():
+                if c.job_id not in self.seen_ids:
+                    cut_short(c.job_id)
             yield from (to_rawjob(c, None) for c in cards.values())
             return
 
         pending = list(cards.values())
         for i, card in enumerate(pending):
-            if card.job_id in self.seen_ids or self.stats["details"] >= self.max_details:
+            if card.job_id in self.seen_ids:  # fetched in full on an earlier run
+                yield to_rawjob(card, None)
+                continue
+            if self.stats["details"] >= self.max_details:
+                cut_short(card.job_id)  # its details wait for a later run
                 yield to_rawjob(card, None)
                 continue
             self.stats["details"] += 1
@@ -305,11 +330,15 @@ class LinkedInGuestSource:
                 detail = parse_detail(self._get(http, DETAIL.format(id=card.job_id)))
             except GuestBlocked as e:
                 self._blocked(ctx, e)
+                for c in pending[i:]:
+                    cut_short(c.job_id)
                 yield from (to_rawjob(c, None) for c in pending[i:])
                 return
-            except HttpError as e:
+            except HttpError as e:  # retried on a later run (not marked seen)
                 log.debug("linkedin_guest detail %s: %s", card.job_id, e)
-                detail = None
+                cut_short(card.job_id)
+                yield to_rawjob(card, None)
+                continue
             self.seen_ids.add(card.job_id)
             yield to_rawjob(card, detail)
 

@@ -162,11 +162,9 @@ def update_state(bind: Any, key: str, change: Any) -> Any:
     from sqlalchemy import update
 
     with Session(bind) as s:
-        if s.get(Setting, STATE_PREFIX + key) is None:
-            try:
-                set_state(s, key, {})
-            except Exception:  # noqa: BLE001 - created concurrently: fine
-                s.rollback()
+        # create the row if missing WITHOUT replacing one another caller just created
+        s.execute(insert(Setting).values(key=STATE_PREFIX + key, value={}, updated_at=utcnow())
+                  .on_conflict_do_nothing(index_elements=["key"]))
         s.commit()
         s.execute(update(Setting).where(Setting.key == STATE_PREFIX + key)
                   .values(key=Setting.key).execution_options(synchronize_session=False))

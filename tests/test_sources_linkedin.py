@@ -516,3 +516,25 @@ def test_query_cut_short_is_not_marked_covered():
     full = make_session(FakePage(session_routes()), per_session_searches=1)
     list(full.fetch(ctx()))
     assert full.completed_queries() == full.searched_queries  # everything delivered
+
+
+def test_guest_query_with_unfetched_details_is_not_covered():
+    from recrute.sources.base import SourceContext
+    from recrute.sources.linkedin_guest import LinkedInGuestSource
+
+    def routes():
+        return FakeHttp({"seeMoreJobPostings": read("linkedin_guest_search.html"),
+                         "jobPosting/": read("linkedin_guest_detail.html")})
+
+    crit = Criteria()
+    src = LinkedInGuestSource(http_factory=routes, min_interval=0, max_searches=1,
+                              max_details=1)
+    jobs = list(src.fetch(SourceContext(http=FakeHttp({}), criteria=crit)))
+    assert len(jobs) == 3 and len(src.seen_ids) == 1  # one fetched in full, two deferred
+    assert src.searched_ok == []  # so the query keeps its old checkpoint
+    # the next run fetches the rest (seen ones aren't re-fetched) and covers the query
+    src2 = LinkedInGuestSource(http_factory=routes, min_interval=0, max_searches=1,
+                               max_details=5)
+    src2.seen_ids = set(src.seen_ids)
+    list(src2.fetch(SourceContext(http=FakeHttp({}), criteria=crit)))
+    assert len(src2.seen_ids) == 3 and len(src2.searched_ok) == 1

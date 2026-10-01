@@ -169,9 +169,16 @@ def heuristic_parse(c: dict[str, Any], title_rx: re.Pattern[str] | None = None) 
 
 
 def _role_slug(title: str) -> str:
+    """A role's identity within its comment. Long titles are shortened, with a digest of the
+    FULL title so two roles sharing a long prefix never collide."""
+    import hashlib
+
     from recrute.pipeline.normalize import spell_symbols
 
-    return re.sub(r"[^a-z0-9]+", "-", spell_symbols(title).lower()).strip("-")[:60]
+    full = re.sub(r"[^a-z0-9]+", "-", spell_symbols(title).lower()).strip("-")
+    if len(full) <= 60:
+        return full
+    return f"{full[:51]}-{hashlib.sha1(full.encode()).hexdigest()[:8]}"
 
 
 def _rawjob(c: dict[str, Any], company: str, title: str, locations: list[str],

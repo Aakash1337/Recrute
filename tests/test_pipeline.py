@@ -805,3 +805,19 @@ def test_delayed_restore_never_overwrites_a_later_decision(engine):
         restore_filtered(late, job_id)
     with Session(engine) as s:
         assert s.get(Job, job_id).status == JobStatus.SHORTLISTED
+
+
+def test_long_hn_role_titles_sharing_a_prefix_stay_separate(engine):
+    from recrute.sources.hn import jobs_from_extraction
+
+    t1 = "Security Engineer - Application Security and Cloud Infrastructure - Product"
+    t2 = "Security Engineer - Application Security and Cloud Infrastructure - Platform"
+    c = {"id": 77, "created_at_i": 1_750_000_000,
+         "text": f"Acme | Remote (US) | https://acme.example/careers<p>{t1}: build.<p>{t2}: run."}
+    rows = {"jobs": [{"comment_id": 77, "company": "Acme", "title": t, "apply_url": None}
+                     for t in (t1, t2)]}
+    raws = jobs_from_extraction(rows, [c])
+    assert raws[0].source_job_id != raws[1].source_job_id
+    with Session(engine) as s:
+        ingest(s, raws)
+        assert len(s.exec(select(Job)).all()) == 2

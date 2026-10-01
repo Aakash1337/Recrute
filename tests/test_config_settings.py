@@ -118,3 +118,30 @@ def test_concurrent_partial_setting_updates_both_survive(engine, monkeypatch):
     with Session(engine) as s:
         enabled = get_setting(s, "sources_enabled")
     assert enabled["greenhouse"] is False and enabled["lever"] is False
+
+
+def test_update_state_first_use_never_overwrites_a_concurrent_creation(engine, monkeypatch):
+    """The row is created by INSERT ... DO NOTHING: a row another caller created between our
+    check and our write is kept, then updated under the lock."""
+    from sqlalchemy.dialects.sqlite import insert as real_insert
+    from sqlmodel import Session
+
+    from recrute import settings
+    from recrute.settings import get_state, set_state, update_state
+
+    raced = []
+
+    def racing_insert(model):  # the other caller creates the row just before our insert runs
+        if not raced:
+            raced.append(1)
+            with Session(engine) as other:
+                set_state(other, "linkedin_session", {"searches": 10, "views": 80,
+                                                      "blocked_until": "2099-01-01"})
+        return real_insert(model)
+
+    monkeypatch.setattr(settings, "insert", racing_insert)
+    update_state(engine, "linkedin_session", lambda cur: ({**cur, "query_cursor": 3}, None))
+    monkeypatch.setattr(settings, "insert", real_insert)
+    with Session(engine) as s:
+        st = get_state(s, "linkedin_session")
+    assert st == {"searches": 10, "views": 80, "blocked_until": "2099-01-01", "query_cursor": 3}
