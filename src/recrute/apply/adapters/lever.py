@@ -44,8 +44,9 @@ def parse_apply_html(html: str) -> list[FormQuestion]:
             continue
         ctl = li.find(["input", "textarea", "select"],
                       attrs={"name": True, "type": lambda t: t != "hidden"})
-        if ctl is None or ctl["name"] in seen:
-            continue
+        if ctl is None or ctl["name"] in seen or (
+                ctl.name == "select" and str(ctl["name"]).startswith("eeo[")):
+            continue  # (EEO selects: parsed below, with their option definitions)
         name = str(ctl["name"])
         lab_el = li.select_one(".application-label")
         label = lab_el.get_text(" ", strip=True) if lab_el else name

@@ -76,7 +76,24 @@ _FILLER = frozenset("remote hybrid onsite on-site in-office office only based an
                     "update location locations multiple various wfh fully".split())
 
 
-def _part_kind(part: str, has_country: bool) -> str:
+# US state codes that are also country codes ("Berlin, DE", "Bangalore, IN", "Toronto, CA") or an
+# Australian state ("Perth, WA"): they mean the US only with a US country word or a known US city
+_AMBIGUOUS_CODES = frozenset("AL AR AZ CA CO DE GA ID IL IN KY LA MA MD ME MN MO MS MT NC NE PA "
+                             "SC SD TN VA WA".split())
+_US_CITIES = frozenset("""san francisco|los angeles|san diego|san jose|palo alto|mountain view|
+sunnyvale|menlo park|redwood city|santa clara|santa monica|oakland|berkeley|irvine|milpitas|
+cupertino|fremont|pasadena|sacramento|south san francisco|san mateo|foster city|el segundo|
+seattle|bellevue|redmond|kirkland|tacoma|spokane|boston|cambridge|somerville|waltham|
+burlington|chicago|evanston|atlanta|alpharetta|philadelphia|pittsburgh|arlington|reston|
+mclean|herndon|richmond|alexandria|chantilly|tysons|denver|boulder|colorado springs|
+indianapolis|baltimore|columbia|bethesda|rockville|annapolis|fort meade|nashville|memphis|
+charlotte|raleigh|durham|chapel hill|minneapolis|st. paul|saint paul|phoenix|scottsdale|tempe|
+chandler|new orleans|louisville|kansas city|st. louis|saint louis|omaha|lincoln|wilmington|
+newark|portland|birmingham|huntsville|little rock|boise|charleston|columbia|sioux falls|
+madison|milwaukee|helena|billings|jackson""".replace("\n", "").split("|"))
+
+
+def _part_kind(part: str, has_country: bool, city: str = "") -> str:
     """us | state | filler | other, for one comma/slash-separated piece of a location."""
     p = " ".join(part.split())
     words = p.lower().split()
@@ -89,13 +106,18 @@ def _part_kind(part: str, has_country: bool) -> str:
         return "us"
     abbr = core.replace(".", "")
     if abbr in US_STATES and abbr == abbr.upper() and len(abbr) == 2:
+        if abbr in _AMBIGUOUS_CODES and not has_country and city.lower() not in _US_CITIES:
+            return "other"  # "Perth, WA": Western Australia?
         return "state"
     name = core.lower()
     if name in _STATE_NAMES and (name != "georgia" or has_country):  # (Georgia: the country?)
         return "state"
     # "Washington DC" / "Austin TX" in one piece
-    last = core.split()[-1].replace(".", "")
-    if len(core.split()) > 1 and last in US_STATES and last.isupper():
+    words = core.split()
+    last = words[-1].replace(".", "")
+    if len(words) > 1 and last in US_STATES and last.isupper() and (
+            last not in _AMBIGUOUS_CODES or has_country
+            or " ".join(words[:-1]).lower() in _US_CITIES):
         return "state"
     return "other"
 
@@ -109,7 +131,8 @@ def us_exclusive(loc: str) -> bool:
         return False
     parts = [x for x in re.split(r"\s+-\s+|[,/|;()]|\s+(?:or|and|&)\s+", loc) if x.strip()]
     has_country = any(_part_kind(x, False) == "us" for x in parts)
-    kinds = [_part_kind(x, has_country) for x in parts]
+    kinds = [_part_kind(x, has_country, " ".join(parts[i - 1].split()) if i else "")
+             for i, x in enumerate(parts)]
     if not any(k in ("us", "state") for k in kinds):
         return False
     for i, k in enumerate(kinds):

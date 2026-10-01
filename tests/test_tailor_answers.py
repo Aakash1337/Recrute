@@ -1110,3 +1110,26 @@ def test_phone_country_never_comes_from_a_different_number():
     # with no number in the bank, the profile's own number (and city) still answer it
     res = answer_questions([country], profile=profile, bank=AnswerBank(), router=None)
     assert res.answers[0].value == "United States (+1)"
+
+
+def test_perth_wa_is_not_washington():
+    """Audit: 'Perth, WA' (Western Australia) read as Washington, US: neither the job nor
+    your own location may be taken as US from an ambiguous code."""
+    from recrute.tailor.answers import country_from_city, state_from_city
+    from recrute.tailor.common import _us_only
+
+    assert not _us_only(["Perth, WA"])
+    assert country_from_city("Perth, WA") is None and state_from_city("Perth, WA") is None
+    question = q("Are you legally authorized to work in the country in which this role is "
+                 "located?", "select", YES_NO)
+    assert match_question(question, _real_bank(), us_role=_us_only(["Perth, WA"])) is None
+    assert _us_only(["Seattle, WA"]) and state_from_city("Seattle, WA") == "Washington"
+
+
+def test_kept_canadian_number_is_not_a_us_number():
+    """Audit: a US resident who kept a +1 416 (Toronto) number got 'United States (+1)'."""
+    from recrute.tailor.answers import phone_country
+
+    assert phone_country("+1 416 555 0100", "United States") is None
+    assert phone_country("+1 876 555 0100", "United States") is None  # Jamaica
+    assert phone_country("+1 415 555 0100", "United States") == "United States (+1)"

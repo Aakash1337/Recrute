@@ -736,6 +736,11 @@ def country_from_city(city: str | None) -> str | None:
 
 
 _US_NAMES = {"united states", "united states of america", "usa", "us", "u.s", "u.s.a"}
+# +1 area codes outside the US: Canada and the Caribbean/Atlantic NANP countries
+_NON_US_NANP = frozenset("""204 226 236 249 250 257 263 289 306 343 354 365 367 368 382 387 403 416
+418 428 431 437 438 450 460 468 474 506 514 519 548 579 581 584 587 600 604 613 622 633 639 644
+647 655 672 677 683 688 705 709 742 753 778 780 782 807 819 825 867 873 879 902 905 942 242 246
+264 268 284 345 441 473 649 658 664 721 758 767 784 809 829 849 868 869 876""".split())
 
 
 def phone_country(phone: str | None, residence: str | None = None) -> str | None:
@@ -746,8 +751,13 @@ def phone_country(phone: str | None, residence: str | None = None) -> str | None
         return None
     digits = re.sub(r"\D", "", phone or "")
     if (phone or "").strip().startswith("+"):
-        return "United States (+1)" if digits.startswith("1") and len(digits) == 11 else None
-    return "United States (+1)" if len(digits) == 10 else None
+        if not (digits.startswith("1") and len(digits) == 11):
+            return None
+        digits = digits[1:]
+    # a number kept from Canada / the Caribbean is not a US number, wherever you live now
+    if len(digits) != 10 or digits[:3] in _NON_US_NANP:
+        return None
+    return "United States (+1)"
 
 
 def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,

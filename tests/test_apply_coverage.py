@@ -485,3 +485,23 @@ def test_lever_eeo_questions_parsed_as_the_live_form_shows_them():
     live = LiveField(id="eeo[race]", label="Race", type="select", options=["Asian"],
                      description="AsianA person having origins in the Far East.")
     assert same_question(qs["eeo[race]"], live)
+
+
+def test_lever_eeo_in_li_blocks_keeps_its_description():
+    """Audit: EEO selects inside <li class="application-question"> were taken by the generic
+    loop, without the option definitions the live form reports as their description."""
+    from recrute.apply.base import LiveField, same_question
+
+    html = """<form id="application-form"><ul>
+      <li class="application-question"><label><div class="application-label">Race</div>
+        <div class="application-field"><select multiple name="eeo[race]">
+        <option value="Asian">Asian</option><option value="White">White</option></select></div>
+        <ul class="eeo-expandable-description" style="display: none;"><li><div>Asian</div>
+        <div class="eeo-option-description">A person having origins in the Far East.</div>
+        </li></ul></label></li></ul></form>"""
+    race = {q.id: q for q in parse_apply_html(html)}["eeo[race]"]
+    assert race.label == "Race" and race.type == "multiselect"
+    live = LiveField(id="eeo[race]", label="Race", type="multiselect",
+                     options=["Asian", "White"],
+                     description="AsianA person having origins in the Far East.")
+    assert same_question(race, live)
