@@ -68,11 +68,20 @@ _ACCURACY_RE = re.compile(
     r"accurate|complete|correct)", re.IGNORECASE)
 
 
+# anything in the statement claiming a qualification or fact about you
+_QUALIFICATION_RE = re.compile(
+    r"\b(?:i|that i|and)\s+(?:(?:currently|also|do)\s+)?(?:hold|have\s+(?:a|an|the|completed|"
+    r"earned|obtained|at least)|meet|possess|am\s+(?:a|an|certified|licensed|eligible|"
+    r"authori[sz]ed|over|at least)|completed|earned|qualify)\b", re.IGNORECASE)
+
+
 def _is_consent(q: FormQuestion) -> bool:
     """A bare checkbox that accepts a policy/terms ("I agree to the privacy policy", "I
     consent to ...", "I have read and understand ..."), not one that states a fact about you."""
     text = f"{q.label} {q.description}"
     if not _CONSENT_RE.search(q.label):
+        return False
+    if _QUALIFICATION_RE.search(q.label):  # "... and (that I) hold / meet ...": also a claim
         return False
     if _ACCURACY_RE.search(q.label):  # "... the information provided is accurate": about the
         return True  # application itself, the attestation every form asks for
@@ -84,7 +93,7 @@ def _acknowledgement_option(q: FormQuestion) -> str | None:
     if not q.options or q.type not in ("select", "radio", "multiselect", "checkbox"):
         return None
     if not _POLICY_RE.search(f"{q.label} {q.description}") or _FACTUAL_ATTESTATION.search(
-            q.label):
+            q.label) or _QUALIFICATION_RE.search(q.label):
         return None
     agree = [o for o in q.options if _AGREE_OPTION.match(o)]
     return agree[0] if len(agree) == 1 and len(q.options) == 1 else None

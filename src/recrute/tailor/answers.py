@@ -397,10 +397,11 @@ _ADDRESS_VALUE_RE = re.compile(r"\d+\s+\w+.*\b(st|street|ave|avenue|rd|road|blvd
 
 # a question that asks for a postal address ("How do you address incidents?" doesn't)
 _ADDRESS_REQUEST = re.compile(
-    r"\b(?:home|mailing|street|postal|current|residential|physical|permanent|full|billing|"
-    r"your|an?|the)\s+address\b(?!\s+(?:the|this|these|those|it|them|any|a|an)\b)|"
-    r"^\W*address\b|\baddress\s*(?:line|1|2)\b|\b(?:zip|postal)\s*code\b|\bpostcode\b|"
-    r"\bstreet\b|\bapartment\b|\bapt\b|\bwhere do you live\b", re.IGNORECASE)
+    r"\byour\s+(?:(?:full|home|current|mailing|street|postal|residential|permanent|"
+    r"physical)\s+)*address\b|^\W*(?:(?:full|home|current|mailing|street|postal|residential|"
+    r"permanent|physical)\s+)*address\b(?!\s+(?:the|this|these|those|it|them|any|a|an)\b)|"
+    r"^\W*(?:address\s*(?:line|1|2)|(?:zip|postal)\s*code|postcode|street|apartment|apt)\b|"
+    r"\bwhere do you live\b", re.IGNORECASE)
 
 
 def subject_terms(text: str) -> set[str]:
@@ -620,7 +621,12 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
                  r"\buntil\b|\bduration\b|\bentire\b|\bfull term\b|\blong[- ]term\b", t):
         return None
     now, fut = wa.requires_sponsorship_now, wa.requires_sponsorship_future
-    has_now, has_fut = bool(_NOW_RE.search(t)), bool(_FUTURE_RE.search(t))
+    # time words from what is asked of YOU: an employer's policy ("we cannot provide
+    # sponsorship in the future") doesn't change the question's scope
+    asked = " ".join(s for s in re.split(r"(?<=[.?!])\s+", t)
+                     if not re.search(r"\b(we|our|us|the company|the employer)\b", s)
+                     or re.search(r"\byou\b|\byour\b", s)) or t
+    has_now, has_fut = bool(_NOW_RE.search(asked)), bool(_FUTURE_RE.search(asked))
     if has_now and has_fut:
         required = _either(now, fut)
     elif has_fut:
@@ -904,7 +910,7 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
                          r"most recent|were you|was your|did you|earn(ed|ing)?)\b", full):
                 return None  # salary HISTORY: the bank only holds preferences; never invent it
             if re.search(r"hour|hourly|/\s*hr\b|per hr|month|monthly|week|weekly|daily|per day",
-                         full) or re.search(r"\b(eur|gbp|cad|inr|aud|€|£|₹)", full):
+                         full) or re.search(r"\b(eur|gbp|cad|inr|aud|chf|jpy|sgd)\b|[€£₹¥]", full):
                 return None  # our ranges are annual USD: never convert silently; you answer
             if q.type == "number":
                 lo, hi = bank.salary.range_for(priority)

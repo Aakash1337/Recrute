@@ -1295,3 +1295,49 @@ def test_factual_agreements_are_not_pre_checked(label):
         res = answer_questions([question], profile=make_profile(), bank=make_bank(),
                                router=None)
         assert res.answers[0].value in (None, False, [])
+
+
+@pytest.mark.parametrize("label,desc", [
+    ("Desired salary (€)", ""), ("Expected annual salary (£)", ""),
+    ("Desired salary", "Please state the amount in ₹"),
+])
+def test_currency_symbols_are_not_answered_from_usd_ranges(label, desc):
+    from recrute.tailor.answers import AnswerBank, match_question
+
+    bank = AnswerBank.model_validate({"salary": {"ranges_usd": {"P1": [90000, 110000]}}})
+    question = FormQuestion(id="s", label=label, description=desc, type="number")
+    a = match_question(question, bank, priority="P1")
+    assert a is None or a.value in (None, "")
+
+
+def test_employer_policy_text_does_not_change_the_sponsorship_question():
+    from recrute.tailor.answers import WorkAuthorization
+
+    wa = WorkAuthorization(requires_sponsorship_now=False, requires_sponsorship_future=True)
+    bank = AnswerBank(work_authorization=wa)
+    question = q("Do you currently require visa sponsorship?", "select", YES_NO,
+                 description="We cannot provide sponsorship in the future.")
+    hit = match_question(question, bank)
+    assert hit is not None and hit.value == "No"  # asked about NOW only
+
+
+@pytest.mark.parametrize("label", [
+    "I certify that I hold a bachelor's degree and that the information provided is accurate.",
+    "I agree to the privacy policy and meet the minimum qualifications.",
+])
+def test_compound_attestations_with_qualifications_are_not_pre_checked(label):
+    res = answer_questions([q(label, "checkbox", id="x")], profile=make_profile(),
+                           bank=make_bank(), router=None)
+    assert res.answers[0].value is not True
+
+
+@pytest.mark.parametrize("label", [
+    "Describe how you would validate a street address in Python.",
+    "How would you validate a mailing address?",
+])
+def test_technical_address_questions_never_get_the_saved_address(label):
+    from recrute.tailor.answers import drafting_context
+
+    bank = make_bank()
+    bank.common["what_is_your_address"] = "100 Congress Ave, Austin, TX 78701"
+    assert "what_is_your_address" not in dict(drafting_context(bank, [q(label, "textarea")]))
