@@ -454,13 +454,20 @@ def _either(a: bool | None, b: bool | None) -> bool | None:
 
 
 # "... to work in X" / "employment in X" / "sponsorship within X": the place the question is about
-_SCOPE_RE = re.compile(r"\b(?:work\w*|employ\w*|jobs?|positions?|roles?|sponsor\w*|visas?|"
-                       r"support|authori[sz]\w*|permits?|live|living|reside)\s+(?:in|within)\s+"
+_SCOPE_RE = re.compile(r"\b(?:(?:work\w*|employ\w*|jobs?|positions?|roles?|sponsor\w*|visas?|"
+                       r"support|authori[sz]\w*|permits?|live|living|reside)\s+(?:in|within)|"
+                       r"(?:visas?|permits?|sponsor\w*|authori[sz]ation)\s+(?:for|to)|"
+                       r"(?:relocat\w*|move|moving)\s+to)\s+"
                        r"((?:the\s+)?[a-z][\w.'-]*(?:\s+[a-z][\w.'-]*){0,3})")
+# a country the question doesn't name ("your country of employment", "the host country")
+_UNRESOLVED_COUNTRY = re.compile(r"\b(?:your|the|that|another|other|home|host|which|any|a|"
+                                 r"this)\s+(?:\w+\s+)?(?:country|countries|nation|"
+                                 r"jurisdiction)\b|\bcountry of\b")
 _US_SCOPE = re.compile(r"(the\s+)?(united states( of america)?|u\.s\.a\.?|u\.s\.?|usa|us|"
                        r"america)(?!\w)")  # (the whole "U.S.": the period is part of it)
 _NOT_A_PLACE = re.compile(r"(the\s+)?(future|order|this|that|these|those|any|all|our|your|my|"
                           r"which|a|an|connection|regards?|addition|case|person|office|"
+                          r"employment|work|working|you|me|them|him|her|it|"
                           r"accordance|the next|the coming|the following|the role|the position|"
                           r"the job|the company|the past|the meantime)\b")
 
@@ -468,7 +475,12 @@ _NOT_A_PLACE = re.compile(r"(the\s+)?(future|order|this|that|these|those|any|all
 def _non_us_scope(t: str) -> bool:
     """The question names a place to work/live in that isn't the US ("visa support for
     employment in Costa Rica"): the bank's US facts don't answer it."""
-    for m in _SCOPE_RE.finditer(t):
+    if _UNRESOLVED_COUNTRY.search(t):
+        return True  # which country? (role-country questions of US-only jobs were already
+        # rewritten to "the United States" before this point)
+    pos = 0
+    while m := _SCOPE_RE.search(t, pos):  # overlapping: "sponsorship for a work visa for X"
+        pos = m.start() + 1
         place = m.group(1)
         if _NOT_A_PLACE.match(place):
             continue

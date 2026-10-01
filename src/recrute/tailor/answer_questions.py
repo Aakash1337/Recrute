@@ -396,6 +396,7 @@ _SIGNATURE_DATE_LABEL = re.compile(
 
 
 _GEO_KINDS = frozenset({"phone_country", "country", "us_state"})
+_NAME_KINDS = frozenset({"first_name", "last_name", "full_name"})
 
 
 def _bank_decides(q: FormQuestion, bank: AnswerBank) -> bool:
@@ -405,7 +406,8 @@ def _bank_decides(q: FormQuestion, bank: AnswerBank) -> bool:
     kind = classify_question(q)
     c = bank.contact
     return bank_has_fact(q, bank) or (kind in _GEO_KINDS and bool(c.country or c.current_city)) \
-        or (kind == "phone_country" and bool(c.phone))
+        or (kind == "phone_country" and bool(c.phone)) \
+        or (kind in _NAME_KINDS and bool(c.full_name.strip()))  # never half another name
 
 
 def _is_signature_date(q: FormQuestion, questions: list[FormQuestion]) -> bool:

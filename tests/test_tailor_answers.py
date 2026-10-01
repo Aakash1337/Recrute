@@ -1189,3 +1189,29 @@ def test_bank_contact_that_fits_no_option_is_not_replaced_by_the_profile():
     a = {x.question_id: x for x in answer_questions(questions, profile=profile,
                                                      bank=AnswerBank(), router=None).answers}
     assert a["loc"].value == "Austin, TX" and a["em"].value == "old@example.com"
+
+
+def test_single_word_bank_name_never_takes_a_profile_surname():
+    """Audit: bank 'Madonna' + profile 'Ada Lovelace' gave 'Madonna' / 'Lovelace'."""
+    from recrute.tailor.answers import Contact
+
+    profile = make_profile()
+    profile.name = "Ada Lovelace"
+    bank = AnswerBank(contact=Contact(full_name="Madonna"))
+    questions = [q("First Name", id="fn"), q("Last Name", id="ln")]
+    a = {x.question_id: x for x in answer_questions(questions, profile=profile, bank=bank,
+                                                     router=None).answers}
+    assert a["fn"].value == "Madonna"
+    assert a["ln"].value is None and a["ln"].needs_review
+
+
+@pytest.mark.parametrize("label", [
+    "Will you require visa sponsorship for a work visa for Panama?",
+    "Will you require sponsorship in your country of employment?",
+    "Will you require sponsorship to relocate to Canada?",
+])
+def test_unresolved_or_foreign_destinations_are_left_for_you(label):
+    """Audit: 'visa for Panama' / 'your country of employment' got trusted US answers."""
+    res = answer_questions([q(label, "select", YES_NO)], profile=make_profile(),
+                           bank=_real_bank(), router=None, job=make_job())
+    assert res.answers[0].value is None

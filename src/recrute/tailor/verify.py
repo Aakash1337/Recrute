@@ -243,20 +243,32 @@ _SAVED_RULE = ("A PREVIOUSLY APPROVED ANSWER (the candidate's own words) also su
                "Python says nothing about Kubernetes).")
 
 
-def _saved_evidence(claims: list[Claim], saved: Iterable[tuple[str, str]]) -> str:
-    """Your earlier approved answers that a claim repeats, each with the question it answered
-    (an address you typed for one form supports the same address drafted for another)."""
-    from recrute.tailor.answers import is_sensitive_text
+def _saved_evidence(claims: list[Claim], saved: Iterable[tuple[str, str]],
+                    limit: int = 12) -> str:
+    """Your earlier approved answers relevant to the drafted ones, each with the question it
+    answered: those a draft repeats (an address typed for one form, drafted for another) and
+    those saved for a question on the same topic (the same facts, reworded)."""
+    from rapidfuzz import fuzz, utils
 
-    texts = [" ".join(c.text.split()).casefold() for c in claims if c.kind == "answer"]
-    lines = []
+    from recrute.tailor.answers import clean_label, is_sensitive_text
+
+    answers = [c for c in claims if c.kind == "answer"]
+    texts = [" ".join(c.text.split()).casefold() for c in answers]
+    labels = [clean_label(c.question) for c in answers if c.question.strip()]
+    scored: list[tuple[float, str]] = []
     for key, value in saved:
         v = " ".join(str(value).split()).casefold()
         if len(v) < 4 or is_sensitive_text(key) or is_sensitive_text(str(value)):
             continue
+        topic = re.sub(r"_[0-9a-f]{8}$", "", key).replace("_", " ")
+        related = max((fuzz.token_set_ratio(topic, lab, processor=utils.default_process)
+                       for lab in labels), default=0.0)
         if any(v in t for t in texts):
-            topic = re.sub(r"_[0-9a-f]{8}$", "", key).replace("_", " ")
-            lines.append(f"- (Q: {topic}) {value}")
+            scored.append((101.0, f"- (Q: {topic}) {value}"))
+        elif related >= 60:
+            scored.append((related, f"- (Q: {topic}) {value}"))
+    scored.sort(key=lambda s: -s[0])
+    lines = [line for _, line in scored[:limit]]
     return "PREVIOUSLY APPROVED ANSWERS\n" + "\n".join(lines) + "\n" if lines else ""
 
 
