@@ -179,6 +179,19 @@ def _retarget_unsent_application(session: Session, job: Job) -> None:
                         .values(build_token="")
                         .execution_options(synchronize_session=False))
         return
+    if job.status == JobStatus.APPLYING:
+        # an attempt is running against the OLD form: revoke its approval (the submit gate
+        # then refuses to click) so it ends at CP3; the packet is rebuilt for the new target
+        res = session.execute(update(Application).where(
+            Application.job_id == job.id, col(Application.submitted_at).is_(None),
+            col(Application.approved_at).is_not(None))
+            .values(approved_at=None, scheduled_for=None)
+            .execution_options(synchronize_session=False))
+        if res.rowcount:
+            session.add(StatusEvent(job_id=job.id, status=JobStatus.APPLYING,
+                                    note="apply target changed during the attempt: approval "
+                                         "revoked, it will not be submitted"))
+        return
     from sqlalchemy.orm.attributes import set_committed_value
 
     # conditional on the CURRENT row: a decision made meanwhile (you marked it applied or

@@ -670,6 +670,7 @@ def gate_runner(before=None, status_if_ok="submitted"):
         calls.append({"job_id": job_.id, "packet": packet})
         if before:
             before()
+        calls[-1]["job_url"] = job_.apply_url  # what the runner would navigate to now
         why = kw["pre_submit_check"]()
         calls[-1]["gate"] = why
         if why:
@@ -896,3 +897,35 @@ def test_company_cap_zero_is_rejected_or_blocks_everything(engine):
         # a company with no application history is still blocked by a zero cap
         assert cap_block_reason(s, datetime.now(UTC), app_id=None, job=job,
                                 channel="greenhouse") == "deferred: company cap is 0"
+
+
+@pytest.mark.parametrize("revoke", [True, False])
+def test_target_change_during_an_attempt_stops_the_submit(engine, session, paths, revoke):
+    from recrute.models import Application, Job
+    from recrute.pipeline.ingest import _retarget_unsent_application
+
+    graduate(session)
+    app, job = add_app(session, 1)
+    make_due(session, app, at(12))
+    job_id, old_url = job.id, job.apply_url
+
+    def retarget():  # discovery moves the posting to another form meanwhile
+        with Session(engine) as other:
+            j = other.get(Job, job_id)
+            j.apply_url = "https://boards.greenhouse.io/acme/jobs/999"
+            j.ats_job_id = "999"
+            if revoke:  # (what ingestion does) ...and without it the gate still catches it
+                _retarget_unsent_application(other, j)
+            other.add(j)
+            other.commit()
+
+    runner = gate_runner(before=retarget)
+    res = run_due(session, page_factory=None, paths=paths, now=at(12), runner=runner,
+                  min_gap=timedelta(0))
+    assert runner.calls[0]["gate"] is not None
+    assert res.outcome.status == "needs_human"
+    assert runner.calls[0]["job_url"] == old_url  # the runner never saw the new form
+    if revoke:
+        with Session(engine) as s:
+            assert s.exec(select(Application).where(Application.job_id == job_id)).one() \
+                .approved_at is None

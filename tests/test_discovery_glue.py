@@ -432,3 +432,36 @@ def test_overlapping_linkedin_runs_cannot_share_the_budget(engine, monkeypatch):
     assert sorted(got) == [False, True]  # exactly one search for a cap of one
     with Session(engine) as s:
         assert get_state(s, "linkedin_session")["searches"] == 1
+
+
+def test_guest_detail_cache_survives_between_runs(engine, monkeypatch):
+    from recrute.settings import get_state, set_setting, set_state
+    from recrute.sources import linkedin_guest as lg
+
+    fetched = []
+    cards = [lg.Card(job_id=str(i), title="Security Engineer", company="Acme",
+                     location="Remote", url=f"https://www.linkedin.com/jobs/view/{i}/",
+                     posted=None) for i in (1, 2, 3)]
+    monkeypatch.setattr(lg, "parse_search_cards", lambda html: cards)
+
+    def http_factory():
+        def get(url):
+            if "jobPosting/" in url:
+                fetched.append(url.rsplit("/", 1)[-1])
+            return '<html><body data-entity-urn="urn:li:jobPosting:1"></body></html>'
+        return FakeHttp({"seeMoreJobPostings": get, "jobPosting/": get})
+
+    monkeypatch.setattr(discovery, "get_source", lambda name: lg.LinkedInGuestSource(
+        http_factory=http_factory, min_interval=0, max_searches=1, max_details=2))
+    monkeypatch.setattr(discovery, "Http", lambda **kw: FakeHttp({}))
+    with Session(engine) as s:
+        set_setting(s, "sources_enabled", {k: False for k in discovery.SEARCH_SOURCES}
+                    | {"linkedin_guest": True})
+    discovery.discover_search(_ctx(engine))
+    with Session(engine) as s:  # make the next run due
+        st = get_state(s, "source:linkedin_guest")
+        st.pop("last_ok", None)
+        st.pop("backoff_until", None)
+        set_state(s, "source:linkedin_guest", st)
+    discovery.discover_search(_ctx(engine))
+    assert fetched[:2] == ["1", "2"] and "3" in fetched[2:]  # the second run reached #3

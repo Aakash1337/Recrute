@@ -536,3 +536,32 @@ def test_credential_phrasings_never_reach_the_llm(line):
     prompt = router.calls[0][1]
     assert "CANARY" not in prompt and "1234" not in prompt and "9021" not in prompt
     assert "[redacted]" in prompt and "Good luck!" in prompt
+
+
+def test_newer_uncertain_submission_is_matched_but_never_auto_updated(engine):
+    from recrute.models import Application
+    from recrute.track.classify import AUTO_APPLY_THRESHOLD, process_messages
+
+    with Session(engine) as s:
+        c = Company(name="Globex", domain="globex.example")
+        s.add(c)
+        s.flush()
+        old = Job(company_id=c.id, title="Security Engineer", apply_url="u1",
+                  canonical_url="g1", status=JobStatus.APPLIED)
+        new = Job(company_id=c.id, title="Security Engineer", apply_url="u2",
+                  canonical_url="g2", status=JobStatus.NEEDS_HUMAN)
+        s.add_all([old, new])
+        s.flush()
+        s.add(Application(job_id=new.id, channel="greenhouse",
+                          outcome={"status": "needs_human",
+                                   "details": {"submit_attempted": True}}))
+        s.commit()
+        job_id, conf = match_job(s, cls("rejection", "Globex", "Security Engineer"),
+                                 "talent@globex.example", "Update on Security Engineer")
+        assert conf < AUTO_APPLY_THRESHOLD  # two applications fit: you decide which
+        router = FakeRouter(lambda p: {"results": [{
+            "index": 0, "kind": "rejection", "company": "Globex",
+            "job_title": "Security Engineer", "confidence": 0.99, "summary": "no"}]})
+        process_messages(s, router, [msg("r", "talent@globex.example",
+                                         "Update on Security Engineer", "Not moving forward.")])
+        assert s.get(Job, old.id).status == JobStatus.APPLIED  # not declined by mistake

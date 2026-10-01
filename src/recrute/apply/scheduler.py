@@ -488,8 +488,8 @@ def claim(session: Session, app: Application, job: Job, *, owner: str, now: date
 
 
 def submit_gate(bind: Any, *, app_id: int, job_id: int, channel: str, attempt_id: str,
-                revision: str, lease: Lease, clock: Callable[[], datetime]
-                ) -> Callable[[], str | None]:
+                revision: str, lease: Lease, clock: Callable[[], datetime],
+                target: tuple | None = None) -> Callable[[], str | None]:
     """Re-checked in a fresh session right before the submit click. Any reason returned
     means: do not submit (the runner hands the filled form to the human instead)."""
 
@@ -507,6 +507,8 @@ def submit_gate(bind: Any, *, app_id: int, job_id: int, channel: str, attempt_id
                 return "the approved packet changed since this attempt started"
             if j is None or j.status != JobStatus.APPLYING:
                 return f"job status changed to {getattr(j, 'status', None)}"
+            if target is not None and (j.apply_url, j.ats, j.ats_job_id) != target:
+                return "the job's apply target changed since this attempt was approved"
             if (info := suspension(s, channel, t)) is not None:
                 return f"channel suspended: {info.get('reason')}"
             if not is_active(t, list(get_setting(s, "active_hours"))):
@@ -721,6 +723,9 @@ def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: d
 
     # ---- the claim: conditional UPDATE; approval + packet re-read in the same transaction
     app_id, job_id, channel = app.id, job.id, app.channel
+    # the form this attempt was approved and claimed for; a changed target stops it
+    target = (job.apply_url, job.ats, job.ats_job_id)
+    run_job = Job(**job.model_dump())  # a fixed snapshot: never reloads a newer target
     attempt_id = uuid.uuid4().hex
     claimed = claim(session, app, job, owner=owner, now=now, mode=mode,
                     adapter_name=adapter.name, trial=trial, attempt_id=attempt_id)
@@ -732,10 +737,10 @@ def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: d
                                ("cover_letter", claimed.cover_letter_path)) if v}
     gate = submit_gate(session.get_bind(), app_id=app_id, job_id=job_id,  # type: ignore[arg-type]
                        channel=channel, attempt_id=attempt_id, revision=revision, lease=lease,
-                       clock=clock)
+                       clock=clock, target=target)
     try:
         packet = Packet.model_validate(claimed.packet)  # the packet that was just claimed
-        outcome = runner(job, packet, mode=mode, page_factory=page_factory, paths=paths,
+        outcome = runner(run_job, packet, mode=mode, page_factory=page_factory, paths=paths,
                          adapter=adapter, router=router, human=human, files=files or None,
                          now=now.astimezone(UTC), pre_submit_check=gate)
     except Exception as e:  # noqa: BLE001 - we can't know how far it got: never retry blindly

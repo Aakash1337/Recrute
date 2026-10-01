@@ -337,14 +337,33 @@ def _domain_label(domain: str) -> str:
 class _Candidate:
     job: Job
     company: Company | None
+    uncertain: bool = False  # submission not confirmed: matched, never auto-updated
+
+
+# applications whose submission is UNCERTAIN (handed to you mid-form, or in flight): they may
+# well be what an employer's email is about, so they take part in identity matching, but an
+# email never updates them automatically (you confirm it)
+UNCERTAIN_STATUSES = (JobStatus.NEEDS_HUMAN, JobStatus.APPLYING)
 
 
 def _candidates(session: Session) -> list[_Candidate]:
+    from recrute.apply.scheduler import may_have_been_sent
+    from recrute.models import Application
+
     rows = session.exec(
         select(Job, Company).join(Company, Job.company_id == Company.id, isouter=True)
         .where(Job.status.in_(MATCHABLE_STATUSES))  # type: ignore[attr-defined]
     ).all()
-    return [_Candidate(j, c) for j, c in rows]
+    out = [_Candidate(j, c) for j, c in rows]
+    uncertain = session.exec(
+        select(Job, Company, Application).join(Company, Job.company_id == Company.id,
+                                               isouter=True)
+        .join(Application, Application.job_id == Job.id)
+        .where(Job.status.in_(UNCERTAIN_STATUSES))  # type: ignore[attr-defined]
+    ).all()
+    out += [_Candidate(j, c, uncertain=True) for j, c, a in uncertain
+            if may_have_been_sent(a, j.status)]
+    return out
 
 
 def _company_score(cls: EmailClassification, sender: str, sender_name: str, subject: str,
@@ -480,6 +499,7 @@ class _Scored:
     company: float
     title: float | None
     contradicts: bool
+    uncertain: bool = False
 
     @property
     def total(self) -> float:
@@ -523,14 +543,17 @@ def match_job(session: Session, classification: EmailClassification, sender: str
             continue
         ts, contra = _title_match(classification, subject, cand.job.title,
                                   cand.company.name if cand.company else "")
-        cands.append(_Scored(cand.job, cs, ts, contra))
+        cands.append(_Scored(cand.job, cs, ts, contra, cand.uncertain))
     if not cands:
         return None, 0.0
     plausible = [c for c in cands if not c.contradicts
                  and (c.title is None or c.title >= PLAUSIBLE_TITLE)]
     if len(plausible) == 1:
         best = plausible[0]
-        return best.job.id, round(min(best.total / 100.0, 1.0), 3)
+        conf = min(best.total / 100.0, 1.0)
+        if best.uncertain:  # an unconfirmed submission: suggested, you confirm it
+            conf = min(conf, AUTO_APPLY_THRESHOLD - 0.05)
+        return best.job.id, round(conf, 3)
     if len(plausible) > 1:
         # several applications fit: suggest the best, but the user has to confirm
         best = max(plausible, key=lambda c: (c.total, c.job.id or 0))

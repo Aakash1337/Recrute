@@ -122,6 +122,8 @@ def discover_search(ctx) -> dict:
                     src.task = "extract_postings"
                 if hasattr(src, "done"):  # thread progress replaces the date cursor
                     src.done = state.get("done") or {}
+                if name == "linkedin_guest":  # postings already fetched in full: not again
+                    src.seen_ids = set(state.get("seen_ids") or [])
                 rotating = hasattr(src, "query_offset")
                 if rotating:
                     import math
@@ -167,8 +169,8 @@ def discover_search(ctx) -> dict:
                     else:
                         out[name] = ingest(s, raws).as_dict()
                         state = {"last_ok": now.isoformat(),
-                                 **{k: state[k] for k in ("query_ok", "query_failures", "done")
-                                    if k in state}}
+                                 **{k: state[k] for k in ("query_ok", "query_failures", "done",
+                                                          "seen_ids") if k in state}}
                         ingested_ok = True
                 except HttpError as e:
                     s.rollback()
@@ -181,6 +183,11 @@ def discover_search(ctx) -> dict:
                     out[name] = f"error: {e.__class__.__name__}"
                 if sctx.errors:
                     state["errors"] = dict(list(sctx.errors.items())[:5])
+                if ingested_ok and name == "linkedin_guest":
+                    # their postings are stored now: remember them (bounded, newest kept)
+                    known = list(state.get("seen_ids") or [])
+                    known += [i for i in sorted(src.seen_ids) if i not in set(known)]
+                    state["seen_ids"] = known[-5000:]
                 if ingested_ok and getattr(src, "thread_id", None):
                     prev = state.get("done") or {}
                     ids = set(prev.get("ids") or []) \
