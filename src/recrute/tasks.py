@@ -303,7 +303,10 @@ def sync_inbox(session, router, cfg: dict, password: str, connect=None) -> dict:
     from recrute.track.classify import is_alert_mail, process_messages
     from recrute.track.mail import ImapInbox
 
-    state_key = f"imap:{cfg['user']}:{cfg['folder']}"
+    # the mailbox's full identity: a UID cursor means nothing on another server, even for the
+    # same user/folder (UIDVALIDITY values are not unique across servers)
+    host = str(cfg["host"]).strip().lower().rstrip(".")
+    state_key = f"imap:{cfg['user']}@{host}:{int(cfg['port'])}:{cfg['folder']}"
     state = get_state(session, state_key, {}) or {}
     with ImapInbox({"host": cfg["host"], "port": cfg["port"], "user": cfg["user"],
                     "folder": cfg["folder"]}, password=password, connect=connect) as box:

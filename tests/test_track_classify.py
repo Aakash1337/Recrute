@@ -518,3 +518,21 @@ def test_credentials_in_assessment_invites_are_redacted():
     prompt = router.calls[0][1]
     assert "CANARY" not in prompt and "AuditCanary" not in prompt  # ...without the secrets
     assert "Temporary password: [redacted]" in prompt and "Good luck!" in prompt
+
+
+@pytest.mark.parametrize("line", [
+    "Your temporary password is: CANARY!42",
+    "Your verification code is: 1234",
+    "Your PIN is 9021",
+    "Password for your assessment - CANARYpw",
+    "Login: CANARYuser",
+    "Your one-time passcode is CANARY77",
+])
+def test_credential_phrasings_never_reach_the_llm(line):
+    router = FakeRouter(lambda p: {"results": []})
+    m = msg("1", "support@hackerrank.com", "Complete your Acme assessment",
+            f"Please complete your assessment for Acme.\n{line}\nGood luck!")
+    classify_messages(router, [m])
+    prompt = router.calls[0][1]
+    assert "CANARY" not in prompt and "1234" not in prompt and "9021" not in prompt
+    assert "[redacted]" in prompt and "Good luck!" in prompt

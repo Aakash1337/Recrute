@@ -152,3 +152,30 @@ def test_linkedin_capture_uses_job_scoped_company_apply_url():
     assert job is not None
     assert (job.ats, job.ats_token, job.ats_job_id) == ("greenhouse", "acmesecurity", "7012345")
     assert job.apply_url.startswith("https://boards.greenhouse.io/acmesecurity/jobs/7012345")
+
+
+@pytest.mark.parametrize("office,applicants,kept", [
+    ("Toronto", {"@type": "Country", "name": "USA"}, True),
+    ("Austin", [{"@type": "Country", "name": "Canada"}], False),
+])
+def test_remote_applicant_location_requirements_decide_eligibility(office, applicants, kept):
+    import json
+
+    from recrute.criteria import Criteria
+    from recrute.pipeline.filter import apply_hard_filters
+
+    jp = {"@context": "https://schema.org", "@type": "JobPosting", "title": "Security Engineer",
+          "hiringOrganization": {"name": "Acme"}, "jobLocationType": "TELECOMMUTE",
+          "jobLocation": {"address": {"addressLocality": office,
+                                      "addressCountry": "CA" if office == "Toronto" else "US"}},
+          "applicantLocationRequirements": applicants, "employmentType": "FULL_TIME",
+          "description": "<p>Detection engineering with SIEM.</p>"}
+    page = f'<script type="application/ld+json">{json.dumps(jp)}</script>'
+    raw = raw_job_from_capture("https://acme.example/jobs/1", page, "x")
+    from recrute.models import Job
+
+    job = Job(title=raw.title, apply_url="u", canonical_url="c", locations=raw.locations,
+              remote=raw.remote, employment_type=raw.employment_type,
+              description_md=raw.description_text or "")
+    result = apply_hard_filters(job, "Acme", Criteria())
+    assert (result.reason is None or "location" not in result.reason) is kept

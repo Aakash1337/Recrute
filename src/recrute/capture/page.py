@@ -147,6 +147,26 @@ def _locations(jp: dict[str, Any]) -> list[str]:
     return out
 
 
+_COUNTRY_ALIASES = {"us": "United States", "usa": "United States", "u.s.": "United States",
+                    "u.s.a.": "United States", "united states of america": "United States"}
+
+
+def _applicant_locations(jp: dict[str, Any]) -> list[str]:
+    """applicantLocationRequirements: WHERE the applicant must be (a remote job's eligibility),
+    as opposed to jobLocation, where the office is."""
+    raw = jp.get("applicantLocationRequirements")
+    items = raw if isinstance(raw, list) else [raw] if raw else []
+    out: list[str] = []
+    for it in items:
+        name = _text(it) if isinstance(it, str | dict) else None
+        if not name:
+            continue
+        name = _COUNTRY_ALIASES.get(name.strip().lower(), name.strip())
+        if name not in out:
+            out.append(name)
+    return out
+
+
 def _salary(jp: dict[str, Any]) -> tuple[int | None, int | None, str | None]:
     bs = jp.get("baseSalary") or jp.get("estimatedSalary")
     if isinstance(bs, list):
@@ -262,6 +282,10 @@ def _from_jsonld(url: str, jp: dict[str, Any]) -> RawJob | None:
         apply_url = posting_url
     locations = _locations(jp)
     remote = _remote(jp, " ".join(locations))
+    # who may apply decides eligibility (a remote US-only role at a Toronto office is a US
+    # job; a remote Canada-only role at a US office is not)
+    if applicants := _applicant_locations(jp):
+        locations = applicants
     return RawJob(
         source=SOURCE, source_job_id=source_job_id, url=url, apply_url=apply_url, title=title,
         company=company or _company_fallback(url) or "Unknown", company_domain=company_domain,

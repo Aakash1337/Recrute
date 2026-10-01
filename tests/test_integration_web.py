@@ -229,7 +229,7 @@ def test_sync_inbox_cursor_and_uidvalidity(engine, session_factory):
     with Session(engine) as s:
         r = sync_inbox(s, Router(), cfg, "pw", connect=lambda c: fake)
         assert r["messages"] == 2
-        state = get_state(s, "imap:me@example.com:INBOX")
+        state = get_state(s, "imap:me@example.com@h:993:INBOX")
         assert state == {"uidvalidity": 7, "uid": 2}
         r = sync_inbox(s, Router(), cfg, "pw", connect=lambda c: fake)
         assert r["messages"] == 0  # cursor respected
@@ -447,7 +447,7 @@ def test_unclassified_email_is_retried(engine):
                               "We'd like to schedule an interview for the SOC Analyst role.")})
     with Session(engine) as s:
         r = sync_inbox(s, Incomplete(), cfg, "pw", connect=lambda c: fake)
-        state = get_state(s, "imap:me@example.com:INBOX")
+        state = get_state(s, "imap:me@example.com@h:993:INBOX")
         assert state.get("uid") in (None, 4)  # cursor held before the unclassified email
         from recrute.models import EmailEvent
 
@@ -770,10 +770,11 @@ def test_unreadable_message_is_retried_not_skipped(engine, monkeypatch):
     with Session(engine) as s:
         first = sync_inbox(s, Router(), cfg, "pw", connect=lambda c: fake)
         assert first["messages"] == 1  # only 101 could be read...
-        assert get_state(s, "imap:me@example.com:INBOX")["uid"] == 99  # ...cursor stays before 100
+        # ...and the cursor stays before 100
+        assert get_state(s, "imap:me@example.com@h:993:INBOX")["uid"] == 99
         second = sync_inbox(s, Router(), cfg, "pw", connect=lambda c: fake)
         assert second["messages"] == 2  # 100 is read now (101 again, deduplicated by id)
-        assert get_state(s, "imap:me@example.com:INBOX")["uid"] == 101
+        assert get_state(s, "imap:me@example.com@h:993:INBOX")["uid"] == 101
 
 
 def test_linkedin_baseline_contacts_are_answered_and_cover_the_live_form():
@@ -845,3 +846,27 @@ def test_missing_approved_file_can_be_rebuilt_and_reapproved(engine):
         app = s.exec(select(Application)).one()
         assert s.get(Job, job.id).status == JobStatus.SHORTLISTED
         assert app.approved_at is None  # the rebuilt packet needs a fresh CP2 approval
+
+
+def test_inbox_cursor_is_per_server(engine):
+    from recrute.settings import get_state
+    from recrute.tasks import sync_inbox
+
+    class Router:
+        def complete(self, task, prompt, **kw):
+            n = prompt.count("### EMAIL")
+            return {"results": [{"index": i, "kind": "other", "company": "", "job_title": "",
+                                 "confidence": 0.9, "summary": ""} for i in range(n)]}
+
+    old = FakeIMAP({100: _mail(100, "Old", "news@shop.example", "x")})
+    new = FakeIMAP({5: _mail(5, "Thank you for applying to Acme", "no-reply@greenhouse-mail.io",
+                             "Received.")})
+    new.uidvalidity = old.uidvalidity  # coincidentally equal
+    cfg = {"host": "imap.old.example", "port": 993, "user": "me@example.com",
+           "folder": "INBOX"}
+    with Session(engine) as s:
+        sync_inbox(s, Router(), cfg, "pw", connect=lambda c: old)
+        r = sync_inbox(s, Router(), {**cfg, "host": "imap.new.example"}, "pw",
+                       connect=lambda c: new)
+        assert r["messages"] == 1  # UID 5 on the new server is not skipped
+        assert get_state(s, "imap:me@example.com@imap.new.example:993:INBOX")["uid"] == 5

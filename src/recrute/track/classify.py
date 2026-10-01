@@ -143,8 +143,15 @@ _BARE_CODE = re.compile(r"(?<![\d\-+(])\b\d{6,8}\b(?![\d\-)])")
 _CRED_FIELD = (r"(?:temporary |one[- ]time |initial )?(?:password|passcode|pass code|pwd|pin|"
                r"user ?name|user ?id|login(?: id)?|log-in|sign[- ]in|credentials?|"
                r"access code|security code|verification code|secret)")
-_CRED_LINE = re.compile(rf"(?im)\b({_CRED_FIELD})\b(\s*(?:\([^)]*\))?\s*[:=\-–]\s*)\S[^\n]*")
-_CRED_IS = re.compile(rf"(?i)\b({_CRED_FIELD})(\s+(?:is|will be|was set to)\s+)\S+")
+# words that may sit between the label and its value ("password IS:", "code for your test")
+_CRED_GLUE = (r"(?:\s+(?:is|are|was|will be|has been|set to|below|here|for (?:the|your|this) "
+              r"(?:account|assessment|test|challenge|portal|login)))*")
+# "label: value" / "label is: value" / "label - value" -> the rest of the line
+_CRED_LINE = re.compile(rf"(?im)\b({_CRED_FIELD})\b({_CRED_GLUE}\s*(?:\([^)]*\))?\s*"
+                        rf"[:=\-–]\s*)\S[^\n]*")
+# "label is value" (no separator) -> the next token
+_CRED_IS = re.compile(rf"(?i)\b({_CRED_FIELD})\b(\s+(?:is|was|will be|has been|set to)\s+)"
+                      r"(?!\[redacted\])\S+")
 
 
 def redact_secrets(text: str) -> str:
