@@ -929,3 +929,13 @@ def test_target_change_during_an_attempt_stops_the_submit(engine, session, paths
         with Session(engine) as s:
             assert s.exec(select(Application).where(Application.job_id == job_id)).one() \
                 .approved_at is None
+    # recovery: the job is with you, nothing was sent, and the packet can be rebuilt for the
+    # new form (it then needs a fresh CP2 approval)
+    from recrute import packets
+
+    with Session(engine) as s:
+        assert s.get(Job, job_id).status == JobStatus.NEEDS_HUMAN
+        if not revoke:  # (the gate alone doesn't revoke; you'd regenerate after reviewing)
+            return
+        packets.rebuild(s, job_id)
+        assert s.get(Job, job_id).status == JobStatus.SHORTLISTED

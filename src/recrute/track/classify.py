@@ -11,6 +11,7 @@
 
 import logging
 import re
+import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -146,12 +147,11 @@ _CRED_FIELD = (r"(?:temporary |one[- ]time |initial )?(?:password|passcode|pass 
 # words that may sit between the label and its value ("password IS:", "code for your test")
 _CRED_GLUE = (r"(?:\s+(?:is|are|was|will be|has been|set to|below|here|for (?:the|your|this) "
               r"(?:account|assessment|test|challenge|portal|login)))*")
-# "label: value" / "label is: value" / "label - value" -> the rest of the line
-_CRED_LINE = re.compile(rf"(?im)\b({_CRED_FIELD})\b({_CRED_GLUE}\s*(?:\([^)]*\))?\s*"
-                        rf"[:=\-–]\s*)\S[^\n]*")
-# "label is value" (no separator) -> the next token
-_CRED_IS = re.compile(rf"(?i)\b({_CRED_FIELD})\b(\s+(?:is|was|will be|has been|set to)\s+)"
-                      r"(?!\[redacted\])\S+")
+# Conservative on purpose: after a credential label, the REST OF THE LINE goes, whatever
+# separates them (":", "-", an em dash, "is", nothing at all...). Over-redacting a harmless
+# line costs some context; under-redacting leaks a password.
+_CRED_LINE = re.compile(rf"(?im)\b({_CRED_FIELD})\b({_CRED_GLUE}\s*(?:\([^)]*\))?"
+                        r"(?:\s*[^\w\s\[]+\s*|\s+))(?!\[redacted\])\S[^\n]*")
 
 
 def redact_secrets(text: str) -> str:
@@ -160,8 +160,8 @@ def redact_secrets(text: str) -> str:
     text = _URL.sub(r"[link to \1]", text)
     # credentials handed out in the email (assessment logins, temporary passwords): the label
     # stays, the value goes
+    text = unicodedata.normalize("NFKC", text)
     text = _CRED_LINE.sub(r"\1\2[redacted]", text)
-    text = _CRED_IS.sub(r"\1\2[redacted]", text)
     text = _CODE_NEAR.sub(r"\1\2[redacted]", text)
     text = _LONG_TOKEN.sub("[redacted]", text)
     return _BARE_CODE.sub("[redacted]", text)

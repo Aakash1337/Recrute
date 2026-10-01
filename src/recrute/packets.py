@@ -307,9 +307,14 @@ def rebuild(session: Session, job_id: int) -> None:
     details = out.get("details") or {}
     # an approved packet whose files went missing / changed before anything was sent: it has
     # to be rebuilt (and approved again)
-    broken_files = bool(details.get("artifact_integrity")) and not (
-        details.get("submit_attempted") or (app is not None and app.submitted_at))
-    if app is not None and app.packet and not (out.get("packet_failures") or broken_files):
+    nothing_sent = not (details.get("submit_attempted")
+                        or (app is not None and app.submitted_at))
+    broken_files = bool(details.get("artifact_integrity")) and nothing_sent
+    # a packet that is no longer approved (e.g. its apply target changed mid-attempt) and was
+    # never sent can always be rebuilt: the replacement needs a fresh CP2 approval anyway
+    unapproved = app is not None and app.approved_at is None and nothing_sent
+    if app is not None and app.packet and not (out.get("packet_failures") or broken_files
+                                               or unapproved):
         raise PacketError("this job already has a packet; use Regenerate on its packet page")
     _transition(session, job_id, [JobStatus.NEEDS_HUMAN], JobStatus.SHORTLISTED)
     if app is not None:

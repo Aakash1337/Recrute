@@ -51,24 +51,26 @@ def _atomic_write(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-_NAV: dict[int, int] = {}  # id(page) -> main-frame navigations seen (reloads included)
+_NAV: dict[int, int] = {}  # id(page) -> navigations seen in ANY of its frames (reloads too)
 _WATCHED: set[int] = set()
 
 
 def _watch(page) -> None:
-    """Count the tab's main-frame navigations, so even a same-URL reload is a new target."""
+    """Count the tab's navigations, in the main frame AND in embedded frames (an iframe'd login
+    or application form changing is a different page too), so even a reload is a new target."""
     key = id(page)
     if key in _WATCHED or not hasattr(page, "on"):
         return
     _WATCHED.add(key)
 
     def navigated(frame) -> None:
-        if getattr(page, "main_frame", None) is frame:
-            with _LOCK:
-                _NAV[key] = _NAV.get(key, 0) + 1
+        with _LOCK:
+            _NAV[key] = _NAV.get(key, 0) + 1
 
     try:
         page.on("framenavigated", navigated)
+        page.on("frameattached", navigated)  # a new frame appearing (e.g. a sign-in popup
+        page.on("framedetached", navigated)  # embedded in the page) changes it too
     except Exception:  # noqa: BLE001
         _WATCHED.discard(key)
 

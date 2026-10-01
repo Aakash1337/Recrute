@@ -1229,3 +1229,25 @@ def test_job_description_text_is_not_a_checkpoint(context):
       <p>We noticed unusual activity on your account.</p></main>""")
     assert adapter.detect_blockers(page) == "linkedin: security checkpoint"
     page.close()
+
+
+@pytest.mark.browser
+def test_iframe_navigation_drops_queued_input(context, paths):
+    from recrute import live
+
+    page = context.new_page()
+    page.set_content('<input id="q"><iframe id="f" srcdoc="<p>login</p>"></iframe>')
+    live.start_session(paths)
+    live.publish_frame(paths, page)
+    target = live.page_target(page)
+    live.enqueue(paths, {"type": "click", "x": 20, "y": 10, "session": live.active_session(),
+                         "target": target})
+    live.enqueue(paths, {"type": "type", "text": "CANARY-secret",
+                         "session": live.active_session(), "target": target})
+    page.evaluate("document.getElementById('f').srcdoc = '<p>another page</p>'")
+    page.wait_for_timeout(300)
+    assert live.page_target(page) != target
+    live.apply_inputs(paths, page)
+    assert page.input_value("#q") == ""  # nothing typed after the frame changed
+    live.clear(paths)
+    page.close()

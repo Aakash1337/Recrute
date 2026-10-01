@@ -527,6 +527,10 @@ def test_credentials_in_assessment_invites_are_redacted():
     "Password for your assessment - CANARYpw",
     "Login: CANARYuser",
     "Your one-time passcode is CANARY77",
+    "Temporary password \u2014 CANARYem",
+    "Access code \u2015 CANARYbar",
+    "Password CANARYnosep",
+    "Your password (case sensitive) | CANARYpipe",
 ])
 def test_credential_phrasings_never_reach_the_llm(line):
     router = FakeRouter(lambda p: {"results": []})
