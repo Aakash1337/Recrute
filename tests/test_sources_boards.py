@@ -212,3 +212,116 @@ def test_smartrecruiters_paginates():
     jobs = list(src.fetch(ctx_for(http, CompanyRef("B", "smartrecruiters", "B"))))
     assert len(jobs) == 102 + 3
     assert [u for u in http.urls() if "offset=" in u][-1].count("offset=100") == 1
+
+
+def test_smartrecruiters_detail_budget_rotates(monkeypatch):
+    import recrute.sources.smartrecruiters as sr
+    from recrute.criteria import Criteria
+    from recrute.sources.base import CompanyRef, SourceContext
+
+    postings = [{"id": str(i), "name": "Security Analyst", "releasedDate": None,
+                 "location": {"city": "Austin", "region": "TX", "country": "us"}}
+                for i in range(31)]
+    fetched = set()
+
+    class Http:
+        def get_json(self, url):
+            fetched.add(url.rsplit("/", 1)[-1])
+            return {}
+
+    src = sr.SmartRecruitersSource(details_per_company=30)
+    ctx = SourceContext(http=Http(), criteria=Criteria())
+    company = CompanyRef(name="Acme", ats="smartrecruiters", ats_token="acme")
+    for window in range(3):
+        monkeypatch.setattr(sr.time, "time", lambda w=window: w * 6 * 3600 + 1)
+        list(src.parse_board({"content": postings}, company, ctx))
+    assert fetched == {str(i) for i in range(31)}
+
+
+@pytest.mark.parametrize("payload", [{"error": "temporarily unavailable"}, {"jobs": None}, []])
+def test_malformed_board_is_an_error_not_an_empty_board(payload):
+    from recrute.criteria import Criteria
+    from recrute.sources.base import CompanyRef, SourceContext
+    from recrute.sources.greenhouse import GreenhouseSource
+
+    class Http:
+        def get_json(self, url):
+            return payload
+
+    ctx = SourceContext(http=Http(), criteria=Criteria(),
+                        companies=[CompanyRef(name="Acme", ats="greenhouse", ats_token="acme")])
+    assert list(GreenhouseSource().fetch(ctx)) == []
+    assert "greenhouse:acme" in ctx.errors  # -> poll error, and no closure
+
+
+def test_malformed_smartrecruiters_page_is_an_error():
+    from recrute.criteria import Criteria
+    from recrute.sources.base import CompanyRef, SourceContext
+    from recrute.sources.smartrecruiters import SmartRecruitersSource
+
+    class Http:
+        def get_json(self, url):
+            return {"error": "temporarily unavailable"}
+
+    ctx = SourceContext(http=Http(), criteria=Criteria(), companies=[
+        CompanyRef(name="Acme", ats="smartrecruiters", ats_token="acme")])
+    assert list(SmartRecruitersSource().fetch(ctx)) == []
+    assert "smartrecruiters:acme" in ctx.errors
+
+
+@pytest.mark.parametrize("payload", [None, False, 0, ""])
+def test_malformed_lever_payload_is_an_error(payload):
+    from recrute.criteria import Criteria
+    from recrute.sources.base import CompanyRef, SourceContext
+    from recrute.sources.lever import LeverSource
+
+    class Http:
+        def get_json(self, url):
+            return payload
+
+    ctx = SourceContext(http=Http(), criteria=Criteria(),
+                        companies=[CompanyRef(name="Acme", ats="lever", ats_token="acme")])
+    assert list(LeverSource().fetch(ctx)) == []
+    assert "lever:acme" in ctx.errors
+
+
+@pytest.mark.parametrize("total", [None, 0, "x"])
+def test_smartrecruiters_full_page_without_total_keeps_paging(total):
+    from recrute.criteria import Criteria
+    from recrute.sources.base import CompanyRef, SourceContext
+    from recrute.sources.smartrecruiters import PAGE, SmartRecruitersSource
+
+    pages = []
+
+    class Http:
+        def get_json(self, url):
+            pages.append(url)
+            n = PAGE if len(pages) == 1 else 3
+            body = {"content": [{"id": f"{len(pages)}-{i}", "name": "Clerk"} for i in range(n)]}
+            if total != "missing":
+                body["totalFound"] = total
+            return body
+
+    ctx = SourceContext(http=Http(), criteria=Criteria())
+    company = CompanyRef(name="Acme", ats="smartrecruiters", ats_token="acme")
+    payload = SmartRecruitersSource().fetch_board(ctx, company)
+    assert len(pages) == 2 and len(payload["content"]) == PAGE + 3
+    assert not ctx.incomplete
+
+
+def test_malformed_workable_row_marks_the_board_incomplete():
+    from recrute.criteria import Criteria
+    from recrute.sources.base import CompanyRef, SourceContext
+    from recrute.sources.workable import WorkableSource
+
+    class Http:
+        def get_json(self, url):
+            return {"name": "Acme", "jobs": [
+                {"shortcode": "AB12", "title": "Security Engineer", "city": "Austin"},
+                {"title": "Row without a code"}]}
+
+    ctx = SourceContext(http=Http(), criteria=Criteria(),
+                        companies=[CompanyRef(name="Acme", ats="workable", ats_token="acme")])
+    jobs = list(WorkableSource().fetch(ctx))
+    assert [j.source_job_id for j in jobs] == ["AB12"]  # valid rows kept
+    assert "workable:acme" in ctx.incomplete  # -> no closures from this snapshot

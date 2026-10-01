@@ -17,8 +17,6 @@ DEFAULTS: dict[str, Any] = {
     "site_caps": {"linkedin_easy_apply": 15},
     # Submissions only happen inside this local-time window (24h clock).
     "active_hours": [9, 22],
-    # Fraction of the LLM subscription window to leave for your own use (0 = no reserve).
-    "llm_reserve": 0.0,
     # Discovery sources on/off. linkedin_session (logged-in browsing) is opt-in.
     "sources_enabled": {
         "greenhouse": True, "lever": True, "ashby": True, "workable": True,
@@ -30,13 +28,17 @@ DEFAULTS: dict[str, Any] = {
     "linkedin_session_budget": {"searches": 10, "views": 80},
     # First N submissions per adapter are fill-and-pause (trial period).
     "trial_threshold": 5,
+    # Per-company guardrail: at most `company_cap` applications per `company_cooldown_days`.
+    "company_cap": 1,
+    "company_cooldown_days": 7,
     # CP2 auto-approval (M7). Off by default.
     "auto_approve": {"enabled": False, "min_score": 85, "priorities": ["P0", "P1"]},
     "follow_up_days": 14,
     "ghost_days": 30,
     # Notifications: backend is one of ui | ntfy | telegram | email.
     "notify": {"backend": "ui", "ntfy_url": "", "telegram_chat_id": "", "email_to": "",
-               "smtp_host": "", "smtp_port": 587, "smtp_user": "", "instant_alert_score": 90,
+               "smtp_host": "", "smtp_port": 587, "smtp_user": "", "smtp_from": "",
+               "smtp_security": "starttls", "ui_base_url": "", "instant_alert_score": 90,
                "digest_hour": 8},
     # Inbox tracking (IMAP). Password lives in the OS keyring, never here.
     "imap": {"enabled": False, "host": "imap.gmail.com", "port": 993, "user": "",
@@ -45,6 +47,8 @@ DEFAULTS: dict[str, Any] = {
 
 # Settings whose values are dicts: updates are merged key-by-key with type checking.
 _DICT_KEYS = {"sources_enabled", "linkedin_session_budget", "auto_approve", "notify", "imap"}
+# Protective per-site caps that can only be raised/removed explicitly (never by omission).
+PROTECTED_CAPS = {"linkedin_easy_apply": 15}
 
 
 def get_setting(session: Session, key: str) -> Any:
@@ -61,8 +65,22 @@ def get_setting(session: Session, key: str) -> Any:
 def set_setting(session: Session, key: str, value: Any) -> None:
     if key not in DEFAULTS:
         raise KeyError(f"unknown setting: {key}")
+    if isinstance(value, dict) and (key in _DICT_KEYS or key == "site_caps"):
+        # a partial update is a read-modify-write: take the row's write lock BEFORE reading,
+        # so two concurrent partial updates (e.g. disabling two sources) both survive
+        from sqlalchemy import update
+
+        session.commit()
+        session.execute(insert(Setting).values(key=key, value=DEFAULTS[key], updated_at=utcnow())
+                        .on_conflict_do_nothing(index_elements=["key"]))
+        session.execute(update(Setting).where(Setting.key == key).values(key=Setting.key)
+                        .execution_options(synchronize_session=False))
+        session.expire_all()
     if key in _DICT_KEYS and isinstance(value, dict):
         value = {**get_setting(session, key), **value}  # partial updates keep other fields
+    if key == "site_caps" and isinstance(value, dict):
+        # updating one site never drops another site's cap; protective caps always exist
+        value = {**PROTECTED_CAPS, **get_setting(session, "site_caps"), **value}
     value = _validate(key, value)
     now = utcnow()
     # Atomic upsert: concurrent first writes can't collide on the primary key.
@@ -94,11 +112,11 @@ def _validate(key: str, value: Any) -> Any:
         if not (0 <= start < end <= 24):
             raise ValueError("active_hours must be [start, end] with 0 <= start < end <= 24")
         value = [start, end]
-    elif key == "llm_reserve":
-        value = float(value)
-        if not 0.0 <= value < 1.0:
-            raise ValueError("llm_reserve must be in [0, 1)")
-    elif key in ("trial_threshold", "follow_up_days", "ghost_days"):
+    elif key == "company_cap":
+        value = int(value)
+        if value < 1:  # 0 would silently still allow each company's first application
+            raise ValueError("company_cap must be >= 1 (lower apps_per_day to pause applying)")
+    elif key in ("trial_threshold", "follow_up_days", "ghost_days", "company_cooldown_days"):
         value = int(value)
         if value < 0:
             raise ValueError(f"{key} must be >= 0")
@@ -123,3 +141,45 @@ def _validate(key: str, value: Any) -> Any:
             merged[k] = v
         value = merged
     return value
+
+
+# ------------------------------------------------------------------------------ internal state
+# Small persisted values the worker needs (IMAP cursor, last digest date...). Not user settings,
+# so they bypass validation and never show up in the settings UI.
+
+STATE_PREFIX = "state:"
+
+
+def get_state(session: Session, key: str, default: Any = None) -> Any:
+    row = session.get(Setting, STATE_PREFIX + key)
+    return default if row is None else row.value
+
+
+def update_state(bind: Any, key: str, change: Any) -> Any:
+    """Atomically read-modify-write one state value: `change(current) -> (new, result)`; a
+    `new` of None writes nothing. The row's write lock is taken BEFORE reading (a no-op
+    UPDATE), so concurrent callers (threads or processes) are serialized. Returns `result`."""
+    from sqlalchemy import update
+
+    with Session(bind) as s:
+        # create the row if missing WITHOUT replacing one another caller just created
+        s.execute(insert(Setting).values(key=STATE_PREFIX + key, value={}, updated_at=utcnow())
+                  .on_conflict_do_nothing(index_elements=["key"]))
+        s.commit()
+        s.execute(update(Setting).where(Setting.key == STATE_PREFIX + key)
+                  .values(key=Setting.key).execution_options(synchronize_session=False))
+        s.expire_all()
+        new, result = change(dict(get_state(s, key, {}) or {}))
+        if new is None:
+            s.rollback()
+        else:
+            set_state(s, key, new)
+        return result
+
+
+def set_state(session: Session, key: str, value: Any) -> None:
+    now = utcnow()
+    stmt = insert(Setting).values(key=STATE_PREFIX + key, value=value, updated_at=now)
+    session.execute(stmt.on_conflict_do_update(index_elements=["key"],
+                                               set_={"value": value, "updated_at": now}))
+    session.commit()

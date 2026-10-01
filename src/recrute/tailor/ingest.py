@@ -669,31 +669,58 @@ def read_proposal_flags(paths: Paths) -> list[VerifierFlag] | None:
     return [VerifierFlag.model_validate(f) for f in record.get("flags", [])]
 
 
-def accept_proposed(paths: Paths, *, allow_blocking: bool = False) -> Profile:
+class ProposalChanged(ValueError):
+    """The proposal on disk isn't the one that was reviewed."""
+
+
+def proposal_digest(text: str) -> str:
+    """Digest of the proposal as reviewed in the UI (sha256 of its bytes, 24 hex chars)."""
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+
+
+def accept_proposed(paths: Paths, *, allow_blocking: bool = False,
+                    expected_digest: str | None = None) -> Profile:
     """Promote data/profile.proposed.yaml to data/profile.yaml.
 
     Refuses (BlockingFlagsError) when the proposal has blocking flags, or has no valid check
-    record (missing, or the proposal was edited afterwards), unless allow_blocking=True. The
-    previous profile.yaml is kept as profile.yaml.bak.
+    record (missing, or the proposal was edited afterwards), unless allow_blocking=True. With
+    `expected_digest` (the reviewed proposal), a different proposal is refused
+    (ProposalChanged). Everything happens under the proposal lock on ONE snapshot of the
+    proposal bytes, so flags are validated against exactly what gets promoted. The previous
+    profile.yaml is kept as profile.yaml.bak.
     """
+    from recrute.tailor.answers import _file_lock
+
     prop = proposed_profile_path(paths)
     if not prop.exists():
         raise FileNotFoundError(f"no proposal at {prop}")
-    profile = read_profile(prop)  # also rejects duplicate ids
-    flags = read_proposal_flags(paths)
-    if flags is None:
-        flags = [VerifierFlag(where="profile.proposed", text="", severity="block",
-                              reason="no check record for this proposal (missing, or the "
-                                     "proposal was edited after ingest)")]
-    blocking = [f for f in flags if f.severity == "block"]
-    if blocking and not allow_blocking:
-        raise BlockingFlagsError(blocking)
-    target = profile_path(paths)
-    if target.exists():
-        shutil.copyfile(target, target.with_name(target.name + ".bak"))
-    _write_atomic(target, dump_profile(profile))
-    prop.unlink()
-    proposed_flags_path(paths).unlink(missing_ok=True)
+    with _file_lock(prop):
+        text = prop.read_text(encoding="utf-8")
+        if expected_digest is not None and proposal_digest(text) != expected_digest:
+            raise ProposalChanged("the proposal changed since it was reviewed")
+        profile = Profile.model_validate(yaml.safe_load(text) or {})
+        ensure_unique_ids(profile)
+        flags = None
+        fp = proposed_flags_path(paths)
+        if fp.exists():
+            record = json.loads(fp.read_text(encoding="utf-8"))
+            if record.get("proposal_sha256") == _sha(text):
+                flags = [VerifierFlag.model_validate(f) for f in record.get("flags", [])]
+        if flags is None:
+            flags = [VerifierFlag(where="profile.proposed", text="", severity="block",
+                                  reason="no check record for this proposal (missing, or the "
+                                         "proposal was edited after ingest)")]
+        blocking = [f for f in flags if f.severity == "block"]
+        if blocking and not allow_blocking:
+            raise BlockingFlagsError(blocking)
+        target = profile_path(paths)
+        if target.exists():
+            shutil.copyfile(target, target.with_name(target.name + ".bak"))
+        _write_atomic(target, dump_profile(profile))
+        prop.unlink()
+        fp.unlink(missing_ok=True)
     return profile
 
 
@@ -745,13 +772,17 @@ def ingest_resume(paths: Paths, router: Completer, *, apply: bool = False) -> In
               for rid in removed]
     diff = profile_diff(old, profile) if old is not None else ""
 
+    from recrute.tailor.answers import _file_lock
+
     prop = proposed_profile_path(paths)
     text = dump_profile(profile)
-    _write_atomic(prop, text)
     record = {"proposal_sha256": _sha(text), "created_at": datetime.now(UTC).isoformat(),
               "sources": [n for n, _ in sources], "removed_ids": removed, "diff": diff,
               "flags": [f.model_dump(mode="json") for f in flags]}
-    _write_atomic(proposed_flags_path(paths), json.dumps(record, indent=2, ensure_ascii=False))
+    with _file_lock(prop):  # proposal + its check record are published together
+        _write_atomic(prop, text)
+        _write_atomic(proposed_flags_path(paths),
+                      json.dumps(record, indent=2, ensure_ascii=False))
 
     result = IngestResult(profile=profile, flags=flags, diff=diff, written_to=prop,
                           sources=[n for n, _ in sources], removed_ids=removed)

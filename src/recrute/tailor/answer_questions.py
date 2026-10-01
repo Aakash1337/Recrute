@@ -12,16 +12,20 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
+from recrute.apply.dom import parse_date
 from recrute.schemas import FormAnswer, FormQuestion, Profile, ResumeSelection
 from recrute.tailor.answers import (
     CONTACT_KINDS,
     SENSITIVE_KINDS,
     AnswerBank,
     classify_question,
+    drafting_context,
     field_core,
     format_value,
+    is_sensitive_question,
     match_option,
     match_question,
+    phone_country,
 )
 from recrute.tailor.common import (
     STR,
@@ -67,6 +71,67 @@ _PROFILE_RULES: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
+_DEGREE_RANK = [(r"ph\.?\s?d|doctor", 5), (r"master|m\.?s\b|m\.?sc|mba|m\.?eng", 4),
+                (r"bachelor|b\.?s\b|b\.?sc|b\.?a\b|b\.?eng|b\.?tech", 3),
+                (r"associate", 2), (r"high school|diploma|ged", 1)]
+
+
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def completion_date(end: str):
+    """The date an education entry was completed, from "2024", "2024-05", "05/2024",
+    "May 2024", "2024-05-17"; None when it's ongoing or can't be parsed. A month means the end
+    of that month; a bare year means the end of that year."""
+    import calendar
+    import re
+    from datetime import date
+
+    t = (end or "").strip().lower()
+    if not t or any(w in t for w in ("present", "expected", "current", "ongoing", "now")):
+        return None
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", t)
+    if m:
+        return date(int(m[1]), int(m[2]), int(m[3]))
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})", t) or re.fullmatch(r"(\d{1,2})/(\d{4})", t)
+    if m:
+        y, mo = (int(m[1]), int(m[2])) if len(m[1]) == 4 else (int(m[2]), int(m[1]))
+        return date(y, mo, calendar.monthrange(y, mo)[1]) if 1 <= mo <= 12 else None
+    m = re.fullmatch(r"([a-z]{3})[a-z]*\.?,?\s+(\d{4})", t)
+    if m and m[1] in _MONTHS:
+        y, mo = int(m[2]), _MONTHS[m[1]]
+        return date(y, mo, calendar.monthrange(y, mo)[1])
+    m = re.fullmatch(r"(\d{4})", t)
+    if m:
+        return date(int(m[1]), 12, 31)
+    return None
+
+
+def _completed(ed) -> bool:
+    """Completed only when the end date is known and not after today (a bare current year is
+    ambiguous, so it counts as not completed and you answer it at CP2)."""
+    from datetime import date
+
+    done = completion_date(ed.end)
+    return done is not None and done <= date.today()
+
+
+def highest_completed_degree(profile: Profile) -> str | None:
+    """The highest degree actually earned; None when completion can't be established (you'll
+    answer it at CP2 instead of the form claiming an unfinished degree)."""
+    import re
+
+    best, best_rank = None, 0
+    for ed in profile.education:
+        if not ed.degree or not _completed(ed):
+            continue
+        rank = next((r for rx, r in _DEGREE_RANK if re.search(rx, ed.degree, re.I)), 0)
+        if rank > best_rank:
+            best, best_rank = ed.degree, rank
+    return best
+
+
 def _profile_value(kind: str, profile: Profile) -> str | None:
     ed = profile.education[0] if profile.education else None
     ex = profile.experience[0] if profile.experience else None
@@ -78,6 +143,7 @@ def _profile_value(kind: str, profile: Profile) -> str | None:
         "full_name": profile.name or None,
         "email": profile.email or None,
         "phone": profile.phone or None,
+        "phone_country": phone_country(profile.phone),
         "city": profile.location or None,
         "linkedin": links.get("linkedin"),
         "github": links.get("github"),
@@ -85,12 +151,94 @@ def _profile_value(kind: str, profile: Profile) -> str | None:
         "gpa": ed.gpa if ed else None,
         "grad_date": ed.end if ed else None,
         "major": ed.field if ed else None,
-        "degree": ed.degree if ed else None,
+        "degree": highest_completed_degree(profile),
         "school": ed.school if ed else None,
         "current_company": ex.company if ex and ex.end.lower() in ("", "present") else None,
         "current_title": ex.title if ex and ex.end.lower() in ("", "present") else None,
     }
     return values.get(kind) or None
+
+
+def education_for(q: FormQuestion, profile: Profile, need: str = ""):
+    """The education entry a question is about: "undergraduate" -> bachelor's/associate,
+    "graduate"/master's/PhD -> graduate entries; otherwise the only entry (having `need`
+    filled in). Several candidates -> None (ambiguous: you answer it)."""
+    import re
+
+    text = f"{q.label} {q.description}".lower()
+    entries = [ed for ed in profile.education if not need or (getattr(ed, need) or "").strip()]
+
+    def level(ed) -> int:
+        return next((r for rx, r in _DEGREE_RANK if re.search(rx, ed.degree or "", re.I)), 0)
+
+    if "undergrad" in text or "bachelor" in text:
+        hits = [ed for ed in entries if level(ed) in (2, 3)]
+    elif re.search(r"\bgraduate\b|\bgrad school\b|master|ph\.?d|doctoral", text):
+        hits = [ed for ed in entries if level(ed) >= 4]
+    elif re.search(r"most recent|current|latest", text):
+        hits = entries[:1]
+    else:
+        hits = entries
+        if len(hits) > 1 and need in ("school", "field", "end"):
+            # an unqualified "School"/"Major" means the highest degree actually earned
+            best = highest_completed_degree(profile)
+            hits = [ed for ed in hits if best and ed.degree == best and _completed(ed)][:1]
+    return hits[0] if len(hits) == 1 else None
+
+
+def gpa_for(q: FormQuestion, profile: Profile) -> str | None:
+    ed = education_for(q, profile, "gpa")
+    return ed.gpa if ed else None
+
+
+def _education_value(kind: str, q: FormQuestion, profile: Profile) -> str | None:
+    import re
+
+    field = {"gpa": "gpa", "major": "field", "school": "school", "grad_date": "end"}[kind]
+    ed = education_for(q, profile, field)
+    if ed is None:
+        return None
+    value = getattr(ed, field)
+    if kind == "gpa":
+        return _gpa_on_scale(value, f"{q.label} {q.description}")
+    if kind == "grad_date" and re.search(r"\byear\b", f"{q.label} {q.description}", re.I):
+        m = re.search(r"(19|20)\d{2}", value or "")
+        return m.group(0) if m else None
+    return value or None
+
+
+_DEGREE_QUALIFIER = re.compile(r"undergrad|bachelor|\bgraduate\b|grad school|master|ph\.?d|"
+                               r"doctor|most recent|current|latest", re.I)
+
+
+def _degree_value(q: FormQuestion, profile: Profile) -> str | None:
+    """"Degree (undergraduate)" is about THAT entry; only an unqualified "Degree" / "Highest
+    degree" means the highest degree actually earned."""
+    if _DEGREE_QUALIFIER.search(f"{q.label} {q.description}"):
+        ed = education_for(q, profile, "degree")
+        return ed.degree if ed is not None and _completed(ed) else None
+    return highest_completed_degree(profile)
+
+
+_SCALE_RE = re.compile(r"(?:out of|on an?|scale of|/)\s*(\d+(?:\.\d+)?)"
+                       r"(?:\s*(?:-?point)?\s*scale)?|(\d+(?:\.\d+)?)\s*(?:-?point)?\s*scale",
+                       re.I)
+
+
+def _gpa_on_scale(value: str | None, question: str) -> str | None:
+    """The GPA only when it's known to be on the scale the question asks for ("GPA (on a 4.0
+    scale)"): a profile GPA without a stated scale, or on another scale, is left to you (no
+    conversions are ever invented)."""
+    if not value:
+        return None
+    asked = _SCALE_RE.search(question)
+    if not asked:
+        return value
+    want = float(asked.group(1) or asked.group(2))
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(?:/|out of)\s*(\d+(?:\.\d+)?)\s*", value)
+    if m is None or float(m.group(2)) != want:
+        return None
+    return m.group(1)
 
 
 def profile_answer(q: FormQuestion, profile: Profile) -> FormAnswer | None:
@@ -100,7 +248,13 @@ def profile_answer(q: FormQuestion, profile: Profile) -> FormAnswer | None:
         kind = next((k for k, rx in _PROFILE_RULES if rx.fullmatch(core)), None)
     if kind is None or q.type in ("file", "checkbox"):
         return None
-    value = format_value(q, _profile_value(kind, profile))
+    if kind == "degree":
+        raw = _degree_value(q, profile)
+    elif kind in ("gpa", "major", "school", "grad_date"):
+        raw = _education_value(kind, q, profile)
+    else:
+        raw = _profile_value(kind, profile)
+    value = format_value(q, raw)
     if value is None:
         return None
     return FormAnswer(question_id=q.id, value=value, source="profile", confidence=0.85,
@@ -170,11 +324,12 @@ def _coerce(q: FormQuestion, text: str) -> str | list[str] | bool | None:
     if not text:
         return None
     if q.type == "multiselect":
-        hits = [match_option(p, q.options) for p in re.split(r"\s*\|\s*|\n", text)]
+        hits = [match_option(p, q.options, fuzzy=True)
+                for p in re.split(r"\s*\|\s*|\n", text)]
         picked = list(dict.fromkeys(h for h in hits if h))
         return picked or None
     if q.options:
-        return match_option(text, q.options)
+        return match_option(text, q.options, fuzzy=True)  # LLM text: reviewed at CP2
     if q.type == "checkbox":
         return bool(re.match(r"\s*(yes|true)\b", text, re.IGNORECASE))
     if q.type == "number":
@@ -190,7 +345,7 @@ def _llm_answers(pending: list[FormQuestion], *, profile: Profile, bank: AnswerB
         ids = [i for e in selection.experience + selection.projects for i in (e.id, *e.bullet_ids)]
     else:
         ids = list(profile.all_items())[:25]
-    common = "\n".join(f"- {k}: {truncate(v, 400)}" for k, v in list(bank.common.items())[:8])
+    common = "\n".join(f"- {k}: {truncate(v, 400)}" for k, v in drafting_context(bank, pending))
     note = f"USER NOTE (follow it): {user_note.strip()}\n" if user_note.strip() else ""
     prompt = ANSWER_PROMPT.format(
         note=note, title=job.title if job else "", company=f" @ {job.company}" if job and
@@ -246,10 +401,14 @@ def answer_questions(questions: list[FormQuestion], *, profile: Profile, bank: A
             continue
         hit = match_question(q, bank, priority=priority) or profile_answer(q, profile)
         if hit is not None:
+            if q.type == "date" and hit.value not in (None, "") and parse_date(hit.value) is None:
+                # "May 2024" / "2024" is not a calendar date: never pad it with an invented day
+                hit = hit.model_copy(update={"needs_review": True, "confidence": 0.3})
             done[q.id] = hit
             continue
         kind = classify_question(q)
-        if kind in SENSITIVE_KINDS or kind in CONTACT_KINDS or q.type == "date":
+        if (kind in SENSITIVE_KINDS or kind in CONTACT_KINDS or q.type == "date"
+                or is_sensitive_question(q)):
             done[q.id] = FormAnswer(question_id=q.id, value=None, source="default",
                                     confidence=0.0, needs_review=True)
         elif q.type == "checkbox" and not q.options and _CONSENT_RE.search(q.label):

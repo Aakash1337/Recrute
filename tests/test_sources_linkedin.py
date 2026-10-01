@@ -332,6 +332,7 @@ def test_session_happy_path_guardrails():
     assert src.new_ids == ["4100000001", "4100000002", "4100000004"]
     assert seen >= set(src.new_ids)
     assert budget.searches_used == 1 and budget.views_used == 3
+    assert src.query_cursor == 1  # advanced by the searches actually made
     assert jobs[0].ats == "greenhouse" and jobs[1].ats == "linkedin_easy_apply"
     # one dwell per page visit, each 8-30s total, spent scrolling
     pages = len(page.visited)
@@ -396,12 +397,24 @@ def test_session_kill_switch_on_redirect_and_ignores_jd_text():
         ls.check_blocked("https://www.linkedin.com/jobs/view/4100000002/", html)
 
 
-def test_session_query_rotation_differs_by_day():
+def test_session_query_rotation_follows_the_cursor():
     c = Criteria()
-    a = make_session(FakePage({}), now=lambda: datetime(2026, 9, 29, 10))._queries(ctx())
-    b = make_session(FakePage({}), now=lambda: datetime(2026, 9, 30, 10))._queries(ctx())
+    a = make_session(FakePage({}))._queries(ctx())
     assert sorted(a) == sorted(q for _, q in c.all_search_queries())
-    assert a[0] != b[0]
+    b = make_session(FakePage({}), query_cursor=3)._queries(ctx())
+    assert b[0] == a[3]
+
+
+def test_session_rotation_covers_every_query_when_sessions_search_less_than_budget():
+    queries = [f"q{i}" for i in range(20)]
+    cursor, searched = 0, []
+    for _day in range(10):
+        for _session in range(2):  # two sessions a day, 3 searches each, budget 10
+            src = make_session(FakePage({}), query_cursor=cursor, queries=queries)
+            order = src._queries(ctx())[:3]
+            searched += order
+            cursor += len(order)
+    assert set(searched) == set(queries)
 
 
 MULTI_JOB_CODE = """<code style="display: none" id="bpr-guid-9">{"included": [
@@ -449,3 +462,79 @@ def test_session_button_fallback_ignores_buttons_outside_top_card():
     html = html.replace("</main>", '<aside class="similar"><button class="jobs-apply-button" '
                         'aria-label="Easy Apply to other job">Easy Apply</button></aside></main>')
     assert ls.parse_job_view(html, "4100000001").easy_apply is None
+
+
+def test_guest_queries_rotate_across_runs():
+    from recrute.criteria import Criteria
+    from recrute.sources.base import SourceContext
+    from recrute.sources.linkedin_guest import LinkedInGuestSource
+    from recrute.sources.testing import FakeHttp
+
+    crit = Criteria()
+    all_q = [q for _, q in crit.all_search_queries()]
+    searched = []
+
+    def search(url):
+        from urllib.parse import parse_qs, urlparse
+
+        searched.append(parse_qs(urlparse(url).query)["keywords"][0])
+        return ""
+
+    offset = 0
+    for _ in range(3):
+        src = LinkedInGuestSource(http_factory=lambda: FakeHttp({"seeMoreJobPostings": search}),
+                                  min_interval=4)
+        src.query_offset = offset
+        list(src.fetch(SourceContext(http=FakeHttp({}), criteria=crit)))
+        offset = src.next_offset
+    assert set(all_q) <= set(searched)  # every configured query covered within 3 runs
+
+
+def test_checkpoint_during_dwell_stops_scrolling_at_once():
+    from recrute.sources import SourceBlocked
+
+    page = FakePage(session_routes())
+    src = make_session(page)
+    checkpoint = read("linkedin_session_checkpoint.html")
+
+    def sleep(seconds):  # the checkpoint appears during the first pause
+        page._url, page._html = "https://www.linkedin.com/checkpoint/challenge/AgF", checkpoint
+
+    src.sleep = sleep
+    with pytest.raises(SourceBlocked):
+        list(src.fetch(ctx()))
+    assert page.mouse.wheels == []  # not a single scroll after it
+
+
+def test_query_cut_short_is_not_marked_covered():
+    page = FakePage(session_routes())
+    src = make_session(page, per_session_searches=1, per_session_views=1)
+    jobs = list(src.fetch(ctx()))
+    assert len(jobs) == 1 and len(src.searched_queries) == 1
+    assert src.completed_queries() == []  # its other postings were never fetched
+
+    full = make_session(FakePage(session_routes()), per_session_searches=1)
+    list(full.fetch(ctx()))
+    assert full.completed_queries() == full.searched_queries  # everything delivered
+
+
+def test_guest_query_with_unfetched_details_is_not_covered():
+    from recrute.sources.base import SourceContext
+    from recrute.sources.linkedin_guest import LinkedInGuestSource
+
+    def routes():
+        return FakeHttp({"seeMoreJobPostings": read("linkedin_guest_search.html"),
+                         "jobPosting/": read("linkedin_guest_detail.html")})
+
+    crit = Criteria()
+    src = LinkedInGuestSource(http_factory=routes, min_interval=0, max_searches=1,
+                              max_details=1)
+    jobs = list(src.fetch(SourceContext(http=FakeHttp({}), criteria=crit)))
+    assert len(jobs) == 3 and len(src.seen_ids) == 1  # one fetched in full, two deferred
+    assert src.searched_ok == []  # so the query keeps its old checkpoint
+    # the next run fetches the rest (seen ones aren't re-fetched) and covers the query
+    src2 = LinkedInGuestSource(http_factory=routes, min_interval=0, max_searches=1,
+                               max_details=5)
+    src2.seen_ids = set(src.seen_ids)
+    list(src2.fetch(SourceContext(http=FakeHttp({}), criteria=crit)))
+    assert len(src2.seen_ids) == 3 and len(src2.searched_ok) == 1

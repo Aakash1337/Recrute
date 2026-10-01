@@ -168,17 +168,34 @@ def heuristic_parse(c: dict[str, Any], title_rx: re.Pattern[str] | None = None) 
     return [_rawjob(c, company, title, locations, remote, None, etype, lo, hi, cur, text)]
 
 
+def _role_slug(title: str) -> str:
+    """A role's identity within its comment. Long titles are shortened, with a digest of the
+    FULL title so two roles sharing a long prefix never collide."""
+    import hashlib
+
+    from recrute.pipeline.normalize import spell_symbols
+
+    full = re.sub(r"[^a-z0-9]+", "-", spell_symbols(title).lower()).strip("-")
+    if len(full) <= 60:
+        return full
+    return f"{full[:51]}-{hashlib.sha1(full.encode()).hexdigest()[:8]}"
+
+
 def _rawjob(c: dict[str, Any], company: str, title: str, locations: list[str],
             remote: str | None, apply_url: str | None, etype: str | None, lo: int | None,
-            hi: int | None, cur: str | None, text: str | None = None) -> RawJob:
+            hi: int | None, cur: str | None, text: str | None = None,
+            link_text: str | None = None) -> RawJob:
+    """`link_text`: where an ATS link may be inferred from when there is no explicit
+    apply_url (a multi-role comment passes only the role's own section: another role's
+    posting link must never become this role's destination)."""
     raw_html = htmllib.unescape(c.get("text") or "")
     text = text if text is not None else comment_text(c)
-    ats = ats_fields(raw_html, apply_url=apply_url)
+    ats = ats_fields(raw_html if link_text is None else link_text, apply_url=apply_url)
     if not ats.get("apply_url") and apply_url:
         ats["apply_url"] = apply_url
     return RawJob(
         source="hn_whoshiring",
-        source_job_id=f"{c['id']}:{re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:60]}",
+        source_job_id=f"{c['id']}:{_role_slug(title)}",
         url=HN_ITEM_URL.format(id=c["id"]),
         title=title.strip()[:300],
         company=company.strip()[:200],
@@ -203,12 +220,51 @@ def build_prompt(batch: list[dict[str, Any]]) -> str:
     return PROMPT.format(comments="\n\n".join(blocks))
 
 
+def role_sections(text: str, titles: list[str]) -> dict[str, str]:
+    """Split a multi-role comment so each role gets the shared header (company intro, perks)
+    plus ONLY its own section, not other roles' requirements (a junior role mustn't inherit a
+    senior role's "10+ years"). A title not found in the text gets just the shared header."""
+    header, own = _split_roles(text, titles)
+    return {t: (header + "\n\n" + own[t]).strip() if own.get(t) else header for t in titles}
+
+
+def _split_roles(text: str, titles: list[str]) -> tuple[str, dict[str, str]]:
+    """(shared header, {title: that role's own section}) for a multi-role comment."""
+    # every whole-word occurrence of every title; where titles overlap ("Senior Security
+    # Engineer" contains "Security Engineer") the longest one owns the text
+    def occurrences(t: str) -> list[re.Match[str]]:
+        whole = list(re.finditer(r"(?<!\w)" + re.escape(t) + r"(?!\w)", text, re.I))
+        return whole or list(re.finditer(re.escape(t), text, re.I))
+
+    cands = sorted((m.start(), -len(t), m.end(), t) for t in dict.fromkeys(titles) if t
+                   for m in occurrences(t))
+    taken: list[tuple[int, int]] = []
+    first: dict[str, int] = {}
+    for pos, _, end, t in cands:
+        if any(pos < e and s < end for s, e in taken):
+            continue
+        taken.append((pos, end))
+        first.setdefault(t, pos)
+    found = sorted((p, t) for t, p in first.items())
+    header_end = found[0][0] if found else len(text)
+    own: dict[str, str] = {}
+    for i, (pos, t) in enumerate(found):
+        end = found[i + 1][0] if i + 1 < len(found) else len(text)
+        own[t] = text[pos:end].strip()
+    return text[:header_end].strip(), own
+
+
 def jobs_from_extraction(result: Any, batch: list[dict[str, Any]]) -> list[RawJob]:
     if isinstance(result, str):
         result = json.loads(result)
     by_id = {int(c["id"]): c for c in batch}
     out: list[RawJob] = []
-    for j in (result or {}).get("jobs") or []:
+    rows = (result or {}).get("jobs") or []
+    titles_by_comment: dict[int, list[str]] = {}
+    for j in rows:
+        titles_by_comment.setdefault(int(j.get("comment_id") or 0), []).append(
+            (j.get("title") or "").strip())
+    for j in rows:
         c = by_id.get(int(j.get("comment_id") or 0))
         if c is None or not (j.get("title") or "").strip() or not (j.get("company") or "").strip():
             continue  # hallucinated id or empty row
@@ -217,11 +273,19 @@ def jobs_from_extraction(result: Any, batch: list[dict[str, Any]]) -> list[RawJo
                           and apply_url not in htmllib.unescape(c.get("text") or "")):
             apply_url = None  # only trust links that actually appear in the comment
         lo, hi = j.get("salary_min"), j.get("salary_max")
-        out.append(_rawjob(c, j["company"], j["title"], j.get("locations") or [],
-                           j.get("remote"), apply_url, j.get("employment_type"),
-                           lo if isinstance(lo, int) and lo > 0 else None,
-                           hi if isinstance(hi, int) and hi > 0 else None,
-                           j.get("salary_currency")))
+        titles = [t for t in titles_by_comment.get(int(c["id"]), []) if t]
+        role_text = link_text = None
+        if len(titles) > 1:  # several roles in one comment: role-specific description
+            role_text = role_sections(comment_text(c), titles).get(j["title"].strip())
+            link_text = _split_roles(comment_text(c), titles)[1].get(j["title"].strip(), "")
+        rj = _rawjob(c, j["company"], j["title"], j.get("locations") or [],
+                     j.get("remote"), apply_url, j.get("employment_type"),
+                     lo if isinstance(lo, int) and lo > 0 else None,
+                     hi if isinstance(hi, int) and hi > 0 else None,
+                     j.get("salary_currency"), role_text, link_text)
+        if role_text is not None:
+            rj = rj.model_copy(update={"description_html": None})  # html holds every role
+        out.append(rj)
     return out
 
 
@@ -234,9 +298,17 @@ class HNWhoIsHiringSource:
         self.batch_size = batch_size
         self.max_comments = max_comments
         self.task = task
+        # Progress through the month's thread, kept by the caller between runs:
+        # {"thread": story id, "ids": [comment ids already extracted]}. When set, comments are
+        # selected by "not processed yet" instead of by date, so a backlog beyond max_comments
+        # (or a failed batch) is picked up by later runs instead of being skipped for good.
+        self.done: dict[str, Any] | None = None
+        self.thread_id: str | None = None
+        self.processed: list[int] = []
+        self.backlog = 0
 
     def fetch(self, ctx: SourceContext) -> Iterator[RawJob]:
-        return limited(ctx, self._all(ctx))
+        return limited(ctx, self._all(ctx), apply_since=self.done is None)
 
     def _all(self, ctx: SourceContext) -> Iterator[RawJob]:
         story = latest_thread(ctx.http.get_json(STORY_SEARCH))
@@ -244,15 +316,25 @@ class HNWhoIsHiringSource:
             log.info("hn: no 'Who is hiring?' thread found")
             return
         item = ctx.http.get_json(ITEM.format(id=story["objectID"]))
-        comments = [c for c in top_level_comments(item)
-                    if ctx.is_new(to_utc(c.get("created_at_i")))]
+        self.thread_id, self.processed = str(story["objectID"]), []
+        if self.done is not None:
+            seen = set(self.done.get("ids") or []) \
+                if str(self.done.get("thread")) == self.thread_id else set()
+            comments = [c for c in top_level_comments(item) if int(c["id"]) not in seen]
+        else:
+            comments = [c for c in top_level_comments(item)
+                        if ctx.is_new(to_utc(c.get("created_at_i")))]
         kws = track_keywords(ctx.criteria)
-        comments = prefilter(comments, kws)[: self.max_comments]
-        log.info("hn: %s -> %d candidate comments", story.get("title"), len(comments))
+        matching = prefilter(comments, kws)
+        comments = matching[: self.max_comments]
+        self.backlog = len(matching) - len(comments)
+        log.info("hn: %s -> %d candidate comments (%d left for later runs)",
+                 story.get("title"), len(comments), self.backlog)
         if ctx.router is None:
             title_rx = keyword_regex(track_keywords(ctx.criteria, include_description=False))
             for c in comments:
                 yield from heuristic_parse(c, title_rx)
+                self.processed.append(int(c["id"]))
             return
         for i in range(0, len(comments), self.batch_size):
             batch = comments[i: i + self.batch_size]
@@ -264,3 +346,4 @@ class HNWhoIsHiringSource:
                 log.warning("hn: extraction batch %d failed: %s", i // self.batch_size, e)
                 continue
             yield from jobs_from_extraction(result, batch)
+            self.processed.extend(int(c["id"]) for c in batch)

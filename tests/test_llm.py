@@ -284,3 +284,18 @@ def test_router_validator_rejects_and_does_not_cache(session_factory):
     assert router.complete("t", "p", validate=must_be_big) == {"n": 2}  # claude rejected
     # the rejected claude answer was not cached; valid codex answer is reused
     assert router.complete("t", "p", validate=must_be_big) == {"n": 2}
+
+
+def test_older_request_finishing_late_does_not_cancel_the_cooldown(session_factory):
+    router, _ = make_router(session_factory, [], [])
+    # a long request (started ~10 minutes ago) is still running when another one hits the
+    # rate limit; the long one then finishes OK
+    router._record("t", "claude", "k1", ok=False, error="limit", rate_limited=True)
+    router._record("t", "claude", "k2", ok=True, response={}, duration_ms=600_000)
+    assert router._cooling_down("claude")
+    # a request that STARTED after the limit and succeeded: quota is back
+    import time
+
+    time.sleep(0.05)
+    router._record("t", "claude", "k3", ok=True, response={}, duration_ms=10)
+    assert not router._cooling_down("claude")

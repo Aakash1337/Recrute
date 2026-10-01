@@ -8,9 +8,9 @@ Additional questions -> Review, driven by footer buttons aria-labelled "Continue
 <Company>!".
 
 Rules specific to this channel:
-  * only CONTACT fields (name, email, phone, phone country, city) that LinkedIn prefills from
-    the user's own profile may keep their value; screening / consent questions always need an
-    approved answer, and unapproved defaults are cleared or sent to CP3;
+  * every value must be an approved packet answer, including the contact fields LinkedIn
+    prefills from your profile (name, email, phone, phone country): the packet answers them
+    (BASELINE_QUESTIONS), and a prefilled value without a matching approved answer goes to CP3;
   * the packet's resume must be attached and shown as selected, else CP3 (LinkedIn would
     otherwise send a previously saved resume);
   * questions only appear step by step, so coverage is re-checked on EVERY step and the
@@ -63,10 +63,13 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
     name = "linkedin_easy_apply"
     ats_names = ("linkedin", "linkedin_easy_apply")
     hosts = ("linkedin.com",)
-    accept_prefilled = True  # contact-field allowlist only (see base.is_contact_field)
+    accept_prefilled = False  # prefills are never approval (see base.prefill_ok)
     # a logout mid-session is unexpected here: we rely on the saved session
     account_security_kinds: ClassVar[tuple[str, ...]] = ("captcha", "checkpoint", "login_wall")
     form_selector = MODAL
+    requires_fields = False  # the final review step has no fields (checked separately)
+    # the resume picker cards (role=radio): the selected resume is checked by _review_problem
+    adapter_verified = ".jobs-document-upload-redesign-card__container"
     submit_selector = SUBMIT
     blocker_patterns: ClassVar[tuple[tuple[str, str], ...]] = (
         ("linkedin: security checkpoint",
@@ -165,6 +168,11 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
         target = [c for n, c, _ in cards if n == name]
         if not target:
             return f"uploaded resume {name!r} is not in the document list"
+        if len(target) > 1:
+            # Packet resumes have version-unique names, so a duplicate means we can't tell which
+            # document LinkedIn would send: never guess.
+            return (f"{len(target)} saved documents are named {name!r}; can't tell which one "
+                    "is the approved resume")
         deadline = time.monotonic() + 4
         while time.monotonic() < deadline:
             selected = [n for n, _, s in self._resume_cards(page) if s]
@@ -272,9 +280,8 @@ class LinkedInEasyApplyAdapter(BaseAdapter):
         report.required_failed.append("_navigation")
         return report
 
-    def submit(self, page: Page, *, human: Human) -> None:
+    def submit_button(self, page: Page) -> Locator:
         btn = self._visible(page, SUBMIT)
         if btn is None:
             raise RuntimeError("Submit application button not visible")
-        human.dwell()
-        human.click(btn)
+        return btn

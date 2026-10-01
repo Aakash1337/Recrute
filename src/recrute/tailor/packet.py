@@ -89,6 +89,13 @@ def load_packet(paths: Paths, job_id: int, version: str | None = None) -> Packet
     return Packet.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
+def file_digests(paths: Paths, rels: list[str | None]) -> dict[str, str]:
+    import hashlib
+
+    return {r: hashlib.sha256((paths.data / r).read_bytes()).hexdigest()
+            for r in rels if r and (paths.data / r).is_file()}
+
+
 def _file_stem(profile: Profile) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", profile.name).strip("_") or "Candidate"
 
@@ -113,7 +120,9 @@ def build_packet(job: Any, questions: list[FormQuestion], *, profile: Profile, b
     try:
         packet = _generate(jc, questions, out_dir, profile=profile, bank=bank, router=router,
                            paths=paths, user_note=user_note,
-                           need_cover_letter=need_cover_letter, pages=pages)
+                           need_cover_letter=need_cover_letter, pages=pages,
+                           tag=version.rsplit("-", 1)[-1][:8])
+        packet.artifacts = file_digests(paths, [packet.resume_pdf, packet.cover_letter_pdf])
         _write_atomic(out_dir / "packet.json", packet.model_dump_json(indent=2))
     except BaseException:
         shutil.rmtree(out_dir, ignore_errors=True)
@@ -127,7 +136,8 @@ def build_packet(job: Any, questions: list[FormQuestion], *, profile: Profile, b
 
 def _generate(jc: JobContext, questions: list[FormQuestion], out_dir: Path, *,
               profile: Profile, bank: AnswerBank, router: Completer, paths: Paths,
-              user_note: str, need_cover_letter: bool | None, pages: int | None) -> Packet:
+              user_note: str, need_cover_letter: bool | None, pages: int | None,
+              tag: str = "") -> Packet:
     """Everything that produces the packet's content, writing files only into `out_dir`."""
 
     def rel(p: Path) -> str:
@@ -136,7 +146,8 @@ def _generate(jc: JobContext, questions: list[FormQuestion], out_dir: Path, *,
     flags: list[VerifierFlag] = []
     ranks = rank_items(profile, jc, user_note)
     selection = select_resume(profile, jc, router, user_note=user_note, pages=pages)
-    stem = _file_stem(profile)
+    # Unique per version: sites like LinkedIn identify saved documents by file name.
+    stem = _file_stem(profile) + (f"_{tag}" if tag else "")
     resume = render_resume(profile, selection, out_dir / f"{stem}_Resume.pdf",
                            max_pages=pages_for(jc, pages), ranks=ranks, paths=paths)
     selection = resume.selection or selection
@@ -174,5 +185,6 @@ def _generate(jc: JobContext, questions: list[FormQuestion], out_dir: Path, *,
         job_id=jc.job_id, resume=selection, resume_pdf=rel(resume.path),
         cover_letter=cover.text if cover else None, cover_letter_pdf=cover_rel,
         questions=questions, answers=answer_set.answers, flags=merge_flags(flags),
+        citations={k: list(v) for k, v in dict(answer_set.cited).items()},
         user_note=user_note, generated_at=datetime.now(UTC))
     return packet

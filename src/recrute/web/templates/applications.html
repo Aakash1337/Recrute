@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Applications · Recrute{% endblock %}
+{% block content %}
+{% set labels = {'needs_human': 'Needs you', 'approved': 'Queued (drip scheduler)', 'applying': 'Submitting now', 'applied': 'Applied', 'acknowledged': 'Acknowledged', 'interviewing': 'Interviewing', 'offer': 'Offers', 'declined': 'Declined', 'ghosted': 'Ghosted'} %}
+{% for channel, info in suspended %}
+<p class="bad">⏸ {{ channel }} submissions are paused until {{ info.get('until', '?') }}: {{ info.get('reason', '') }}.
+  Check the account in the automation browser, then <button hx-post="/channels/{{ channel }}/resume" hx-swap="outerHTML">Resume {{ channel }}</button></p>
+{% endfor %}
+{% if reminders %}
+<h2>Reminders</h2>
+<ul>{% for r in reminders %}<li>{{ r.message }} {% if r.kind == 'ghosted' %}<button hx-post="/applications/{{ r.job_id }}/ghosted" hx-swap="outerHTML">Mark ghosted</button>{% endif %}</li>{% endfor %}</ul>
+{% endif %}
+{% for key in ['needs_human', 'approved', 'applying', 'applied', 'acknowledged', 'interviewing', 'offer', 'declined', 'ghosted'] %}
+{% set rows = groups.get(key, []) %}
+{% if rows %}
+<h2>{{ labels[key] }} ({{ rows | length }})</h2>
+<table>
+  {% for job, company, app in rows %}
+  <tr>
+    <td><b>{{ job.title }}</b><br>{% include "_job_row_meta.html" %}</td>
+    <td class="muted">
+      {% if app %}{{ app.channel }}{% if app.trial %} · trial{% endif %}{% if app.scheduled_for %} · next slot {{ app.scheduled_for }}{% endif %}{% if app.submitted_at %} · submitted {{ app.submitted_at | ago }}{% endif %}{% endif %}
+      {% if app and app.outcome and app.outcome.get('reason') %}<br><span class="warn">{{ app.outcome.get('reason') }}</span>{% endif %}
+      {% if app and app.outcome and app.outcome.get('assist_deferred') %}<br><span class="warn">pre-fill waiting: {{ app.outcome.get('assist_deferred') }}</span>{% endif %}
+      {% if app and app.outcome and app.outcome.get('unmatched_fields') %}<br>unanswered: {{ app.outcome.get('unmatched_fields') | join(', ') }}{% endif %}
+      {% if app and app.last_error %}<br><span class="bad">{{ app.last_error }}</span>{% endif %}
+    </td>
+    <td>
+      <a href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">posting ↗</a>
+      {% if app and app.receipt_dir %}· <a href="/receipt/{{ app.receipt_dir }}" target="_blank">receipt</a>{% endif %}
+      {% if key == 'needs_human' %}
+        {% if app and app.packet and app.approved_at %}<button hx-post="/applications/{{ job.id }}/assist" hx-swap="outerHTML">Open &amp; pre-fill</button> <a href="/live">live view</a>{% endif %}
+        {% if not (app and app.packet) or not app.approved_at or (app.outcome or {}).get('packet_failures') or ((app.outcome or {}).get('details') or {}).get('artifact_integrity') %}<button hx-post="/applications/{{ job.id }}/rebuild" hx-swap="outerHTML">Rebuild packet</button>{% endif %}
+        <button class="primary" hx-post="/applications/{{ job.id }}/mark-applied" hx-swap="outerHTML">I submitted it</button>
+        <button hx-post="/applications/{{ job.id }}/skip" hx-swap="outerHTML">Give up</button>
+      {% elif key == 'approved' %}
+        <button hx-post="/applications/{{ job.id }}/skip" hx-swap="outerHTML">Cancel</button>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endfor %}
+{% endblock %}

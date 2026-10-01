@@ -89,6 +89,21 @@ class SessionBudget:
     max_views: int = 80
     searches_used: int = 0  # already used today (persisted by the caller)
     views_used: int = 0
+    # reserve(kind) -> bool: durably take one "searches"/"views" slot BEFORE the page is
+    # opened (atomic, shared with any other run); False = today's cap is used up
+    reserve: Callable[[str], bool] | None = None
+
+    def take(self, kind: str) -> bool:
+        if self.reserve is not None:
+            if not self.reserve(kind):
+                return False
+        elif (self.searches_left if kind == "searches" else self.views_left) <= 0:
+            return False
+        if kind == "searches":
+            self.searches_used += 1
+        else:
+            self.views_used += 1
+        return True
 
     @property
     def searches_left(self) -> int:
@@ -376,8 +391,13 @@ class LinkedInSessionSource:
                  page_factory: Callable[[], AbstractContextManager[PageLike]] | None = None,
                  sleep: Callable[[float], None] = time.sleep,
                  rng: random.Random | None = None,
-                 now: Callable[[], datetime] = datetime.now):
+                 now: Callable[[], datetime] = datetime.now, query_cursor: int = 0):
         self.budget = budget or SessionBudget()
+        # position in the query list, advanced by searches actually made and kept by the
+        # caller across sessions and days: every configured query comes round in turn
+        self.query_cursor = query_cursor
+        self.searched_queries: list[str] = []
+        self._pending: dict[str, set[str]] = {}  # query -> its new cards not yet delivered
         self.seen_ids = seen_ids if seen_ids is not None else set()
         self.per_session_searches = per_session_searches
         self.per_session_views = per_session_views
@@ -399,11 +419,14 @@ class LinkedInSessionSource:
         return start <= self.now().hour < end
 
     def _dwell(self, page: PageLike) -> None:
-        """Spend 8-30s on the page, scrolling down in uneven steps (sometimes back up)."""
+        """Spend 8-30s on the page, scrolling down in uneven steps (sometimes back up). The page
+        is re-checked for a checkpoint / sign-in wall after every pause, BEFORE the next scroll:
+        a security check stops all input at once (SourceBlocked)."""
         total = self.rng.uniform(*self.dwell)
         weights = [self.rng.uniform(0.6, 1.4) for _ in range(self.rng.randint(3, 7))]
         for i, w in enumerate(weights):
             self.sleep(total * w / sum(weights))
+            check_blocked(page.url, page.content())
             dy = self.rng.randint(250, 900)
             if i > 1 and self.rng.random() < 0.2:
                 dy = -self.rng.randint(100, 400)
@@ -417,13 +440,17 @@ class LinkedInSessionSource:
         check_blocked(page.url, html)
         return html
 
+    def completed_queries(self) -> list[str]:
+        """Searched queries ALL of whose new postings were delivered: only these are covered.
+        One cut short (view budget used up, a page timed out, a stop) keeps its previous
+        checkpoint, so its next search looks back far enough to find what was left."""
+        return [q for q in self.searched_queries if not self._pending.get(q)]
+
     def _queries(self, ctx: SourceContext) -> list[str]:
         qs = self.queries or [q for _, q in ctx.criteria.all_search_queries()]
         if not qs:
             return []
-        # Rotate through the query list across sessions and days.
-        offset = (self.now().toordinal() * self.budget.max_searches
-                  + self.budget.searches_used) % len(qs)
+        offset = self.query_cursor % len(qs)
         return qs[offset:] + qs[:offset]
 
     def _search_url(self, q: str, ctx: SourceContext) -> str:
@@ -450,22 +477,28 @@ class LinkedInSessionSource:
         views = min(self.per_session_views, self.budget.views_left)
         if ctx.max_items is not None:
             views = min(views, ctx.max_items)
+        self.searched_queries = []
+        self._pending = {}
         with self.page_factory() as page:
             cards: dict[str, SearchCard] = {}
             for q in self._queries(ctx)[:searches]:
-                if len(cards) >= views * 2:
+                if len(cards) >= views * 2 or not self.budget.take("searches"):
                     break
-                self.budget.searches_used += 1
                 html = self._visit(page, self._search_url(q, ctx))
+                self.query_cursor += 1
+                self.searched_queries.append(q)
+                self._pending[q] = set()
                 for c in parse_search_page(html):
                     if c.job_id not in self.seen_ids:
                         cards.setdefault(c.job_id, c)
+                        self._pending[q].add(c.job_id)
             for jid, card in cards.items():
-                if views <= 0:
+                if views <= 0 or not self.budget.take("views"):
                     break
                 views -= 1
-                self.budget.views_used += 1
                 html = self._visit(page, VIEW.format(id=jid))
                 self.seen_ids.add(jid)
                 self.new_ids.append(jid)
                 yield to_rawjob(parse_job_view(html, jid), card)
+                for pending in self._pending.values():
+                    pending.discard(jid)

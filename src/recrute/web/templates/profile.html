@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Profile · Recrute{% endblock %}
+{% block content %}
+<p class="muted">Your mega resume files in <code>resources/resume/</code>: {{ files | join(', ') if files else 'none yet' }}.
+The structured profile is the only source of facts for resumes, cover letters and answers.</p>
+<p>
+  <button class="primary" hx-post="/profile/ingest" hx-target="#r" {{ 'disabled' if not files or state.running }}>Ingest resume files</button>
+  <span id="r">{% if state.running %}Ingest running…{% elif state.error %}<span class="bad">{{ state.error }}</span>{% endif %}</span>
+</p>
+{% if proposed %}
+<h2>Proposed profile (review, then accept)</h2>
+<pre style="white-space:pre-wrap;max-height:50vh;overflow:auto;border:1px solid var(--line);padding:.5rem">{{ diff or '(new profile)' }}</pre>
+{% if flags is none %}<p class="warn">The proposal was edited after ingest (or has no check results), so it can't be verified automatically.</p>{% endif %}
+{% if flags %}<ul>{% for f in flags %}<li class="flag-{{ f.severity }}"><b>{{ f.severity }}</b> {{ f.where }}: “{{ f.text }}” <span class="muted">({{ f.reason }})</span></li>{% endfor %}</ul>{% endif %}
+<form hx-post="/profile/accept" hx-target="#r2">
+  <input type="hidden" name="digest" value="{{ digest }}">
+  <label><input type="checkbox" name="override"> accept anyway (I checked the flagged items)</label>
+  <button class="primary">Accept proposed profile</button> <span id="r2"></span>
+</form>
+<p class="muted">You can add <code>tags</code>, <code>context</code> and <code>strength</code> to items directly in <code>data/profile.yaml</code>; they survive re-ingests.</p>
+{% endif %}
+<h2>Current profile</h2>
+<pre style="white-space:pre-wrap;max-height:60vh;overflow:auto;border:1px solid var(--line);padding:.5rem">{{ current or 'No profile yet.' }}</pre>
+{% endblock %}

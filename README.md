@@ -54,6 +54,38 @@ flags anything it can't trace back to them.
 - **Volume knob**: set it in the UI, or with `uv run recrute set apps_per_day 25`. Per-site caps
   (e.g. LinkedIn Easy Apply) are never raised by the global knob.
 
+## Command reference
+
+| Command | What it does |
+|---|---|
+| `recrute serve [--worker]` / `recrute worker` | Web UI and/or the background worker |
+| `recrute run <task>` | Run one worker task now (`discover_boards`, `discover_search`, `filter`, `score`, `packets`, `apply`, `inbox`, …) |
+| `recrute profile ingest` / `accept [--force]` | Mega resume → proposed profile → your approval |
+| `recrute company add <url>` | Add a company board (Greenhouse/Lever/Ashby/Workable/SmartRecruiters URL) |
+| `recrute badges import-h1b <csv…>` / `import-everify <csv>` | Visa badge data. Informational only; never used to filter or rank |
+| `recrute inbox set-password <user>` | IMAP app password → OS keyring (then enable IMAP in Settings) |
+| `recrute notify set-secret telegram\|smtp\|ntfy` / `notify test` | Notification secrets (OS keyring) and a test message |
+| `recrute set <key> <value>` / `settings` | Runtime settings (e.g. `apps_per_day`, `site_caps`, `company_cap`) |
+| `recrute token` | Access token for LAN login and the browser extension |
+
+## Browser extension ("Save to Recrute")
+
+Load `extension/` unpacked in Chrome (`chrome://extensions`, then Developer mode). In its
+options, set the server URL and your `recrute token`. Then the toolbar button saves any job page
+you're viewing into Recrute (read-only; no automation on the site).
+
+## Safety model (short version)
+
+- **Nothing is submitted without your CP2 "go ahead" on that exact packet revision.** Blocking
+  truthfulness flags need an explicit acknowledgement. Approved files are fingerprinted and
+  verified before upload.
+- **Live forms are re-read before submitting.** Any question that isn't exactly what you
+  approved (changed wording, numbers, description), any unapproved pre-filled value, a CAPTCHA,
+  or a login wall hands the form to you (CP3), with a notification.
+- **The first 5 submissions per site are fill-and-pause** (trial period). Daily, per-site and
+  per-company caps apply, and submissions only happen during your active hours.
+- **Any security check on LinkedIn pauses both browsing and Easy Apply** until you resume them.
+
 ## Running on a LAN server (e.g. an old Windows laptop)
 
 1. Install uv, Chrome, and the two CLIs, and log into both. Clone the repo, then run
@@ -62,7 +94,9 @@ flags anything it can't trace back to them.
 3. Log into sites again in the browser profile (`recrute browser login`). Browser cookies are
    encrypted per machine, so they can't be copied.
 4. Run `uv run recrute serve --worker`. From other devices, open `http://<laptop>:8765` and log
-   in with the token printed by `uv run recrute token`.
+   in with the token printed by `uv run recrute token`. The **Live browser** page's remote
+   view and remote input need the worker in the same process (`--worker`): screenshots and
+   typed text such as passwords are kept in memory only.
 
 Access control: requests from the machine itself need no login. LAN clients need the token.
 Every state-changing request is CSRF-protected.

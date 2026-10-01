@@ -15,8 +15,28 @@ app = typer.Typer(help="Recrute: human-in-the-loop job discovery and application
                   no_args_is_help=True)
 browser_app = typer.Typer(help="Dedicated browser profile.", no_args_is_help=True)
 llm_app = typer.Typer(help="LLM providers (subscription CLIs).", no_args_is_help=True)
+profile_app = typer.Typer(help="Your mega resume -> structured profile.", no_args_is_help=True)
+badges_app = typer.Typer(help="Visa badge data (informational only).", no_args_is_help=True)
+inbox_app = typer.Typer(help="Inbox tracking (IMAP, read-only).", no_args_is_help=True)
+notify_app = typer.Typer(help="Notifications.", no_args_is_help=True)
+company_app = typer.Typer(help="Company registry.", no_args_is_help=True)
 app.add_typer(browser_app, name="browser")
 app.add_typer(llm_app, name="llm")
+app.add_typer(profile_app, name="profile")
+app.add_typer(badges_app, name="badges")
+app.add_typer(inbox_app, name="inbox")
+app.add_typer(notify_app, name="notify")
+app.add_typer(company_app, name="company")
+
+
+def _router():
+    from sqlmodel import Session
+
+    from recrute.db import get_engine
+    from recrute.llm.router import LLMRouter, build_providers
+
+    cfg, paths = get_config(), get_paths()
+    return LLMRouter(cfg, build_providers(cfg, paths), lambda: Session(get_engine()))
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -92,7 +112,15 @@ def run_task_cmd(task: str) -> None:
     if task not in tasks:
         typer.echo(f"unknown task; choose from: {', '.join(tasks)}", err=True)
         raise typer.Exit(1)
-    typer.echo(json.dumps(w.run_task(w.build_ctx(), tasks[task]), indent=2, default=str))
+    stats = w.run_task(w.build_ctx(), tasks[task])
+    typer.echo(json.dumps(stats, indent=2, default=str))
+    from recrute.models import TaskRun
+
+    with session_scope() as s:
+        run = s.get(TaskRun, task)
+        if run is not None and run.last_ok is False:
+            typer.echo(f"task failed: {run.last_error}", err=True)
+            raise typer.Exit(1)
 
 
 @app.command()
@@ -188,6 +216,134 @@ def llm_test(provider: str | None = None) -> None:
             typer.echo(f"✖ {name}: {e}")
     if failed:
         raise typer.Exit(1)
+
+
+@profile_app.command("ingest")
+def profile_ingest() -> None:
+    """Structure resources/resume/* into data/profile.proposed.yaml for review."""
+    from recrute.tailor import ingest_resume
+
+    init_db()
+    result = ingest_resume(get_paths(), _router(), apply=False)
+    typer.echo(f"proposal written from {len(result.sources)} file(s)")
+    for f in result.flags:
+        typer.echo(f"  [{f.severity}] {f.where}: {f.text} ({f.reason})")
+    if result.diff:
+        typer.echo(result.diff)
+    typer.echo("review it, then: recrute profile accept  (or use the Profile page)")
+
+
+@profile_app.command("accept")
+def profile_accept(force: bool = typer.Option(False, help="accept despite blocking flags")
+                   ) -> None:
+    """Promote data/profile.proposed.yaml to data/profile.yaml (previous kept as .bak)."""
+    from recrute.tailor import BlockingFlagsError, accept_proposed
+
+    try:
+        accept_proposed(get_paths(), allow_blocking=force)
+    except BlockingFlagsError as e:
+        for f in e.flags:
+            typer.echo(f"  [{f.severity}] {f.where}: {f.text} ({f.reason})", err=True)
+        typer.echo("blocking flags: fix the proposal or pass --force", err=True)
+        raise typer.Exit(1) from e
+    typer.echo("profile updated")
+
+
+def _import_badges(kind: str, files: list[Path]) -> None:
+    from recrute.badges import EVerifyIndex, H1BIndex, update_company_badges
+    from recrute.tasks import badge_indexes, refresh_job_badges
+
+    init_db()
+    paths = get_paths()
+    out = paths.data / "badges"
+    out.mkdir(parents=True, exist_ok=True)
+    if kind == "h1b":
+        H1BIndex.from_csv(*files).save(out / "h1b.json")
+    else:
+        EVerifyIndex.from_csv(*files).save(out / "everify.json")
+    # recompute company badges from BOTH datasets, so importing one never erases the other
+    h1b, ev = badge_indexes(paths)
+    with session_scope() as s:
+        n = update_company_badges(s, h1b=h1b, everify=ev)
+        s.commit()
+        jobs = refresh_job_badges(s)
+    typer.echo(f"imported; {n} companies and {jobs} jobs updated.")
+
+
+@badges_app.command("import-h1b")
+def badges_import_h1b(files: list[Path]) -> None:
+    """Import USCIS H-1B Employer Data Hub CSV export(s)."""
+    _import_badges("h1b", files)
+
+
+@badges_app.command("import-everify")
+def badges_import_everify(files: list[Path]) -> None:
+    """Import an E-Verify employer search CSV export."""
+    _import_badges("everify", files)
+
+
+@inbox_app.command("set-password")
+def inbox_set_password(user: str) -> None:
+    """Store your IMAP (app) password in the OS keyring. Then enable IMAP in Settings."""
+    from recrute.track.mail import set_imap_password
+
+    set_imap_password(user, typer.prompt("IMAP / app password", hide_input=True))
+    typer.echo("stored in the OS keyring")
+
+
+@notify_app.command("set-secret")
+def notify_set_secret(kind: str, user: str = typer.Option("", help="SMTP user")) -> None:
+    """Store a notification secret in the OS keyring: telegram | smtp | ntfy."""
+    from recrute import notify
+
+    secret = typer.prompt(f"{kind} secret", hide_input=True)
+    if kind == "telegram":
+        notify.set_telegram_token(secret)
+    elif kind == "smtp":
+        notify.set_smtp_password(user, secret)
+    elif kind == "ntfy":
+        from recrute.settings import get_setting
+
+        init_db()
+        with session_scope() as s:
+            url = get_setting(s, "notify")["ntfy_url"]
+        if not url:
+            typer.echo("set notify.ntfy_url in Settings first", err=True)
+            raise typer.Exit(1)
+        notify.set_ntfy_token(url, secret)
+    else:
+        typer.echo("kind must be telegram, smtp or ntfy", err=True)
+        raise typer.Exit(1)
+    typer.echo("stored in the OS keyring")
+
+
+@notify_app.command("test")
+def notify_test() -> None:
+    """Send a test notification through the configured backend."""
+    from recrute.tasks import notify
+
+    init_db()
+    with session_scope() as s:
+        results = notify(s, "Recrute test", "Notifications work.")
+    for r in results:
+        typer.echo(f"{'✔' if r.ok else '✖'} {r.backend} {r.error or ''}")
+    if any(not r.ok for r in results):
+        raise typer.Exit(1)
+
+
+@company_app.command("add")
+def company_add(url: str, name: str | None = None) -> None:
+    """Add a company by any job/board URL on a supported ATS."""
+    from recrute.registry import add_company_from_url
+
+    init_db()
+    with session_scope() as s:
+        try:
+            c = add_company_from_url(s, url, name)
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        typer.echo(f"{c.name}: {c.ats}:{c.ats_token}")
 
 
 if __name__ == "__main__":

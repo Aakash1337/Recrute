@@ -48,24 +48,48 @@ def resolve_files(packet: Packet, paths: Paths,
     """role -> existing file. The APPROVED packet's resume / cover letter are authoritative:
     if the packet names one that can't be found, that role is simply missing (so the run goes
     to CP3); it is never replaced by another file. `files` only fills roles the packet doesn't
-    specify. Relative paths are tried against RECRUTE_HOME, then data/."""
+    specify. The packet's own (generated) files resolve ONLY under data/, where their approved
+    digests were taken; other relative paths are tried against RECRUTE_HOME, then data/."""
     wanted: dict[str, str | Path] = dict(files or {})
+    generated: set[str] = set()
     if packet.resume_pdf:
         wanted["resume"] = packet.resume_pdf
+        generated.add("resume")
     if packet.cover_letter_pdf:
         wanted["cover_letter"] = packet.cover_letter_pdf
+        generated.add("cover_letter")
     out: dict[str, Path] = {}
     for role, p in wanted.items():
         if not p:
             continue
         p = Path(p)
-        for cand in ([p] if p.is_absolute() else [paths.home / p, paths.data / p]):
+        bases = [paths.data] if role in generated else [paths.home, paths.data]
+        for cand in ([p] if p.is_absolute() else [b / p for b in bases]):
             if cand.is_file():
                 out[role] = cand
                 break
         else:
             log.warning("file for %s not found: %s", role, p)
     return out
+
+
+def unapproved_uploads(packet: Packet, paths: Paths, file_map: Mapping[str, Path]) -> list[str]:
+    """Roles whose ACTUAL upload file isn't a file you approved: checked on the resolved path
+    itself (not just the packet's name for it), against the digests taken at approval."""
+    import hashlib
+
+    if not packet.artifacts:
+        return []
+    approved = {(paths.data / rel).resolve(): digest for rel, digest in packet.artifacts.items()}
+    bad = []
+    for role in ("resume", "cover_letter"):
+        f = file_map.get(role)
+        if f is None:
+            continue
+        digest = approved.get(f.resolve())
+        if digest is None or hashlib.sha256(f.read_bytes()).hexdigest() != digest:
+            bad.append(role)
+    return bad
 
 
 def _new_page(page_factory: Callable[[], Page] | BrowserContext) -> Page:
@@ -97,10 +121,20 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
         return ApplyOutcome(status="needs_human",
                             reason="packet has blocking truthfulness flags; fix at CP2",
                             details=details)
+    if changed := packet.verify_artifacts(paths.data):
+        # The resume/cover letter bytes differ from what was approved (or are gone): never
+        # upload something you didn't see.
+        return ApplyOutcome(status="needs_human",
+                            reason=f"approved files changed or missing: {', '.join(changed)}",
+                            details={**details, "artifact_integrity": changed})
 
+    file_map = resolve_files(packet, paths, files)
+    if bad := unapproved_uploads(packet, paths, file_map):
+        return ApplyOutcome(status="needs_human",
+                            reason=f"upload file is not the approved one: {', '.join(bad)}",
+                            details={**details, "artifact_integrity": bad})
     receipt = Receipt(paths, job.id, now)
     receipt.write_packet(packet)
-    file_map = resolve_files(packet, paths, files)
     receipt.copy_files(file_map)
     details["files"] = {k: str(v) for k, v in file_map.items()}
 
@@ -171,7 +205,7 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
             if stage == "prepared":
                 adapter.prepare(page, job, human)
             if blocker := adapter.detect_blockers(page):
-                receipt.snapshot(page, "blocked")
+                receipt.snapshot(page, "blocked", screenshot=False, html=False)
                 keep_open = mode != "dry_run"
                 return blocked(blocker)
 
@@ -226,6 +260,12 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
             keep_open = True
             return done("needs_human", "adapter did not reach a submittable state: "
                         + "; ".join(report.notes or ["unknown"]))
+        # Human pacing (hesitation, moving onto the button) happens NOW, before the final
+        # checks: nothing slow may sit between the last check and the irreversible click.
+        adapter.prepare_submit(page, human=human)
+        if blocker := adapter.detect_blockers(page):
+            keep_open = True
+            return blocked(blocker)
         if pre_submit_check is not None and (why := pre_submit_check()):
             keep_open = True
             return done("needs_human", f"not submitted: {why}")
@@ -256,19 +296,22 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
                         + "; ".join(errors[:3]))
         return done("needs_human", "submit clicked but no confirmation seen; verify manually")
     except BlockedError as e:
-        receipt.snapshot(page, "blocked")
+        receipt.snapshot(page, "blocked", screenshot=False, html=False)
         keep_open = mode != "dry_run"
         return blocked(str(e))
     except Exception as e:  # noqa: BLE001
-        log.exception("apply_job %s failed", job.id)
-        details["error"] = f"{type(e).__name__}: {e}"[:500]
+        from recrute.errors import safe_error, safe_traceback
+
+        log.error("apply_job %s failed: %s", job.id, safe_error(e))
+        log.debug("apply_job traceback:\n%s", safe_traceback(e))
+        details["error"] = safe_error(e)
         receipt.snapshot(page, "error")
         if clicked_submit:
             keep_open = True
-            return done("needs_human", f"error after submit was clicked (verify manually): {e}"
-                        [:300])
+            return done("needs_human", "error after submit was clicked (verify manually): "
+                        f"{safe_error(e)}"[:300])
         keep_open = mode == "fill_and_pause"
-        return done("failed", f"error before submit: {type(e).__name__}: {e}"[:300])
+        return done("failed", f"error before submit: {safe_error(e)}"[:300])
     finally:
         if not keep_open:
             try:

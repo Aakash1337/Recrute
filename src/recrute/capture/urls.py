@@ -47,6 +47,16 @@ def detect_ats(url: str | None) -> AtsRef | None:
     if not url:
         return None
     u = url.strip()
+    # Prefer the discovery layer's parser: it keeps regional tokens (Lever EU -> "eu:acme")
+    # so captured jobs teach the registry a board that can actually be polled.
+    try:
+        from recrute.sources.ats_url import parse_ats_url
+
+        ref = parse_ats_url(u)
+    except Exception:  # capture must never fail because of the richer parser
+        ref = None
+    if ref is not None and ref.token:
+        return AtsRef(ref.ats, ref.token, ref.job_id)
     for ats, pat in _PATTERNS:
         m = pat.search(u)
         if m:

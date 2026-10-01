@@ -12,6 +12,7 @@ capped per company.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Iterator
 from typing import Any
 from urllib.parse import quote
@@ -76,6 +77,7 @@ def parse_posting(p: dict[str, Any], token: str, company: str | None = None,
         source_job_id=pid,
         url=url,
         apply_url=d.get("applyUrl") or url,
+        apply_url_is_fallback=not (d.get("applyUrl") or d.get("postingUrl")),
         title=clean(p.get("name")) or "",
         company=company or clean((p.get("company") or {}).get("name")) or token,
         ats="smartrecruiters",
@@ -108,15 +110,27 @@ class SmartRecruitersSource(BoardSource):
     def fetch_board(self, ctx: SourceContext, company: CompanyRef) -> Any:
         token = quote(company.ats_token)
         postings: list[dict[str, Any]] = []
+        complete = False
         for page in range(self.max_pages):
             url = LIST.format(token=token, limit=PAGE, offset=page * PAGE)
             if self.country:
                 url += f"&country={self.country}"
             data = ctx.http.get_json(url)
-            content = data.get("content") or []
+            if not isinstance(data, dict) or not isinstance(data.get("content"), list):
+                # a 200 without a posting list is a failed poll, never an empty board
+                raise ValueError("malformed smartrecruiters board response")
+            content = data["content"]
             postings += content
-            if len(content) < PAGE or len(postings) >= (data.get("totalFound") or 0):
+            total = data.get("totalFound")
+            if len(content) < PAGE:
+                complete = True  # a short page is the last one
                 break
+            if isinstance(total, int) and total > 0 and len(postings) >= total:
+                complete = True
+                break
+            # a full page with no/zero/invalid total: keep paging (completion unproven)
+        if not complete:
+            ctx.incomplete.add(f"smartrecruiters:{company.ats_token}")
         return {"content": postings}
 
     def parse_board(self, payload: Any, company: CompanyRef,
@@ -124,11 +138,21 @@ class SmartRecruitersSource(BoardSource):
         want = keyword_regex(track_keywords(ctx.criteria, include_description=False)) if ctx \
             else None
         budget = self.details_per_company if ctx else 0
-        for p in payload.get("content") or []:
+        postings = payload.get("content") or []
+        candidates = [i for i, p in enumerate(postings)
+                      if want is not None and want.search(p.get("name") or "")
+                      and ctx.is_new(to_utc(p.get("releasedDate")))]
+        # The detail budget rotates through the candidates across polls (a fresh window every
+        # 6 hours), so a board with more matching postings than the budget still gets every
+        # description eventually instead of always the same first N.
+        chosen: set[int] = set()
+        if candidates and budget > 0:
+            start = (int(time.time() // (6 * 3600)) * budget) % len(candidates)
+            chosen = {candidates[(start + k) % len(candidates)]
+                      for k in range(min(budget, len(candidates)))}
+        for i, p in enumerate(postings):
             detail = None
-            if budget > 0 and want is not None and want.search(p.get("name") or "") \
-                    and ctx.is_new(to_utc(p.get("releasedDate"))):
-                budget -= 1
+            if i in chosen:
                 try:
                     detail = ctx.http.get_json(DETAIL.format(token=quote(company.ats_token),
                                                              id=quote(str(p["id"]))))

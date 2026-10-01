@@ -58,10 +58,12 @@ SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 def changed_files(base: str) -> list[str]:
     """Files changed on this branch vs `base` (merge-base), plus uncommitted/untracked ones."""
     def git(*args: str) -> list[str]:
-        out = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+        # -z: NUL-delimited, unquoted paths (handles unicode/special characters)
+        out = subprocess.run(["git", *args, "-z"], cwd=ROOT, capture_output=True)
         if out.returncode != 0:
-            sys.exit(f"git {' '.join(args)} failed: {out.stderr.strip()}")
-        return [line for line in out.stdout.splitlines() if line]
+            sys.exit(f"git {' '.join(args)} failed: {out.stderr.decode(errors='replace')}")
+        return [p for p in out.stdout.decode("utf-8", errors="surrogateescape").split("\0")
+                if p]
 
     files = git("diff", "--name-only", f"{base}...HEAD")
     files += git("diff", "--name-only", "HEAD")
@@ -96,8 +98,14 @@ def run_audit(scope: str, model: str, effort: str, timeout: int) -> dict:
         args = [codex, "exec", "-C", str(ROOT), "--sandbox", "read-only", "--ephemeral",
                 "--color", "never", "-m", model, "-c", f'model_reasoning_effort="{effort}"',
                 "--output-schema", str(schema_file), "-o", str(out_file), "-"]
-        proc = subprocess.run(args, input=prompt, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=timeout)
+        # the app's CLI runner: its own process group (a timeout kills Codex's whole process
+        # tree, not just the Node shim) and no API-key variables (subscription only)
+        from recrute.llm.base import LLMError, run_cli
+
+        try:
+            proc = run_cli(args, prompt, ROOT, timeout)
+        except LLMError as e:
+            sys.exit(f"audit failed: {e}")
         if proc.returncode != 0 or not out_file.exists():
             sys.exit(f"audit failed (exit {proc.returncode}):\n{proc.stderr[-3000:]}")
         return json.loads(out_file.read_text(encoding="utf-8"))
@@ -126,7 +134,7 @@ def main() -> None:
     ap.add_argument("--base", default="origin/main")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh"])
-    ap.add_argument("--timeout", type=int, default=1800, help="seconds")
+    ap.add_argument("--timeout", type=int, default=3600, help="seconds")
     args = ap.parse_args()
 
     scope = build_scope(args.paths, args.changed, args.base)

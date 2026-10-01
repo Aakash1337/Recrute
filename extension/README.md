@@ -55,7 +55,10 @@ X-Recrute-Token: <token>
 
 {"url": "https://www.linkedin.com/jobs/view/4012345678/",
  "title": "Security Analyst | Acme | LinkedIn",
- "html": "<html>...</html>"}          # full document.documentElement.outerHTML (≤ 8 MiB)
+ "html": "<html>...</html>"}          # the page without scripts/styles/media, form controls,
+                                       # non-descriptive meta tags or session data (JSON-LD kept);
+                                       # if the request would exceed 5,000,000 bytes, only the
+                                       # head's metadata + main job content; else not sent
 ```
 
 Responses (JSON):

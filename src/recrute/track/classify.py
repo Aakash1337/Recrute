@@ -11,8 +11,10 @@
 
 import logging
 import re
+import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from rapidfuzz import fuzz
@@ -91,10 +93,78 @@ def _domain_matches(domain: str, suffixes: Iterable[str]) -> bool:
 
 
 def is_alert_mail(msg: MailMessage) -> bool:
+    """A job-alert email (routed to job ingestion, never to application tracking)."""
+    from recrute.capture.alerts import _STATUS_SUBJECT, alert_kind
+
+    if alert_kind(msg) is not None:  # every alert the parser understands
+        return True
+    if _STATUS_SUBJECT.search(msg.subject.lower()):
+        return False  # an application update, even from an alert sender
     return msg.sender in ALERT_SENDERS or bool(
         _ALERT_SUBJECT.search(msg.subject) and _domain_matches(
             msg.sender_domain, ("linkedin.com", "indeed.com", "glassdoor.com", "ziprecruiter.com",
                                 "dice.com", "monster.com")))
+
+
+# Account / authentication mail (sign-in codes, password resets, email verification): never
+# about an application's outcome, and it carries secrets: never sent to an LLM.
+_AUTH_MAIL = re.compile(
+    r"\b(?:sign[- ]?in|log[- ]?in|verification|security|one[- ]time|access|confirmation|auth\w*)"
+    r" (?:code|link|pin)\b|\bone[- ]time pass\w*|\botp\b|\bpasscode\b|\bmagic link\b|"
+    r"\b(?:reset|change|set|create|forgot) (?:your |the )?password\b|\bpassword (?:reset|change)|"
+    r"\b(?:verify|confirm|activate) (?:your )?(?:email|e-mail|account|identity)\b|"
+    r"\btwo[- ]factor\b|\b2fa\b|\bnew (?:sign[- ]?in|login|device)\b|"
+    r"\baccount (?:locked|security|verification)\b|"
+    r"\b(?:your|temporary) (?:login )?credentials\b(?! for (?:the|your|this) (?:assessment|"
+    r"test|challenge))", re.I)
+
+
+def is_auth_mail(msg: MailMessage) -> bool:
+    """Sign-in / verification / password mail. Judged on the subject; the body only counts
+    when the email isn't about an application (an assessment invite that includes a login is
+    still tracked, with its credentials redacted: see redact_secrets)."""
+    if _AUTH_MAIL.search(msg.subject):
+        return True
+    head = msg.text[:2000]
+    return bool(_AUTH_MAIL.search(head)) and not (
+        _SUBJECT_KEYWORDS.search(msg.subject) or _BODY_KEYWORDS.search(head))
+
+
+# credential-bearing parts of an otherwise relevant email, removed before any LLM call.
+# Whole links go: invitation / status links carry tokens in the PATH too, short or long;
+# only the site's host name is kept (enough to tell an ATS or an assessment site).
+_URL = re.compile(r"\b(?:https?|ftp)://(?:[^\s/@<>\"')]*@)?([^\s/:?#<>\"')]+)[^\s<>\"')]*",
+                  re.I)
+_CODE_NEAR = re.compile(r"(?i)\b(code|pin|otp|passcode|token)\b(\W{0,5})([A-Z0-9-]{4,12})\b")
+_LONG_TOKEN = re.compile(r"\b[A-Za-z0-9_\-]{24,}\b")
+_BARE_CODE = re.compile(r"(?<![\d\-+(])\b\d{6,8}\b(?![\d\-)])")
+
+
+# "Temporary password: X", "Username - ada", "Your PIN is 1234", "Login: ada / Pa55!" ...
+_CRED_FIELD = (r"(?:temporary |one[- ]time |initial )?(?:password|passcode|pass code|pwd|pin|"
+               r"user ?name|user ?id|login(?: id)?|log-in|sign[- ]in|credentials?|"
+               r"access code|security code|verification code|secret)")
+# words that may sit between the label and its value ("password IS:", "code for your test")
+_CRED_GLUE = (r"(?:\s+(?:is|are|was|will be|has been|set to|below|here|for (?:the|your|this) "
+              r"(?:account|assessment|test|challenge|portal|login)))*")
+# Conservative on purpose: after a credential label, the REST OF THE LINE goes, whatever
+# separates them (":", "-", an em dash, "is", nothing at all...). Over-redacting a harmless
+# line costs some context; under-redacting leaks a password.
+_CRED_LINE = re.compile(rf"(?im)\b({_CRED_FIELD})\b({_CRED_GLUE}\s*(?:\([^)]*\))?"
+                        r"(?:\s*[^\w\s\[]+\s*|\s+))(?!\[redacted\])\S[^\n]*")
+
+
+def redact_secrets(text: str) -> str:
+    """Links are reduced to their host name, codes and token-like strings are masked. What
+    classification needs (who, which role, what happened) stays."""
+    text = _URL.sub(r"[link to \1]", text)
+    # credentials handed out in the email (assessment logins, temporary passwords): the label
+    # stays, the value goes
+    text = unicodedata.normalize("NFKC", text)
+    text = _CRED_LINE.sub(r"\1\2[redacted]", text)
+    text = _CODE_NEAR.sub(r"\1\2[redacted]", text)
+    text = _LONG_TOKEN.sub("[redacted]", text)
+    return _BARE_CODE.sub("[redacted]", text)
 
 
 def prefilter(msg: MailMessage, *, known_companies: Iterable[str] = (),
@@ -104,8 +174,8 @@ def prefilter(msg: MailMessage, *, known_companies: Iterable[str] = (),
     `known_companies` / `known_domains`: companies the user has applied to, so a recruiter
     writing from acme.com with a vague subject still gets through.
     """
-    if is_alert_mail(msg):
-        return False
+    if is_alert_mail(msg) or is_auth_mail(msg):
+        return False  # (auth mail first: even from an ATS domain it is never sent anywhere)
     domain = msg.sender_domain
     if domain.endswith("linkedin.com"):
         return msg.sender in LINKEDIN_JOB_SENDERS
@@ -175,12 +245,12 @@ PROMPT_HEADER = """For each email below, return one result with the same index:
 
 
 def _render(i: int, m: MailMessage) -> str:
-    body = m.text.strip()
+    body = redact_secrets(m.text.strip())
     if len(body) > MAX_BODY_CHARS:
         body = body[:MAX_BODY_CHARS] + " […]"
     name = f"{m.sender_name} " if m.sender_name else ""
     return (f"### EMAIL {i}\nFrom: {name}<{m.sender}>\nDate: {m.date.isoformat()}\n"
-            f"Subject: {m.subject}\n\n{body}\n")
+            f"Subject: {redact_secrets(m.subject)}\n\n{body}\n")
 
 
 def _clamp(x: Any) -> float:
@@ -190,14 +260,36 @@ def _clamp(x: Any) -> float:
         return 0.0
 
 
+def _exactly_one_per_index(n: int):
+    def validate(result: Any) -> None:
+        got = [r.get("index") for r in (result or {}).get("results", [])
+               if isinstance(r, dict)] if isinstance(result, dict) else []
+        if len(got) != len(set(got)) or set(got) != set(range(n)):
+            raise ValueError(f"expected one result for each of {n} emails")
+    return validate
+
+
 def classify_messages(router: Router, messages: Sequence[MailMessage], *,
-                      batch_size: int = BATCH_SIZE) -> list[EmailClassification]:
-    """One classification per message (same order). Call `prefilter` first."""
-    out: list[EmailClassification] = []
+                      batch_size: int = BATCH_SIZE) -> list[EmailClassification | None]:
+    """One classification per message (same order); None = unresolved (the model's answer was
+    incomplete or failed): such messages are retried later, never stored as "other"."""
+    import inspect
+
+    from recrute.llm.base import LLMError
+
+    out: list[EmailClassification | None] = []
     for start in range(0, len(messages), batch_size):
         batch = messages[start:start + batch_size]
         prompt = PROMPT_HEADER + "\n".join(_render(i, m) for i, m in enumerate(batch))
-        result = router.complete(TASK, prompt, schema=CLASSIFY_SCHEMA, system=SYSTEM)
+        validate = _exactly_one_per_index(len(batch))
+        kw = {"validate": validate} if "validate" in inspect.signature(
+            router.complete).parameters else {}
+        try:
+            result = router.complete(TASK, prompt, schema=CLASSIFY_SCHEMA, system=SYSTEM, **kw)
+            validate(result)
+        except (LLMError, ValueError):
+            out.extend([None] * len(batch))
+            continue
         by_index: dict[int, dict[str, Any]] = {}
         for r in (result or {}).get("results", []) if isinstance(result, dict) else []:
             if isinstance(r, dict) and isinstance(r.get("index"), int):
@@ -205,8 +297,7 @@ def classify_messages(router: Router, messages: Sequence[MailMessage], *,
         for i in range(len(batch)):
             r = by_index.get(i)
             if r is None or r.get("kind") not in KINDS:
-                out.append(EmailClassification(kind="other", confidence=0.0,
-                                               summary="(no classification returned)"))
+                out.append(None)
                 continue
             out.append(EmailClassification(
                 kind=r["kind"], company=str(r.get("company") or "").strip(),
@@ -246,14 +337,33 @@ def _domain_label(domain: str) -> str:
 class _Candidate:
     job: Job
     company: Company | None
+    uncertain: bool = False  # submission not confirmed: matched, never auto-updated
+
+
+# applications whose submission is UNCERTAIN (handed to you mid-form, or in flight): they may
+# well be what an employer's email is about, so they take part in identity matching, but an
+# email never updates them automatically (you confirm it)
+UNCERTAIN_STATUSES = (JobStatus.NEEDS_HUMAN, JobStatus.APPLYING)
 
 
 def _candidates(session: Session) -> list[_Candidate]:
+    from recrute.apply.scheduler import may_have_been_sent
+    from recrute.models import Application
+
     rows = session.exec(
         select(Job, Company).join(Company, Job.company_id == Company.id, isouter=True)
         .where(Job.status.in_(MATCHABLE_STATUSES))  # type: ignore[attr-defined]
     ).all()
-    return [_Candidate(j, c) for j, c in rows]
+    out = [_Candidate(j, c) for j, c in rows]
+    uncertain = session.exec(
+        select(Job, Company, Application).join(Company, Job.company_id == Company.id,
+                                               isouter=True)
+        .join(Application, Application.job_id == Job.id)
+        .where(Job.status.in_(UNCERTAIN_STATUSES))  # type: ignore[attr-defined]
+    ).all()
+    out += [_Candidate(j, c, uncertain=True) for j, c, a in uncertain
+            if may_have_been_sent(a, j.status)]
+    return out
 
 
 def _company_score(cls: EmailClassification, sender: str, sender_name: str, subject: str,
@@ -324,6 +434,15 @@ def title_parts(title: str) -> tuple[list[str], frozenset[str]]:
     return base, frozenset(levels)
 
 
+# words that separate a job title from the rest of an email subject
+_SUBJECT_GLUE = frozenset("""
+a an the your our my for to at with from of on in re fw fwd regarding about update updates
+application applications applying candidacy position role job opening opportunity
+interview invitation offer status next steps thank thanks you received submission submitted
+confirmation assessment test challenge team is was has been we are and or by as
+""".split())
+
+
 def _find_run(hay: list[str], needle: list[str]) -> int:
     n = len(needle)
     for i in range(len(hay) - n + 1):
@@ -332,9 +451,10 @@ def _find_run(hay: list[str], needle: list[str]) -> int:
     return -1
 
 
-def _title_match(cls: EmailClassification, subject: str,
-                 title: str) -> tuple[float | None, bool]:
+def _title_match(cls: EmailClassification, subject: str, title: str,
+                 company: str = "") -> tuple[float | None, bool]:
     """(title similarity 0-100, or None if the email doesn't say; contradicts?)."""
+    glue = _SUBJECT_GLUE | set(_tokens(company))  # "Acme Security Engineer" names Acme
     job_base, job_levels = title_parts(title)
     if cls.job_title:
         mail_base, mail_levels = title_parts(cls.job_title)
@@ -346,17 +466,29 @@ def _title_match(cls: EmailClassification, subject: str,
         subj = _tokens(subject)
         i = _find_run(subj, job_base)
         if i >= 0:
-            # level tokens right around the title in the subject ("Senior ... II")
+            # the COMPLETE title phrase in the subject: level tokens around the title
+            # ("Senior ... II") and any other word glued to it ("Senior CLOUD Security
+            # Engineer") that isn't subject boilerplate ("application for", "at Acme")
             around: set[str] = set()
+            extra = False
             j = i - 1
-            while j >= 0 and _level(subj[j]) is not None:
-                around.add(_level(subj[j]) or "")
+            while j >= 0 and subj[j] not in glue:
+                if (lv := _level(subj[j])) is not None:
+                    around.add(lv)
+                else:
+                    extra = True
                 j -= 1
             j = i + len(job_base)
-            while j < len(subj) and _level(subj[j]) is not None:
-                around.add(_level(subj[j]) or "")
+            while j < len(subj) and subj[j] not in glue:
+                if (lv := _level(subj[j])) is not None:
+                    around.add(lv)
+                else:
+                    extra = True
                 j += 1
-            around.discard("")
+            if extra:
+                # a different, more specialised title may be meant: never enough to update
+                # an application automatically (you confirm it)
+                return PLAUSIBLE_TITLE - 20, False
             return 95.0, frozenset(around) != job_levels
     return None, False  # unknown
 
@@ -367,12 +499,36 @@ class _Scored:
     company: float
     title: float | None
     contradicts: bool
+    uncertain: bool = False
 
     @property
     def total(self) -> float:
         if self.title is None:
             return self.company * 0.9  # company-only match: never fully certain
         return self.company * 0.6 + self.title * 0.4
+
+
+EMAIL_CLOCK_SKEW = timedelta(hours=1)
+
+
+def _predates_application(session: Session, job_id: int, received: datetime | None) -> bool:
+    """Was this email sent before the application it matched was (first) sent?"""
+    from recrute.apply.scheduler import _details, _parse, aware
+    from recrute.models import Application
+
+    if received is None:
+        return False
+    app = session.exec(select(Application).where(Application.job_id == job_id)).first()
+    if app is None:
+        return False
+    d = _details(app)
+    times = [t for t in (aware(app.submitted_at), _parse(d.get("attempted_at")),
+                         _parse(d.get("attempt_started_at")), _parse(d.get("submit_clicked_at")))
+             if t is not None]
+    if not times:
+        return False
+    rec = received if received.tzinfo else received.replace(tzinfo=UTC)
+    return rec < min(times) - EMAIL_CLOCK_SKEW
 
 
 def match_job(session: Session, classification: EmailClassification, sender: str,
@@ -385,15 +541,19 @@ def match_job(session: Session, classification: EmailClassification, sender: str
         cs = _company_score(classification, sender, sender_name, subject, cand.company)
         if cs < _COMPANY_MIN:
             continue
-        ts, contra = _title_match(classification, subject, cand.job.title)
-        cands.append(_Scored(cand.job, cs, ts, contra))
+        ts, contra = _title_match(classification, subject, cand.job.title,
+                                  cand.company.name if cand.company else "")
+        cands.append(_Scored(cand.job, cs, ts, contra, cand.uncertain))
     if not cands:
         return None, 0.0
     plausible = [c for c in cands if not c.contradicts
                  and (c.title is None or c.title >= PLAUSIBLE_TITLE)]
     if len(plausible) == 1:
         best = plausible[0]
-        return best.job.id, round(min(best.total / 100.0, 1.0), 3)
+        conf = min(best.total / 100.0, 1.0)
+        if best.uncertain:  # an unconfirmed submission: suggested, you confirm it
+            conf = min(conf, AUTO_APPLY_THRESHOLD - 0.05)
+        return best.job.id, round(conf, 3)
     if len(plausible) > 1:
         # several applications fit: suggest the best, but the user has to confirm
         best = max(plausible, key=lambda c: (c.total, c.job.id or 0))
@@ -453,9 +613,44 @@ def transition_status(session: Session, job: Job, target: JobStatus,
     return True
 
 
-def advance_status(session: Session, job: Job, target: JobStatus, note: str) -> bool:
+_POST_SUBMISSION = {JobStatus.ACKNOWLEDGED, JobStatus.INTERVIEWING, JobStatus.OFFER,
+                    JobStatus.DECLINED, JobStatus.APPLIED}
+
+
+def ensure_submitted(session: Session, job_id: int, when) -> None:
+    """An employer email proves the application went out: make sure the Application records a
+    submission (so reminders and daily-cap accounting see it). Existing timestamps are kept;
+    otherwise recorded attempt evidence, else the email's time, is used."""
+    from datetime import datetime
+
+    from recrute.models import Application, utcnow
+
+    app = session.exec(select(Application).where(Application.job_id == job_id)).first()
+    if app is not None and app.submitted_at is not None:
+        return
+    details = ((app.outcome or {}).get("details") or {}) if app is not None else {}
+    stamp = None
+    for key in ("attempted_at", "attempt_started_at"):
+        if details.get(key):
+            try:
+                stamp = datetime.fromisoformat(details[key])
+                break
+            except ValueError:
+                pass
+    stamp = stamp or when or utcnow()
+    if app is None:
+        app = Application(job_id=job_id, channel="manual")
+    app.submitted_at = stamp
+    session.add(app)
+
+
+def advance_status(session: Session, job: Job, target: JobStatus, note: str,
+                   when=None) -> bool:
     """Forward-only transition (see can_advance), atomic against concurrent updates."""
-    return transition_status(session, job, target, allowed_predecessors(target), note)
+    changed = transition_status(session, job, target, allowed_predecessors(target), note)
+    if changed and target in _POST_SUBMISSION:
+        ensure_submitted(session, job.id, when)
+    return changed
 
 
 def known_message_ids(session: Session, message_ids: Iterable[str]) -> set[str]:
@@ -496,6 +691,10 @@ def apply_events(session: Session,
             job_id, match_conf = match_job(session, cls, msg.sender, msg.subject,
                                            sender_name=msg.sender_name)
             conf = min(match_conf, cls.confidence) if job_id is not None else 0.0
+            if job_id is not None and _predates_application(session, job_id, msg.date):
+                # older than this application (e.g. the first sync reads 14 days back): it's
+                # about an earlier one; you confirm it, it never updates this one by itself
+                conf = min(conf, 0.5)
         ev = EmailEvent(message_id=msg.message_id, job_id=job_id, received_at=msg.date,
                         sender=msg.sender, subject=msg.subject[:500], kind=cls.kind,
                         confidence=round(conf, 3), summary=cls.summary[:1000], confirmed=False)
@@ -506,7 +705,8 @@ def apply_events(session: Session,
             job = session.get(Job, job_id)
             if target is not None and job is not None:
                 changed = advance_status(session, job, target,
-                                         note=f"email ({cls.kind}): {msg.subject[:200]}")
+                                         note=f"email ({cls.kind}): {msg.subject[:200]}",
+                                         when=msg.date)
         session.add(ev)
         out.append(AppliedEvent(ev, changed))
     session.commit()
@@ -534,26 +734,32 @@ def confirm_event(session: Session, event_id: int, job_id: int | None = None, *,
         job = session.get(Job, ev.job_id)
         if job is not None:
             changed = advance_status(session, job, target,
-                                     note=f"email ({ev.kind}, confirmed): {ev.subject[:200]}")
+                                     note=f"email ({ev.kind}, confirmed): {ev.subject[:200]}",
+                                     when=ev.received_at)
     session.commit()
     return changed
 
 
 def process_messages(session: Session, router: Router, messages: Iterable[MailMessage], *,
                      threshold: float = AUTO_APPLY_THRESHOLD,
-                     batch_size: int = BATCH_SIZE) -> list[AppliedEvent]:
-    """Full pipeline: skip already-stored messages, prefilter, classify, apply."""
+                     batch_size: int = BATCH_SIZE,
+                     unresolved: list[MailMessage] | None = None) -> list[AppliedEvent]:
+    """Full pipeline: skip already-stored messages, prefilter, classify, apply. Messages the
+    model couldn't classify are appended to `unresolved` (if given) and not stored, so they're
+    retried on a later sync."""
     msgs = list(messages)
     seen = known_message_ids(session, (m.message_id for m in msgs))
-    rows = session.exec(
-        select(Company.name, Company.domain).join(Job, Job.company_id == Company.id)
-        .where(Job.status.in_(MATCHABLE_STATUSES))  # type: ignore[attr-defined]
-    ).all()
-    names = [n for n, _ in rows if n]
-    domains = [d for _, d in rows if d]
+    # the employers of EVERY application an email could be about: the same candidates
+    # matching uses, including unconfirmed submissions (their events still need you)
+    companies = [c.company for c in _candidates(session) if c.company is not None]
+    names = list(dict.fromkeys(c.name for c in companies if c.name))
+    domains = list(dict.fromkeys(c.domain for c in companies if c.domain))
     todo = [m for m in msgs if m.message_id not in seen
             and prefilter(m, known_companies=names, known_domains=domains)]
     if not todo:
         return []
     classes = classify_messages(router, todo, batch_size=batch_size)
-    return apply_events(session, zip(todo, classes, strict=True), threshold=threshold)
+    done = [(m, c) for m, c in zip(todo, classes, strict=True) if c is not None]
+    if unresolved is not None:
+        unresolved.extend(m for m, c in zip(todo, classes, strict=True) if c is None)
+    return apply_events(session, done, threshold=threshold)

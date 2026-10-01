@@ -8,9 +8,10 @@ import re
 from datetime import UTC, datetime
 
 from dateutil import parser as dtparser
-from markdownify import markdownify
 
 from recrute.criteria import Criteria
+from recrute.htmlmd import html_to_markdown
+from recrute.location import admits_us
 from recrute.sources.ats_url import find_ats_link, parse_ats_url
 
 log = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ def html_to_text(s: str | None) -> str | None:
     if not s or not s.strip():
         return None
     try:
-        md = markdownify(s, heading_style="ATX", strip=["img", "script", "style"])
+        md = html_to_markdown(s)
     except Exception as e:  # markdownify is robust, but never let one posting kill a run
         log.debug("markdownify failed: %s", e)
         return re.sub(r"<[^>]+>", " ", s).strip() or None
@@ -178,48 +179,6 @@ def parse_salary_text(text: str | None) -> tuple[int | None, int | None, str | N
 
 # --------------------------------------------------------------------------- location
 
-_US_STATES = {
-    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
-    "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "FL": "Florida", "GA": "Georgia",
-    "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois", "IN": "Indiana", "IA": "Iowa",
-    "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
-    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi",
-    "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire",
-    "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York", "NC": "North Carolina",
-    "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma", "OR": "Oregon", "PA": "Pennsylvania",
-    "RI": "Rhode Island", "SC": "South Carolina", "SD": "South Dakota", "TN": "Tennessee",
-    "TX": "Texas", "UT": "Utah", "VT": "Vermont", "VA": "Virginia", "WA": "Washington",
-    "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming", "DC": "District of Columbia",
-}
-_US_WORDS = re.compile(
-    r"\b(united states|u\.s\.a?\.?|usa|us|america|americas|north america|northern america|"
-    r"anywhere|worldwide|world ?wide|global|us[- ]only|us timezones?|est|pst|mst|edt|pdt)\b|"
-    r"\b(" + "|".join(re.escape(n.lower()) for n in _US_STATES.values()) + r")\b",
-    re.I,
-)
-_US_STATE_ABBR = re.compile(r",\s*(" + "|".join(_US_STATES) + r")\b")
-# Explicit non-US countries/regions. A location naming only these is a foreign-only restriction.
-_FOREIGN = re.compile(
-    r"\b(canada|mexico|brazil|brasil|argentina|chile|colombia|peru|latam|latin america|"
-    r"south america|uk|u\.k\.|united kingdom|great britain|england|scotland|wales|ireland|"
-    r"europe|european union|eu|emea|cet|cest|germany|deutschland|france|spain|portugal|italy|"
-    r"netherlands|belgium|switzerland|austria|poland|czechia|czech republic|romania|ukraine|"
-    r"sweden|norway|denmark|finland|estonia|lithuania|latvia|greece|turkey|israel|uae|"
-    r"united arab emirates|saudi arabia|egypt|africa|nigeria|kenya|south africa|india|"
-    r"pakistan|bangladesh|sri lanka|apac|asia|china|hong kong|taiwan|japan|korea|singapore|"
-    r"malaysia|indonesia|philippines|vietnam|thailand|australia|new zealand|anz)\b",
-    re.I,
-)
-
-
-def _loc_us(loc: str) -> bool | None:
-    if _US_WORDS.search(loc) or _US_STATE_ABBR.search(loc):
-        return True
-    if _FOREIGN.search(loc):
-        return False
-    return None  # city-only ("Seattle"), bare "Remote", or unrecognized
-
-
 def us_eligible(locations: list[str] | str | None) -> bool | None:
     """Does a location restriction admit US-based candidates?
 
@@ -228,16 +187,7 @@ def us_eligible(locations: list[str] | str | None) -> bool | None:
     None  -- no data or ambiguous (city-only "San Francisco", bare "Remote"). Callers must keep
              unknowns; the pipeline's location filter decides later.
     """
-    if isinstance(locations, str):
-        locations = [locations]
-    verdicts = [_loc_us(loc.strip()) for loc in (locations or []) if loc and loc.strip()]
-    if not verdicts:
-        return None
-    if any(v is True for v in verdicts):
-        return True
-    if all(v is False for v in verdicts):
-        return False
-    return None
+    return admits_us(locations)
 
 
 # --------------------------------------------------------------------------- keywords
@@ -269,7 +219,12 @@ def keyword_regex(keywords: list[str]) -> re.Pattern[str]:
 def ats_fields(*texts: str | None, apply_url: str | None = None) -> dict[str, str | None]:
     """RawJob kwargs (apply_url/ats/ats_token/ats_job_id) from an explicit apply URL or the first
     known-ATS link found in the given HTML/text. Empty dict when nothing is recognized."""
-    if apply_url and (ref := parse_ats_url(apply_url)):
+    if apply_url:
+        # an explicit application URL is authoritative, even on an ATS we don't know: another
+        # link in the text may belong to a different role (e.g. a multi-role HN comment)
+        ref = parse_ats_url(apply_url)
+        if ref is None:
+            return {"apply_url": apply_url}
         return {"apply_url": apply_url, "ats": ref.ats, "ats_token": ref.token,
                 "ats_job_id": ref.job_id}
     for t in texts:

@@ -1,6 +1,7 @@
 # Recrute — Human-in-the-Loop Job Discovery & Application System
 
-> Status: **Draft v0.1**. Everything here is open to change.
+> Status: **v1 built** (M0–M7). See §8 for what's verified and what still needs real-world
+> supervised runs. Everything here is still open to change.
 
 ## 1. Goal
 
@@ -318,10 +319,14 @@ Details:
   - Moving to the laptop: install uv, Chrome, and the CLIs; clone the repo; run `uv sync`; then
     copy `resources/` and `recrute.toml` across. Log into sites again in the browser profile there,
     rather than copying `data/browser-profile`, since cookies are encrypted per machine/OS.
-- **Remote browser view**: in Phase 2 the automated browser runs on the laptop. When a form goes to
-  CP3, or you need to log into a site, the UI streams that browser's window (via CDP screencast)
-  so you can click and type into it from your main machine. There's no need to sit at the laptop.
-  RDP is a fallback.
+- **Remote browser view** (the **Live browser** page): in Phase 2 the automated browser runs on
+  the laptop. When a form goes to CP3, or you open it to log into a site, the UI streams that
+  browser's page (about one frame per second) and replays your clicks, typing and keys, so you
+  can finish from your main machine without sitting at the laptop. RDP is a fallback. What you
+  type there (passwords, verification codes) and the screenshots (which can show it) are kept in
+  memory only and never written to disk, so the live view needs the worker in the web server's
+  process (`recrute serve --worker`). Input is bound to the exact tab shown: a popup or a
+  navigation since the picture you acted on drops it.
 
 ### Stack
 Decided on **Python**. It was switched from Go after you made "fewest problems, and best at
@@ -368,7 +373,9 @@ strongest ecosystem.
   - Caching results by JD hash
   - Detecting the rate-limit message, then pausing and resuming that queue later, or failing over
     to the other provider
-  - Keeping a usage meter in the UI, plus an optional "leave me X% of my window" reserve
+  - Keeping a usage meter in the UI (LLM calls per provider). A "leave me X% of my window"
+    reserve isn't possible: the subscription CLIs don't report remaining usage. Rate-limit
+    responses trigger failover to the other provider and a cooldown instead.
 - **Browser agent for unknown forms**: Claude Code or Codex runs headless with a browser MCP
   (e.g. chrome-devtools MCP) attached to the same Chrome profile, and is limited to the approved
   packet's values.
@@ -428,14 +435,14 @@ data/               db, profile.yaml, receipts, browser profile, audits (gitigno
 
 | #  | Milestone                     | Deliverable                                                              |
 |----|-------------------------------|--------------------------------------------------------------------------|
-| M0 | Foundation ✅                 | uv project, SQLite schema, config, runtime settings (volume knob), CLI, LLM CLI router (Claude + Codex), patchright browser runtime and detection probe, dashboard, auditor |
-| M1 | Discovery MVP                 | Greenhouse + Lever + Ashby + 2 aggregators; normalize and dedup; `recrute discover` prints a table |
-| M2 | Scoring + Review UI (CP1)     | Hard filters, LLM triage, web review queue, rejection reasons            |
-| M3 | Packets (CP2)                 | Mega-resume import, focused resume PDF, truthfulness check, answer bank, fetching form questions in advance, approval screen |
-| M4 | Apply MVP                     | Greenhouse + Lever adapters: auto-submit after "go ahead", CP3 fallback, trial period, receipts, caps |
-| M5 | Tracking                      | Status pipeline, Gmail ingestion, reminders, daily digest                |
-| M6 | Breadth                       | More ATS adapters, generic LLM filler, email-alert parsing, browser extension, company-registry expansion |
-| M7 | Trust & automation            | Optional auto-approval of packets, analytics-driven tuning, the criteria learning loop |
+| M0 | Foundation ✅             | uv project, SQLite + additive auto-migration, config, runtime settings (volume knob), CLI, isolated subscription-CLI LLM router (Claude + Codex), patchright runtime + detection probe, auditor |
+| M1 | Discovery ✅               | 12 sources (Greenhouse/Lever/Ashby/Workable/SmartRecruiters boards, Remotive, RemoteOK, Himalayas, Adzuna, HN, LinkedIn guest + budgeted logged-in session), 120 verified seed companies, dedup/ingest |
+| M2 | Scoring + Review (CP1) ✅  | Rules (tracks, seniority, years, location, eligibility), batched LLM triage, keyboard review queue, filtered view, visa badges |
+| M3 | Packets (CP2) ✅           | Mega-resume ingest → reviewed proposal, focused resume (Typst PDF), truthfulness verifier, answer bank, cover letters, versioned packets, approval screen |
+| M4 | Apply ✅                   | Greenhouse/Lever/Ashby/LinkedIn Easy Apply adapters, human-like input, drip scheduler, caps, trial period, receipts, CP3 hand-off |
+| M5 | Tracking ✅                | Read-only IMAP sync, email classification + matching, reminders, ntfy/Telegram/email notifications, digest |
+| M6 | Breadth ✅                 | Generic LLM form filler (always CP3), alert-email parsing, "Save to Recrute" extension, company registry expansion |
+| M7 | Trust & automation ✅      | Opt-in auto-approval (verified packets only), analytics, criteria learning-loop suggestions |
 
 M1 and M2 already make the system useful on their own, as a smart job feed, before any applying is
 automated.
@@ -480,3 +487,25 @@ automated.
    - Notification channel (UI only / email / Telegram / ntfy)
    - ~~Git~~: github.com/Aakash1337/Recrute (**public**, so personal data stays in gitignored
      `resources/` and `data/`)
+
+---
+
+## 8. Verification status (v1)
+**Verified:**
+- ~800 automated tests, run in CI on Linux and Windows.
+- An independent Codex `gpt-6.1-sol` audit of every PR, with every finding fixed or explicitly
+  resolved.
+- A live smoke run: 7 real boards gave 1,085 postings, the rules kept 66, and real LLM triage
+  queued 4. The UI was checked on that data.
+- Both subscription CLIs run isolated. A canary file check confirmed the model can't read files.
+- The browser detection probe was clean.
+
+**Needs your first supervised runs** (the trial period exists for exactly this):
+- **Live application forms.** Adapters were built against the real Greenhouse/Lever/Ashby API
+  shapes and against local copies of their DOM. No real application has been submitted yet.
+  Each adapter's first 5 submissions are fill-and-pause, so you watch them.
+- **LinkedIn Easy Apply and logged-in LinkedIn browsing.** The markup was modeled; it has never
+  been exercised on your account.
+- **The alert-email and inbox classifiers.** They were tested on synthetic mail only.
+- **The H-1B CSV importer.** It has been tested against the column layouts I know of; check it
+  against a real USCIS download.

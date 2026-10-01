@@ -45,6 +45,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/recrute"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"templates" = "recrute/_templates"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

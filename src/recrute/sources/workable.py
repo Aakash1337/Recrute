@@ -25,12 +25,17 @@ def _loc(d: dict[str, Any]) -> str | None:
     return clean(", ".join(p for p in parts if p))
 
 
-def parse_widget(payload: dict[str, Any], token: str,
-                 company: str | None = None) -> Iterator[RawJob]:
+def parse_widget(payload: dict[str, Any], token: str, company: str | None = None,
+                 ctx: SourceContext | None = None) -> Iterator[RawJob]:
+    """Postings on the board. A row that can't be parsed (no shortcode) is skipped, but the
+    board is then marked INCOMPLETE: absence from this snapshot proves nothing, so no job is
+    closed because of it."""
     company = company or clean(payload.get("name")) or token
     for job in payload.get("jobs") or []:
-        code = job.get("shortcode") or job.get("code")
+        code = job.get("shortcode") or job.get("code") if isinstance(job, dict) else None
         if not code:
+            if ctx is not None:
+                ctx.incomplete.add(f"workable:{token}")
             continue
         locations: list[str] = []
         for d in job.get("locations") or [job]:
@@ -60,6 +65,7 @@ def parse_widget(payload: dict[str, Any], token: str,
 
 
 class WorkableSource(BoardSource):
+    jobs_key = "jobs"
     name = "workable"
 
     def fetch_board(self, ctx: SourceContext, company: CompanyRef) -> Any:
@@ -67,4 +73,4 @@ class WorkableSource(BoardSource):
 
     def parse_board(self, payload: Any, company: CompanyRef,
                     ctx: SourceContext | None = None) -> Iterator[RawJob]:
-        return parse_widget(payload, company.ats_token, company.name)
+        return parse_widget(payload, company.ats_token, company.name, ctx)

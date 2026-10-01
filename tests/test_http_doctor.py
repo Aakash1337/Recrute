@@ -53,3 +53,19 @@ def test_doctor_edge_only(monkeypatch, paths):
     cfg = Config.model_validate({"browser": {"channel": "msedge"}})
     browser = next(c for c in doctor.run_checks(cfg, paths) if c.name == "browser")
     assert browser.ok
+
+
+def test_credentials_redacted_from_errors_and_logs(monkeypatch, caplog):
+    import logging
+
+    http = Http(min_interval=0, retries=0)
+
+    def boom(method, url, **kw):
+        raise TimeoutError(f"timed out fetching {url}")
+
+    monkeypatch.setattr(http.session, "request", boom)
+    url = "https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=abc&app_key=SECRET123&what=x"
+    with caplog.at_level(logging.DEBUG, logger="recrute.http"), pytest.raises(HttpError) as e:
+        http.get_json(url)
+    assert "SECRET123" not in str(e.value) and "SECRET123" not in caplog.text
+    assert "app_key=***" in str(e.value)

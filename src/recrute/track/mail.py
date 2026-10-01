@@ -183,9 +183,12 @@ def _parse_internaldate(meta: bytes) -> datetime | None:
         month = _MONTHS.index(mon.decode().title()) + 1
     except ValueError:
         return None
-    offset = timedelta(hours=int(oh), minutes=int(om)) * (-1 if sign == b"-" else 1)
-    return datetime(int(year), month, int(day), int(hh), int(mm), int(ss),
-                    tzinfo=timezone(offset))
+    try:
+        offset = timedelta(hours=int(oh), minutes=int(om)) * (-1 if sign == b"-" else 1)
+        return datetime(int(year), month, int(day), int(hh), int(mm), int(ss),
+                        tzinfo=timezone(offset))
+    except (ValueError, OverflowError):  # an impossible date: the Date header is used instead
+        return None
 
 
 class ImapError(RuntimeError):
@@ -205,6 +208,8 @@ class ImapInbox:
         self.config = ImapConfig.from_mapping(config)
         self._password = password
         self._connect = connect or _default_connect
+        # UIDs that could not be read this sync: the caller keeps its cursor before them
+        self.failed_uids: list[int] = []
         self.conn: Any = None
         self.uidvalidity: int | None = None
 
@@ -289,9 +294,13 @@ class ImapInbox:
                 m = _UID_RE.search(meta)
                 uid = int(m.group(1)) if m else None
                 try:
-                    yield parse_message(raw, uid=uid, internal_date=_parse_internaldate(meta))
-                except Exception as e:  # one bad message mustn't stop the sync
-                    log.warning("skipping unparseable message uid=%s: %s", uid, e)
+                    msg = parse_message(raw, uid=uid, internal_date=_parse_internaldate(meta))
+                except Exception as e:  # one bad message mustn't stop the sync...
+                    log.warning("could not read message uid=%s: %s", uid, e.__class__.__name__)
+                    if uid is not None:  # ...but it's retried, not skipped for good
+                        self.failed_uids.append(uid)
+                    continue
+                yield msg
 
     def fetch_new(self, *, since: date | datetime | None = None,
                   after_uid: int | None = None) -> Iterator[MailMessage]:

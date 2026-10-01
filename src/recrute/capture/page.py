@@ -21,7 +21,6 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup, Tag
 from dateutil import parser as dateparser
-from markdownify import markdownify
 
 from recrute.capture.htmltext import html_to_text
 from recrute.capture.urls import (
@@ -30,6 +29,7 @@ from recrute.capture.urls import (
     linkedin_job_url,
     unwrap_redirect,
 )
+from recrute.htmlmd import html_to_markdown
 from recrute.schemas import RawJob
 
 log = logging.getLogger(__name__)
@@ -84,15 +84,33 @@ def _walk(node: Any):
                 yield from _walk(node[key])
 
 
-def find_job_posting(soup: BeautifulSoup) -> dict[str, Any] | None:
+def _same_page(a: str, b: str) -> bool:
+    def key(u: str) -> str:
+        p = urlparse(u.strip())
+        return f"{p.netloc.lower().removeprefix('www.')}{p.path.rstrip('/').lower()}"
+    return bool(a and b) and key(a) == key(b)
+
+
+def find_job_posting(soup: BeautifulSoup, url: str = "") -> dict[str, Any] | None:
+    """The JobPosting of THIS page. Pages listing several (related jobs, a search page) only
+    yield the one whose url / @id / mainEntityOfPage is the captured URL; if none is, and
+    there are several, nothing is guessed."""
+    found: list[dict[str, Any]] = []
     for script in soup.find_all("script", attrs={"type": re.compile(r"ld\+json", re.I)}):
         data = _load_jsonld(script.string or script.get_text() or "")
         if data is None:
             continue
-        for node in _walk(data):
-            if _is_type(node, "JobPosting"):
-                return node
-    return None
+        found += [node for node in _walk(data) if _is_type(node, "JobPosting")]
+    if len(found) <= 1:
+        return found[0] if found else None
+
+    def ids(node: dict[str, Any]) -> list[str]:
+        main = node.get("mainEntityOfPage")
+        main = main.get("@id") if isinstance(main, dict) else main
+        return [str(v) for v in (node.get("url"), node.get("@id"), main) if v]
+
+    matching = [n for n in found if any(_same_page(i, url) for i in ids(n))]
+    return matching[0] if len(matching) == 1 else None
 
 
 def _text(v: Any) -> str | None:
@@ -144,6 +162,26 @@ def _locations(jp: dict[str, Any]) -> list[str]:
             continue
         if loc and loc not in out:
             out.append(loc)
+    return out
+
+
+_COUNTRY_ALIASES = {"us": "United States", "usa": "United States", "u.s.": "United States",
+                    "u.s.a.": "United States", "united states of america": "United States"}
+
+
+def _applicant_locations(jp: dict[str, Any]) -> list[str]:
+    """applicantLocationRequirements: WHERE the applicant must be (a remote job's eligibility),
+    as opposed to jobLocation, where the office is."""
+    raw = jp.get("applicantLocationRequirements")
+    items = raw if isinstance(raw, list) else [raw] if raw else []
+    out: list[str] = []
+    for it in items:
+        name = _text(it) if isinstance(it, str | dict) else None
+        if not name:
+            continue
+        name = _COUNTRY_ALIASES.get(name.strip().lower(), name.strip())
+        if name not in out:
+            out.append(name)
     return out
 
 
@@ -262,6 +300,10 @@ def _from_jsonld(url: str, jp: dict[str, Any]) -> RawJob | None:
         apply_url = posting_url
     locations = _locations(jp)
     remote = _remote(jp, " ".join(locations))
+    # who may apply decides eligibility (a remote US-only role at a Toronto office is a US
+    # job; a remote Canada-only role at a US office is not)
+    if applicants := _applicant_locations(jp):
+        locations = applicants
     return RawJob(
         source=SOURCE, source_job_id=source_job_id, url=url, apply_url=apply_url, title=title,
         company=company or _company_fallback(url) or "Unknown", company_domain=company_domain,
@@ -285,9 +327,20 @@ def _sel_text(soup: BeautifulSoup, *selectors: str) -> str | None:
     return None
 
 
-def _linkedin_apply(soup: BeautifulSoup) -> tuple[bool | None, str | None]:
-    """(is_easy_apply, external apply URL if exposed)."""
+def _linkedin_apply(soup: BeautifulSoup, job_id: str | None = None
+                    ) -> tuple[bool | None, str | None]:
+    """(is_easy_apply, external apply URL if exposed). The page's embedded records for THIS
+    job (logged-in pages: companyApplyUrl, the same parser the session source uses) come first,
+    then the guest page's code#applyUrl, then the top-card button label."""
     external: str | None = None
+    if job_id:
+        from recrute.sources.linkedin_session import job_apply_metadata
+
+        easy, url = job_apply_metadata(soup, job_id)
+        if easy:
+            return True, None
+        if url:
+            return False, unwrap_redirect(url)
     code = soup.find("code", id="applyUrl")
     if code is not None:
         raw = code.string or code.get_text() or ""
@@ -336,7 +389,7 @@ def _from_linkedin(url: str, soup: BeautifulSoup, jp: dict[str, Any] | None) -> 
         ".job-details-jobs-unified-top-card__job-insight"))
     emp = base.employment_type if base and base.employment_type else _employment_from_text(
         criteria)
-    easy, external = _linkedin_apply(soup)
+    easy, external = _linkedin_apply(soup, job_id)
     canonical = linkedin_job_url(job_id) if job_id else url
     if easy:
         ats, ats_token, ats_job_id, apply_url = "linkedin", None, job_id, canonical
@@ -468,7 +521,7 @@ def raw_job_from_capture(url: str, html: str, title: str | None = None) -> RawJo
     except Exception as e:  # pragma: no cover - lxml is very forgiving
         log.warning("capture: unparseable HTML from %s: %s", url, e)
         return None
-    jp = find_job_posting(soup)
+    jp = find_job_posting(soup, url)
     parsed = urlparse(url)
     if "linkedin.com" in parsed.netloc.lower() and linkedin_job_id(url):
         job = _from_linkedin(url, soup, jp)
@@ -493,5 +546,5 @@ def raw_job_from_capture(url: str, html: str, title: str | None = None) -> RawJo
 def description_markdown(job: RawJob) -> str:
     """Convenience for callers that store Job.description_md."""
     if job.description_html:
-        return markdownify(job.description_html, heading_style="ATX").strip()
+        return html_to_markdown(job.description_html)
     return job.description_text or ""

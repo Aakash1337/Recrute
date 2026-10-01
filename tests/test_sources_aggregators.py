@@ -309,3 +309,73 @@ def test_himalayas_application_link_is_apply_url():
     assert (j1.ats, j1.ats_token) == ("lever", "acme")
     assert j2.url == other["guid"] and j2.apply_url == "https://careers.b.example/apply/42"
     assert j2.ats is None
+
+
+def test_hn_roles_get_their_own_requirements():
+    from recrute.sources.hn import role_sections
+
+    text = ("Acme | Remote (US) | Full-time\\nWe protect hospitals.\\n"
+            "Security Analyst: 2+ years of SOC experience.\\n"
+            "Senior Security Engineer: 10+ years of experience required.")
+    secs = role_sections(text, ["Security Analyst", "Senior Security Engineer"])
+    assert "10+" not in secs["Security Analyst"] and "2+" in secs["Security Analyst"]
+    assert "We protect hospitals" in secs["Security Analyst"]
+    assert "10+" in secs["Senior Security Engineer"]
+
+
+def test_hn_role_without_link_does_not_borrow_another_roles_posting():
+    from recrute.sources.hn import jobs_from_extraction
+
+    c = {"id": 42, "created_at_i": 1_750_000_000,
+         "text": "Acme | Remote (US)<p>Security Engineer: apply at "
+                 "<a href=\"https://boards.greenhouse.io/acme/jobs/111\">"
+                 "https://boards.greenhouse.io/acme/jobs/111</a><p>"
+                 "Data Analyst: email jobs@acme.test"}
+    rows = {"jobs": [
+        {"comment_id": 42, "company": "Acme", "title": "Security Engineer", "apply_url": None},
+        {"comment_id": 42, "company": "Acme", "title": "Data Analyst", "apply_url": None}]}
+    jobs = {j.title: j for j in jobs_from_extraction(rows, [c])}
+    assert jobs["Security Engineer"].ats_job_id == "111"
+    assert jobs["Data Analyst"].ats_job_id is None
+    assert "111" not in (jobs["Data Analyst"].apply_url or "")
+    assert jobs["Data Analyst"].source_job_id != jobs["Security Engineer"].source_job_id
+
+
+def test_hn_overlapping_titles_keep_their_own_sections_and_links():
+    from recrute.sources.hn import jobs_from_extraction, role_sections
+
+    text = ("Acme | Remote (US)\n\nSenior Security Engineer: 8+ years. "
+            "https://boards.greenhouse.io/acme/jobs/111\n\n"
+            "Security Engineer: 2+ years. https://boards.greenhouse.io/acme/jobs/222")
+    secs = role_sections(text, ["Senior Security Engineer", "Security Engineer"])
+    assert "8+" in secs["Senior Security Engineer"] and "2+" not in secs["Senior Security Engineer"]
+    assert "2+" in secs["Security Engineer"] and "8+" not in secs["Security Engineer"]
+    c = {"id": 7, "created_at_i": 1_750_000_000, "text": text.replace("\n\n", "<p>")}
+    rows = {"jobs": [
+        {"comment_id": 7, "company": "Acme", "title": "Senior Security Engineer",
+         "apply_url": None},
+        {"comment_id": 7, "company": "Acme", "title": "Security Engineer", "apply_url": None}]}
+    jobs = {j.title: j for j in jobs_from_extraction(rows, [c])}
+    assert jobs["Senior Security Engineer"].ats_job_id == "111"
+    assert jobs["Security Engineer"].ats_job_id == "222"
+
+
+def test_hn_backlog_beyond_max_comments_is_drained_by_later_runs():
+    from recrute.sources.util import track_keywords
+
+    matching = hnmod.prefilter(hnmod.top_level_comments(jfx("hn_item.json")),
+                               track_keywords(Criteria()))
+    assert len(matching) >= 2
+    done = {}
+    seen_ids: set[int] = set()
+    for _ in range(len(matching)):
+        src = hnmod.HNWhoIsHiringSource(max_comments=1)
+        src.done = done
+        list(src.fetch(SourceContext(http=hn_http(), criteria=Criteria())))
+        seen_ids |= set(src.processed)
+        done = {"thread": src.thread_id, "ids": sorted(seen_ids)}
+    assert seen_ids == {int(c["id"]) for c in matching}  # nothing skipped for good
+    src = hnmod.HNWhoIsHiringSource(max_comments=1)
+    src.done = done
+    list(src.fetch(SourceContext(http=hn_http(), criteria=Criteria())))
+    assert src.processed == [] and src.backlog == 0

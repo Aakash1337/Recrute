@@ -8,7 +8,7 @@ reported as failed and the application goes to the human.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -195,6 +195,8 @@ def fill_file(root: Page | Frame, f: LiveField, path: Path, human: Human) -> str
     trigger = root.locator(f.trigger) if f.trigger else None
     human.upload(loc, path, trigger=trigger)
     names = loc.evaluate("e => [...(e.files || [])].map(f => f.name)")
+    if names and names != [path.name]:
+        raise FillError(f"the upload holds {names!r}, not exactly the approved file")
     if path.name not in names:
         # some widgets move the file elsewhere and reset the input; accept if the name shows up
         if path.name not in dom.page_text(root, 50000):
@@ -276,13 +278,32 @@ def clear_field(root: Page | Frame, f: LiveField, human: Human) -> None:
 def fill_fields(root: Page | Frame, fields: Sequence[LiveField], packet: Packet,
                 files: Mapping[str, Path], human: Human, *,
                 aliases: Mapping[str, Sequence[str]] = {}, accept_prefilled: bool = False,
-                ) -> FillReport:
+                blocker_check: Callable[[], str | None] | None = None) -> FillReport:
     """Fill every live field that has an approved answer. Fields without one are left empty:
     an unapproved value already there is cleared (or, if that isn't safe, reported as failed so
     the run pauses at CP3). Only allowlisted contact fields may keep a site prefill."""
     report = FillReport()
     for f in fields:
+        # kill switch: a CAPTCHA/checkpoint that appears mid-form stops ALL further interaction
+        # before the next field is touched
+        if blocker_check is not None and (blocker := blocker_check()):
+            report.blocker = blocker
+            report.notes.append(f"blocker appeared while filling: {blocker}")
+            break
         report.labels[f.id] = f.label
+        if f.widget == "hidden_value":
+            report.skipped.append(f.id)  # can't operate; checked by pre-submit verification
+            continue
+        if f.widget == "custom":
+            # a control we can't operate safely: never guess. Required or holding any value
+            # (e.g. a pre-selected answer nobody approved) -> the human decides (CP3)
+            if f.required or f.current not in (None, "", []):
+                report.failed[f.id] = "custom control (not a native input): needs you"
+                if f.required:
+                    report.required_failed.append(f.id)
+            else:
+                report.skipped.append(f.id)
+            continue
         try:
             if f.widget == "file":
                 path = file_for(f, packet, files, aliases)
@@ -301,7 +322,7 @@ def fill_fields(root: Page | Frame, fields: Sequence[LiveField], packet: Packet,
             if not has_value(answer):
                 if f.current in (None, "", []):
                     report.skipped.append(f.id)
-                elif prefill_ok(f, accept_prefilled):
+                elif prefill_ok(f, accept_prefilled, packet, aliases):
                     report.prefilled[f.id] = f.current
                 else:
                     try:

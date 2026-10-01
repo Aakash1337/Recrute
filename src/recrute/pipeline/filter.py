@@ -10,35 +10,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from recrute.criteria import Criteria
+from recrute.location import admits_us
 from recrute.models import Job, Priority
 
-US_STATES = {
-    "AL": "alabama", "AK": "alaska", "AZ": "arizona", "AR": "arkansas", "CA": "california",
-    "CO": "colorado", "CT": "connecticut", "DE": "delaware", "FL": "florida", "GA": "georgia",
-    "HI": "hawaii", "ID": "idaho", "IL": "illinois", "IN": "indiana", "IA": "iowa",
-    "KS": "kansas", "KY": "kentucky", "LA": "louisiana", "ME": "maine", "MD": "maryland",
-    "MA": "massachusetts", "MI": "michigan", "MN": "minnesota", "MS": "mississippi",
-    "MO": "missouri", "MT": "montana", "NE": "nebraska", "NV": "nevada", "NH": "new hampshire",
-    "NJ": "new jersey", "NM": "new mexico", "NY": "new york", "NC": "north carolina",
-    "ND": "north dakota", "OH": "ohio", "OK": "oklahoma", "OR": "oregon", "PA": "pennsylvania",
-    "RI": "rhode island", "SC": "south carolina", "SD": "south dakota", "TN": "tennessee",
-    "TX": "texas", "UT": "utah", "VT": "vermont", "VA": "virginia", "WA": "washington",
-    "WV": "west virginia", "WI": "wisconsin", "WY": "wyoming", "DC": "district of columbia",
-}
-US_MARKERS = re.compile(
-    r"\b(united states|usa|u\.s\.a?\.?|us|america|nationwide|"
-    + "|".join(sorted(set(US_STATES.values()), key=len, reverse=True))
-    + r")\b|,\s*(" + "|".join(US_STATES) + r")\b",
-    re.IGNORECASE,
-)
-NON_US = re.compile(
-    r"\b(canada|mexico|brazil|argentina|colombia|united kingdom|uk|england|london|ireland|"
-    r"germany|berlin|france|paris|spain|portugal|netherlands|amsterdam|poland|romania|"
-    r"sweden|norway|denmark|finland|switzerland|austria|italy|israel|tel aviv|india|"
-    r"bangalore|bengaluru|hyderabad|pune|singapore|japan|tokyo|china|australia|sydney|"
-    r"new zealand|philippines|vietnam|emea|apac|latam|europe|toronto|vancouver|montreal)\b",
-    re.IGNORECASE,
-)
 YEARS_RE = re.compile(
     r"(?:at least|minimum(?: of)?|min\.?)?\s*(\d{1,2})\s*(?:\+|plus)?\s*(?:-|–|to)?\s*"
     r"(\d{1,2})?\s*\+?\s*years?(?:'|’)?\s*(?:of\s+)?(?:[a-z/&,\- ]{0,40}?)experience",
@@ -89,6 +63,40 @@ def classify_priority(title: str, description: str, criteria: Criteria) -> Prior
     return None
 
 
+_EXPLICIT_TYPE = re.compile(
+    r"\b(?:this is an?|this is a|the (?:position|role|job) is(?: an?)?|(?:it's|it is) an?)\s+"
+    r"(?P<a>part[- ]time|contract(?:-only)?|temporary|internship|intern)\b"
+    r"|\b(?P<b>part[- ]time|contract(?:-only)?|temporary|fixed[- ]term)\s+"
+    r"(?:position|role|job|opportunity|engagement|assignment|contract)\b"
+    r"|\b(?P<c>\d{1,2})\s*(?:-|to)?\s*\d{0,2}\s*hours?\s*(?:per|a|/)\s*week\b",
+    re.IGNORECASE)
+_NEGATION_BEFORE = re.compile(r"\b(not|no|never|isn't|is not)\s+(?:an?\s+)?$", re.IGNORECASE)
+
+
+def employment_from_description(description: str) -> str | None:
+    """Explicit employment restriction stated in the text, when the source gave no structured
+    type: "This is a part-time position", "contract role", "20 hours per week". Negated
+    mentions ("not a contract role") and full-time postings are ignored."""
+    for m in _EXPLICIT_TYPE.finditer(description or ""):
+        if _NEGATION_BEFORE.search(description[max(0, m.start() - 20):m.start()]):
+            continue
+        if m.group("c"):
+            if int(m.group("c")) < 30:
+                return "part-time"
+            continue
+        word = (m.group("a") or m.group("b") or "").lower()
+        if "part" in word:
+            return "part-time"
+        if "intern" in word:
+            return "internship"
+        # "contract to hire" / conversion language is not contract-only
+        tail = description[m.end():m.end() + 40].lower()
+        if "to hire" in tail or "to perm" in tail or "conversion" in tail:
+            continue
+        return "contract"
+    return None
+
+
 def normalize_employment_type(value: str | None) -> str | None:
     if not value:
         return None
@@ -100,21 +108,14 @@ def normalize_employment_type(value: str | None) -> str | None:
 
 
 def is_us_location(locations: list[str], remote: str | None) -> bool | None:
-    """True/False when determinable, None when unknown (kept; LLM triage checks it)."""
-    if not locations:
-        return None
-    joined = " ; ".join(locations)
-    if US_MARKERS.search(joined):
-        return True
-    if NON_US.search(joined):
-        return False
-    if re.fullmatch(r"\s*(remote|anywhere|worldwide|global)\s*", joined, re.IGNORECASE):
-        return None
-    return None
+    """Per location: True if ANY location admits US candidates, False only if EVERY location
+    is explicitly foreign, None (kept; triage checks it) otherwise, e.g. ["San Francisco",
+    "London, UK"] stays eligible."""
+    return admits_us(locations)
 
 
-PREFERRED_RE = re.compile(r"prefer|nice[- ]to[- ]have|bonus|a plus|\bplus\b|ideal(ly)?|"
-                          r"desired|desirable|advantage", re.IGNORECASE)
+PREFERRED_RE = re.compile(r"prefer|nice[- ]to[- ]have|\bbonus\b|\ba plus\b|is a plus|"
+                          r"\bplus if\b|ideal(ly)?|desired|desirable|advantage", re.IGNORECASE)
 PREFERRED_HEADER = re.compile(r"^\W*(preferred|nice[- ]to[- ]have|bonus|desired|pluses)",
                               re.IGNORECASE)
 REQUIRED_HEADER = re.compile(r"^\W*(required|requirements|minimum|basic|must[- ]have|"
@@ -139,10 +140,15 @@ def years_required(description: str) -> int | None:
             in_preferred = False
         if in_preferred or PREFERRED_RE.search(stripped):
             continue
-        lows = [int(m.group(1)) for m in YEARS_RE.finditer(stripped)
-                if 0 < int(m.group(1)) <= 20]
-        if lows:
-            per_line.append(min(lows))
+        matches = [m for m in YEARS_RE.finditer(stripped) if 0 < int(m.group(1)) <= 20]
+        if not matches:
+            continue
+        lows = [int(m.group(1)) for m in matches]
+        # alternatives ("5 years with a BS OR 3 with an MS") -> the smallest path counts;
+        # conjunctions ("10 years of X AND 2 years of Y") -> every requirement applies
+        between = [stripped[a.end():b.start()] for a, b in zip(matches, matches[1:], strict=False)]
+        alternatives = bool(between) and all(re.search(r"\bor\b", t, re.I) for t in between)
+        per_line.append(min(lows) if alternatives else max(lows))
     return max(per_line) if per_line else None
 
 
@@ -170,7 +176,7 @@ def apply_hard_filters(job: Job, company_name: str, criteria: Criteria,
     if any(company_name.strip().lower() == c.strip().lower()
            for c in criteria.exclude_companies):
         return drop("company excluded")
-    etype = normalize_employment_type(job.employment_type)
+    etype = normalize_employment_type(job.employment_type) or employment_from_description(desc)
     if etype and criteria.employment_types and etype not in criteria.employment_types:
         return drop(f"employment type: {etype}")
     if not criteria.allow_remote and job.remote == "remote":

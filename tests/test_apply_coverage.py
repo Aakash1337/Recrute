@@ -118,11 +118,19 @@ def test_label_match_and_aliases():
                           aliases=GreenhouseAdapter.aliases) == []
 
 
-def test_prefilled_only_counts_when_allowed():
+def test_prefilled_contact_value_needs_an_approved_answer():
     live = LiveField(id="email", label="Email address", type="select", required=True,
                      current="ada@example.com", options=["ada@example.com"])
     assert coverage_check([live], packet()) == ["email"]
-    assert coverage_check([live], packet(), accept_prefilled=True) == []
+    # a site's prefill is never approval (PLAN 3.7): even where the adapter allows prefills
+    assert coverage_check([live], packet(), accept_prefilled=True) == ["email"]
+    country = LiveField(id="phone_country", label="Phone country code", type="select",
+                        required=True, current="United States (+1)",
+                        options=["United States (+1)", "Canada (+1)"])
+    assert coverage_check([country], packet(a("phone_country", None)),
+                          accept_prefilled=True) == ["phone_country"]
+    assert coverage_check([country], packet(a("phone_country", "United States (+1)")),
+                          accept_prefilled=True) == []
 
 
 # --------------------------------------------------------------------------- parsers
@@ -325,7 +333,7 @@ def test_prefilled_screening_question_is_not_covered():
                         required=True, options=["Yes", "No"], current="No")
     phone = LiveField(id="p", label="Mobile phone number", type="tel", required=True,
                       current="4155550100")
-    assert coverage_check([sponsor, phone], packet(), accept_prefilled=True) == ["s"]
+    assert coverage_check([sponsor, phone], packet(), accept_prefilled=True) == ["s", "p"]
 
 
 def test_prefilled_resume_file_is_never_coverage():
@@ -354,7 +362,7 @@ def test_verify_fields_flags_unapproved_and_wrong_values(tmp_path):
     got = verify_fields(fields, pk, files, accept_prefilled=False)
     assert set(got) == {"gender", "sponsor", "email", "cv"}
     got = verify_fields(fields, pk, files, accept_prefilled=True)
-    assert set(got) == {"gender", "sponsor", "cv"}
+    assert set(got) == {"gender", "sponsor", "email", "cv"}  # prefills need approval too
 
 
 def test_dates_compare_by_calendar_day():
@@ -386,9 +394,67 @@ def test_values_are_compared_exactly_not_like_labels():
     assert same_value("tel", "(415) 555-0100", "4155550100")
     assert same_value("tel", "+1 415 555 0100", "415-555-0100")
     assert not same_value("tel", "415 555 0199", "4155550100")
+    assert not same_value("tel", "555 0100", "4155550100")  # missing area code
+    assert not same_value("tel", "+44 415 555 0100", "4155550100")  # other country code
+    assert not same_value("tel", "+1 415 555 0100", "+91 415 555 0100")
+    assert same_value("tel", "+91 98765 43210", "+919876543210")
     assert same_value("textarea", "line1\r\nline2", "line1\nline2")
     f = LiveField(id="u", label="Portfolio", type="text", current=url.lower())
     assert not value_matches(f, url.lower(), url)
     sel = LiveField(id="s", label="Sponsor", type="select", widget="select",
                     options=["Yes", "No"], current="No")
     assert value_matches(sel, "No", "no")  # option LABELS still match as labels
+
+
+def test_empty_form_read_never_passes_presubmit(monkeypatch):
+    from recrute.apply.base import NO_FIELDS
+    from recrute.schemas import Packet
+
+    gh = GreenhouseAdapter()
+    monkeypatch.setattr(gh, "read_form", lambda page: [])  # the form vanished / rerendered
+    assert NO_FIELDS in gh.presubmit_problems(None, Packet(job_id=1), {})
+    li = LinkedInEasyApplyAdapter()
+    assert li.requires_fields is False  # its field-less review step is checked separately
+
+
+def test_generic_mapping_respects_live_descriptions():
+    from recrute.apply.base import LiveField
+    from recrute.schemas import FormAnswer, FormQuestion, Packet
+
+    calls = []
+
+    class Router:
+        def complete(self, task, prompt, **kw):
+            calls.append(prompt)
+            return {"mappings": [{"field_id": "auth", "source": "answer", "answer_id": "q"}]}
+
+    packet = Packet(job_id=1, questions=[FormQuestion(
+        id="q", label="Are you authorized to work?", description="in the United States",
+        type="radio", options=["Yes", "No"])],
+        answers=[FormAnswer(question_id="q", value="Yes")])
+    live = LiveField(id="auth", label="Are you authorized to work?", type="radio",
+                     options=["Yes", "No"], description="in Canada")
+    g = GenericAdapter(router=Router())
+    assert g.map_fields([live], packet, {}) == {}  # a different condition: not reused
+    assert "in Canada" in calls[0]
+    same = live.model_copy(update={"description": "in the United States"})
+    assert g.map_fields([same], packet, {}) == {"auth": ("answer", "q")}
+    assert len(calls) == 2  # the changed description was a new mapping, not a memo hit
+
+
+def test_option_fallbacks_never_change_an_answer():
+    from recrute.apply.base import LiveField, verify_fields
+    from recrute.apply.dom import resolve_option
+
+    assert resolve_option("1", ["10+", "20+"]) is None
+    assert resolve_option(True, ["No"]) is None
+    assert resolve_option(True, ["I do not agree"]) is None
+    assert resolve_option(True, ["Acknowledge/Confirm"]) == "Acknowledge/Confirm"
+    assert resolve_option("United States", ["United States (+1)", "Canada (+1)"]) \
+        == "United States (+1)"
+    assert resolve_option("United States", ["United States +1"]) == "United States +1"
+    years = LiveField(id="y", label="Years of Python", type="select", widget="select",
+                      required=True, options=["10+", "20+"], current=None)
+    assert "y" in coverage_check([years], packet(a("y", "1")))
+    shown = years.model_copy(update={"current": "10+"})
+    assert "y" in verify_fields([shown], packet(a("y", "1")), {})

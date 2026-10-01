@@ -47,6 +47,10 @@ def norm(s: str) -> str:
     return s.rstrip(" .:?!").strip()
 
 
+_ACK_OPTION = re.compile(r"acknowledg|agree|confirm|consent|accept|understand|certif|attest|"
+                         r"i have read|^yes\b")
+_NEG_OPTION = re.compile(r"\b(no|not|don'?t|decline|disagree|never|none)\b")
+_DIAL_SUFFIX = re.compile(r"\s*\(?\+\d{1,4}\)?")
 _TRUE = {"yes", "true", "y"}
 _FALSE = {"no", "false", "n"}
 
@@ -57,9 +61,10 @@ def resolve_option(value: Any, options: Sequence[str]) -> str | None:
     Allowed matches (anything else returns None, i.e. "don't guess"):
       * exact match after normalization;
       * booleans onto a Yes/No (True/False) option, or True onto the only option of a
-        single-option acknowledgement;
-      * the unique option that starts with the value and continues with no letters
-        (e.g. "United States" -> "United States +1").
+        single-option acknowledgement ("I agree", "Acknowledge/Confirm");
+      * a country name onto the unique option that is that country plus its dialing code
+        ("United States" -> "United States +1" / "United States (+1)").
+    Nothing looser: "1" never becomes "10+", True never becomes a lone "No".
     """
     if not options:
         return None
@@ -68,7 +73,8 @@ def resolve_option(value: Any, options: Sequence[str]) -> str | None:
         hits = [o for o in options if norm(o) in want]
         if len(hits) == 1:
             return hits[0]
-        if value and len(options) == 1:
+        if value and len(options) == 1 and _ACK_OPTION.search(norm(options[0])) \
+                and not _NEG_OPTION.search(norm(options[0])):
             return options[0]
         return None
     if value is None:
@@ -80,7 +86,8 @@ def resolve_option(value: Any, options: Sequence[str]) -> str | None:
     if exact:
         return exact[0]
     loose = [o for o in options
-             if norm(o).startswith(v) and not re.search(r"[^\W\d_]", norm(o)[len(v):])]
+             if re.search(r"[^\W\d_]", v) and norm(o).startswith(v)
+             and _DIAL_SUFFIX.fullmatch(norm(o)[len(v):])]
     if len(loose) == 1:
         return loose[0]
     return None
@@ -106,7 +113,7 @@ def same_value(qtype: str, current: Any, approved: Any) -> bool:
     Only explicit, type-specific equivalences apply:
       * all types: surrounding whitespace, Unicode NFC form, CRLF vs LF;
       * email: case-insensitive;
-      * tel: formatting ignored (digits compared, national vs +country form).
+      * tel: formatting ignored (digits compared; +1 optional on ten-digit US numbers).
     Dates are compared by calendar day elsewhere (dates_equal)."""
     def canon(v: Any) -> str:
         return unicodedata.normalize("NFC", as_text(v)).replace("\r\n", "\n").strip()
@@ -114,8 +121,10 @@ def same_value(qtype: str, current: Any, approved: Any) -> bool:
     a, b = canon(current), canon(approved)
     if qtype == "tel":
         da, db = re.sub(r"\D", "", a), re.sub(r"\D", "", b)
-        return bool(db) and (da == db or (len(db) >= 7 and len(da) >= 7
-                                          and (da.endswith(db) or db.endswith(da))))
+        # the whole number must match; the only accepted difference is the US country code
+        # on a ten-digit NANP number (5551234567 vs +1 555 123 4567)
+        us = {da, db} == {da[-10:], "1" + da[-10:]} and len(da[-10:]) == 10
+        return bool(db) and (da == db or us)
     if qtype == "email":
         return a.casefold() == b.casefold()
     return a == b
@@ -157,10 +166,14 @@ def parse_date(value: Any, hint: str = "") -> date | None:
         pass
     order = _date_order(hint)
     try:
-        return dateparser.parse(s, dayfirst=order == "dmy", yearfirst=order == "ymd",
-                                default=datetime(2000, 1, 1)).date()
+        # parsed against two different defaults: a component that isn't in the text (a
+        # bare year, "May 2024") would be invented from the default, so partial dates -> None
+        a, b = (dateparser.parse(s, dayfirst=order == "dmy", yearfirst=order == "ymd",
+                                 default=d).date()
+                for d in (datetime(2000, 1, 1), datetime(2004, 2, 2)))
     except (ValueError, OverflowError):
         return None
+    return a if a == b else None
 
 
 def date_text(value: Any, hint: str = "") -> str | None:
@@ -197,19 +210,29 @@ EXTRACT_JS = load_js("extract_fields.js")
 def extract_fields(root: Page | Frame, *, scope: str | None = None,
                    prefer: Sequence[str] = ("id", "name"), container_key_attr: str | None = None,
                    include_hidden: bool = False, form_index: int | None = None,
+                   transport: Sequence[str] = (), ignore: str = "",
                    ) -> list[LiveField]:
     """Read the fields currently in the DOM under `scope` (or document.forms[form_index])
-    without touching them."""
+    without touching them. `transport`: regexes (full match) for the names of hidden inputs
+    that are known site metadata, not answers (adapter-specific). `ignore`: a CSS selector of
+    custom controls the adapter verifies itself (e.g. LinkedIn's resume picker cards)."""
     from recrute.apply.base import LiveField
 
     raw = root.evaluate(EXTRACT_JS, {"scope": scope, "prefer": list(prefer),
                                      "containerKeyAttr": container_key_attr,
-                                     "formIndex": form_index})
+                                     "formIndex": form_index, "transport": list(transport),
+                                     "ignore": ignore})
     fields: list[LiveField] = []
     seen: dict[str, int] = {}
     for i, r in enumerate(raw):
-        if not r.get("visible") and not include_hidden:
-            continue
+        if not r.get("visible") and not include_hidden and r.get("widget") != "hidden_value":
+            # hidden but CHECKED/selected named controls are still submitted by the form: keep
+            # them as verification-only fields (their value must be an approved answer)
+            if (r.get("widget") in ("radio", "checkbox", "checkbox_group", "yesno")
+                    and r.get("named") and r.get("current") not in (None, "", [])):
+                r = {**r, "widget": "hidden_value"}
+            else:
+                continue
         key = r.get("key") or f"field_{i}"
         if key in seen:
             seen[key] += 1
@@ -223,6 +246,7 @@ def extract_fields(root: Page | Frame, *, scope: str | None = None,
             widget=r.get("widget") or "text", option_selectors=r.get("option_selectors") or [],
             trigger=r.get("trigger") or "", current=r.get("current"),
             visible=bool(r.get("visible")), hint=r.get("hint") or "",
+            description=r.get("description") or "",
         ))
     return fields
 
@@ -232,12 +256,20 @@ def extract_fields(root: Page | Frame, *, scope: str | None = None,
 BLOCKERS_JS = load_js("blockers.js")
 
 
+# the job's own content (never evidence of a checkpoint or login wall, whatever it says)
+JOB_CONTENT = ('#job-details, [class*="jobs-description"], [class*="job-description" i], '
+               '[class*="jobDescription"], [class*="job-card"], [class*="jobs-search-results"], '
+               '[class*="posting-description"], [class*="job-details"], '
+               '[data-testid*="description" i]')
+
+
 def detect_page_blockers(page: Page, *, scope: str | None = None,
-                         extra: Sequence[tuple[str, str]] = ()) -> str | None:
+                         extra: Sequence[tuple[str, str]] = (),
+                         exclude: str = JOB_CONTENT) -> str | None:
     """CAPTCHA (visible challenge only; invisible v3/Enterprise badges are fine), login walls,
     assessments. Checks every frame, since forms are often embedded in iframes.
     `extra` = [(reason, regex)] adapter-specific patterns matched against text and URL."""
-    args = {"scope": scope, "extra": [list(e) for e in extra]}
+    args = {"scope": scope, "extra": [list(e) for e in extra], "exclude": exclude}
     for frame in page.frames:
         try:
             hit = frame.evaluate(BLOCKERS_JS, args)
@@ -269,10 +301,19 @@ def page_text(root: Page | Frame, limit: int = 20000) -> str:
 # Clone the document and copy live values (typed text, selections, checks) into attributes so
 # the saved HTML shows what was actually on the form; the live DOM is not modified.
 SERIALIZE_JS = load_js("serialize.js")
+# fields whose value is (or may be) a secret: masked in receipt screenshots
+SECRET_FIELDS = ('input[type="password" i], input[autocomplete~="current-password"], '
+                 'input[autocomplete~="new-password"], input[autocomplete~="one-time-code"], '
+                 'input[name*="password" i], input[id*="password" i], input[name*="passcode" i], '
+                 'input[name*="otp" i], input[id*="otp" i], input[name*="code" i], '
+                 'input[id*="code" i], input[name*="verification" i], input[name*="token" i], '
+                 'input[name*="csrf" i], input[name*="xsrf" i], input[name*="nonce" i], '
+                 'input[name*="session" i], input[name*="secret" i]')
 
 
 def serialize_html(root: Page | Frame) -> str:
-    return root.evaluate(SERIALIZE_JS)
+    """The page's HTML with live values, minus secrets (the SAME policy as screenshots)."""
+    return root.evaluate(SERIALIZE_JS, SECRET_FIELDS)
 
 
 # --------------------------------------------------------------------------- static HTML parsing
@@ -310,16 +351,24 @@ def parse_static_form(html: str, *, scope: str | None = None) -> list[FormQuesti
     root = soup.select_one(scope) if scope else (soup.find("form") or soup.body or soup)
     if root is None:
         return []
+    # controls outside the form that join it through form="<id>" are submitted with it too
+    form_ids = {str(f["id"]) for f in ([root] if root.name == "form" else [])
+                + root.find_all("form") if f.get("id")}
+    external = [e for e in soup.find_all(["input", "textarea", "select"])
+                if e.get("form") in form_ids and root not in e.parents]
+    controls = root.find_all(["input", "textarea", "select"]) + external
     out: list[FormQuestion] = []
     groups: dict[str, list[Tag]] = {}
-    for el in root.find_all("input"):
+    for el in controls:
+        if el.name != "input":
+            continue
         t = (el.get("type") or "text").lower()
         if t in ("radio", "checkbox") and el.get("name"):
             groups.setdefault(str(el["name"]), []).append(el)
     done: set[str] = set()
-    for el in root.find_all(["input", "textarea", "select"]):
+    for el in controls:
         t = (el.get("type") or "text").lower() if el.name == "input" else el.name
-        if t in ("hidden", "submit", "button", "reset", "image", "search"):
+        if t in ("hidden", "submit", "button", "reset", "image"):
             continue
         key = str(el.get("name") or el.get("id") or "")
         if not key or key in done:

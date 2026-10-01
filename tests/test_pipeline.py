@@ -360,3 +360,544 @@ def test_score_skips_jobs_changed_during_llm_call(engine, session_factory, paths
         job = s.exec(select(Job)).one()
         s.refresh(job)
         assert job.status == JobStatus.REJECTED
+
+
+# --- audit round 3 regressions -------------------------------------------------------------
+
+def test_title_change_during_scoring_is_not_applied(engine, session_factory, paths):
+    class Racing(TriageProvider):
+        def complete(self, req):
+            with Session(engine) as other:
+                ingest(other, [raw(title="Senior Security Engineer")])
+            return super().complete(req)
+
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        filter_new(s, Criteria(), NO_ELIG)
+        st = score_pending(s, _router(Racing({}), session_factory), Criteria(), paths)
+        assert st.scored == 0
+        job = s.exec(select(Job)).one()
+        s.refresh(job)
+        assert job.score is None
+
+
+def test_same_ats_url_change_updates_target(engine):
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        ingest(s, [raw(url="https://job-boards.greenhouse.io/acme/jobs/1")])
+        job = s.exec(select(Job)).one()
+        assert job.apply_url == "https://job-boards.greenhouse.io/acme/jobs/1"
+
+
+def test_snooze_then_stale_approve_rejected(engine):
+    from recrute.review import ReviewError, decide
+
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        job = s.exec(select(Job)).one()
+        job.score = 70
+        s.add(job)
+        s.commit()
+        seen = job.snoozed_until  # what the stale tab rendered
+        decide(s, job.id, "snooze")
+        with pytest.raises(ReviewError):
+            decide(s, job.id, "approve", expected_snooze=seen)
+
+
+def test_multiple_roles_from_one_hn_comment_stay_distinct(engine):
+    comment = "https://news.ycombinator.com/item?id=4242"
+    with Session(engine) as s:
+        ingest(s, [
+            raw(source="hn_whoshiring", url=comment, source_job_id="4242-1", ats=None,
+                ats_token=None, ats_job_id=None, title="Security Engineer",
+                apply_url="https://acme.example/jobs/sec"),
+            raw(source="hn_whoshiring", url=comment, source_job_id="4242-2", ats=None,
+                ats_token=None, ats_job_id=None, title="ML Engineer",
+                apply_url="https://acme.example/jobs/ml"),
+            raw(source="hn_whoshiring", url=comment, source_job_id="4242-3", ats=None,
+                ats_token=None, ats_job_id=None, title="Data Analyst", apply_url=None),
+        ])
+        jobs = {j.title: j for j in s.exec(select(Job)).all()}
+        assert set(jobs) == {"Security Engineer", "ML Engineer", "Data Analyst"}
+        assert jobs["ML Engineer"].apply_url == "https://acme.example/jobs/ml"
+        # re-ingest is an update, not new jobs
+        again = ingest(s, [raw(source="hn_whoshiring", url=comment, source_job_id="4242-2",
+                               ats=None, ats_token=None, ats_job_id=None, title="ML Engineer",
+                               apply_url="https://acme.example/jobs/ml")])
+        assert again.new == 0
+
+
+def test_hn_roles_sharing_a_careers_link_stay_distinct(engine):
+    comment = "https://news.ycombinator.com/item?id=777"
+    careers = "https://acme.example/careers"
+    with Session(engine) as s:
+        for _ in range(2):  # repeated ingestion stays stable
+            ingest(s, [
+                raw(source="hn_whoshiring", url=comment, source_job_id="777-1", ats=None,
+                    ats_token=None, ats_job_id=None, title="Security Engineer",
+                    apply_url=careers),
+                raw(source="hn_whoshiring", url=comment, source_job_id="777-2", ats=None,
+                    ats_token=None, ats_job_id=None, title="ML Engineer", apply_url=careers),
+            ])
+        titles = sorted(j.title for j in s.exec(select(Job)).all())
+        assert titles == ["ML Engineer", "Security Engineer"]
+
+
+def test_concurrent_insert_is_merged_not_fatal(engine, monkeypatch):
+    """Another writer inserted the job after our lookup (simulated: the first lookup misses a
+    row that exists). The uniqueness conflict is retried and merged instead of aborting."""
+    import recrute.pipeline.ingest as ing
+
+    with Session(engine) as other:
+        ingest(other, [raw()])
+    real_find = ing._find_existing
+    calls = {"n": 0}
+
+    def stale_find(session, r, canon, fkey):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real_find(session, r, canon, fkey)
+
+    monkeypatch.setattr(ing, "_find_existing", stale_find)
+    with Session(engine) as s:
+        stats = ingest(s, [raw(), raw(url="https://boards.greenhouse.io/acme/jobs/2",
+                                      ats_job_id="2", title="SOC Analyst")])
+        assert calls["n"] >= 3  # retried after the conflict
+        assert len(s.exec(select(Job)).all()) == 2
+        assert stats.new == 1 and stats.updated == 1
+
+
+def test_filter_does_not_overwrite_concurrent_decision(engine):
+    from recrute.review import decide
+
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        job = s.exec(select(Job)).one()
+        job.score = 60  # e.g. a stale review page shows it after a re-poll
+        s.add(job)
+        s.commit()
+
+        def racing_elig(text):
+            with Session(engine) as other:
+                decide(other, job.id, "approve")  # the human approves mid-filter
+            return {"clearance_required"}  # ...and the rules would have dropped it
+
+        filter_new(s, Criteria(), racing_elig)
+        s.refresh(job)
+        assert job.status == JobStatus.SHORTLISTED
+
+
+def test_closure_does_not_overwrite_concurrent_applied(engine):
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        job = s.exec(select(Job)).one()
+        job.status = JobStatus.PACKET_READY
+        s.add(job)
+        s.commit()
+        company_id = job.company_id
+
+        import recrute.pipeline.ingest as ing
+
+        real_exec = s.exec
+
+        def exec_then_race(stmt, *a, **k):
+            out = real_exec(stmt, *a, **k)
+            if not getattr(exec_then_race, "done", False):
+                exec_then_race.done = True
+                with Session(engine) as other:  # the human marks it applied meanwhile
+                    j = other.get(Job, job.id)
+                    j.status = JobStatus.APPLIED
+                    other.add(j)
+                    other.commit()
+            return out
+
+        s.exec = exec_then_race
+        ing.mark_missing_closed(s, "greenhouse", company_id, set())
+        s.exec = real_exec
+        s.refresh(job)
+        assert job.status == JobStatus.APPLIED and job.closed_at is not None
+
+
+def test_target_change_voids_unsent_approval(engine):
+    from recrute.models import Application
+
+    with Session(engine) as s:
+        ingest(s, [raw(source="linkedin_guest", url="https://linkedin.com/jobs/view/5",
+                       ats="linkedin_easy_apply", ats_token=None, ats_job_id="5",
+                       apply_url="https://linkedin.com/jobs/view/5")])
+        job = s.exec(select(Job)).one()
+        job.status = JobStatus.APPROVED
+        s.add(job)
+        s.add(Application(job_id=job.id, channel="linkedin_easy_apply",
+                          approved_at=datetime(2026, 1, 1, tzinfo=UTC)))
+        s.commit()
+        ingest(s, [raw()])  # the company's own Greenhouse posting shows up
+        s.refresh(job)
+        app = s.exec(select(Application)).one()
+        assert job.ats == "greenhouse" and job.status == JobStatus.SHORTLISTED
+        assert app.approved_at is None
+
+
+def test_years_conjunction_vs_alternatives():
+    assert years_required("10 years of security experience and 2 years of Python "
+                          "experience") == 10
+    assert years_required("5 years of experience with a BS or 3 years of experience with an "
+                          "MS") == 3
+
+
+def test_url_change_does_not_close_present_job(engine):
+    with Session(engine) as s:
+        ingest(s, [raw(source="smartrecruiters", ats="smartrecruiters", ats_token="acme",
+                       ats_job_id="77", url="https://jobs.smartrecruiters.com/acme/77-soc")])
+        ingest(s, [raw(source="smartrecruiters", ats="smartrecruiters", ats_token="acme",
+                       ats_job_id="77", url="https://jobs.smartrecruiters.com/acme/77")])
+        job = s.exec(select(Job)).one()
+        from recrute.pipeline.ingest import mark_missing_closed
+
+        closed = mark_missing_closed(s, "smartrecruiters", job.company_id,
+                                     {"https://jobs.smartrecruiters.com/acme/77"}, {"77"})
+        assert closed == 0
+        s.refresh(job)
+        assert job.status != JobStatus.CLOSED
+
+
+@pytest.mark.parametrize("desc,dropped", [
+    ("This is a part-time position, 20 hours per week.", True),
+    ("A 6-month contract role supporting the SOC.", True),
+    ("Expect about 15 hours per week.", True),
+    ("This is not a contract role; it is full-time.", False),
+    ("Full-time, 40 hours per week.", False),
+    ("Contract to hire role with conversion after 6 months.", False),
+])
+def test_employment_type_from_description(desc, dropped):
+    r = apply_hard_filters(_job(employment_type=None, description_md=desc), "Acme", Criteria(),
+                           NO_ELIG)
+    assert (not r.keep) is dropped
+
+
+def test_mixed_locations_keep_ambiguous_us_option():
+    assert is_us_location(["San Francisco", "London, UK"], None) is None
+    assert is_us_location(["London, UK", "Berlin, Germany"], None) is False
+    assert is_us_location(["Toronto, Canada", "Austin, TX"], None) is True
+
+
+def test_standalone_plus_is_not_a_preference():
+    assert years_required("Minimum 6 years of experience plus knowledge of Python.") == 6
+    assert years_required("3 years of experience with Splunk is a plus.") is None
+
+
+def test_unsnooze_never_erases_a_fresh_snooze(engine):
+    from datetime import timedelta
+
+    from recrute.models import utcnow
+    from recrute.review import unsnooze_due
+
+    with Session(engine) as s:
+        ingest(s, [raw()])
+        job = s.exec(select(Job)).one()
+        job.snoozed_until = utcnow() + timedelta(days=7)  # snoozed again just now
+        s.add(job)
+        s.commit()
+        assert unsnooze_due(s) == 0
+        s.refresh(job)
+        assert job.snoozed_until is not None
+        job.snoozed_until = utcnow() - timedelta(minutes=1)
+        s.add(job)
+        s.commit()
+        assert unsnooze_due(s) == 1
+
+
+def test_script_contents_never_reach_descriptions(engine):
+    from recrute.capture.page import raw_job_from_capture
+
+    html = """<html><head><title>Security Analyst - Acme</title></head><body><main>
+      <h1>Security Analyst</h1><p>Monitor SIEM alerts for Acme.</p>
+      <script>window.session = {accessToken: "SECRET-TOKEN-123"};</script>
+      <noscript>enable js SECRET-NOSCRIPT</noscript>
+      <style>.x{content:"SECRET-STYLE"}</style>
+    </main></body></html>"""
+    rj = raw_job_from_capture("https://acme.example/jobs/1", html, "Security Analyst")
+    with Session(engine) as s:
+        ingest(s, [rj] if rj else [raw(description_html=html)])
+        job = s.exec(select(Job)).one()
+        assert "SECRET" not in job.description_md and "SIEM" in job.description_md
+
+
+def test_title_specialisations_are_distinct_openings(engine):
+    from recrute.pipeline.normalize import normalize_title
+
+    assert normalize_title("Security Engineer - Product") != \
+        normalize_title("Security Engineer - Infrastructure")
+    assert normalize_title("Security Engineer - Remote") == normalize_title("Security Engineer")
+    assert normalize_title("Security Engineer - Austin, TX") == \
+        normalize_title("Security Engineer")
+    with Session(engine) as s:
+        ingest(s, [raw(source="capture", ats=None, ats_token=None, ats_job_id=None,
+                       url="https://acme.example/jobs/product",
+                       title="Security Engineer - Product"),
+                   raw(source="capture", ats=None, ats_token=None, ats_job_id=None,
+                       url="https://acme.example/jobs/infra",
+                       title="Security Engineer - Infrastructure")])
+        jobs = {j.title: j.apply_url for j in s.exec(select(Job)).all()}
+        assert jobs == {"Security Engineer - Product": "https://acme.example/jobs/product",
+                        "Security Engineer - Infrastructure": "https://acme.example/jobs/infra"}
+
+
+def test_symbol_languages_stay_distinct(engine):
+    from sqlmodel import Session, select
+
+    from recrute.models import Job
+    from recrute.pipeline.ingest import ingest
+    from recrute.pipeline.normalize import normalize_title
+    from recrute.schemas import RawJob
+    from recrute.sources.hn import _role_slug
+
+    titles = ["Software Engineer (C++)", "Software Engineer (C#)", "Software Engineer (C)",
+              "Software Engineer (.NET)"]
+    assert len({normalize_title(t) for t in titles}) == 4
+    assert len({_role_slug(t) for t in titles}) == 4
+    raws = [RawJob(source="captured", url=f"https://acme.test/jobs/{i}", title=t,
+                   company="Acme", locations=["Austin, TX"]) for i, t in enumerate(titles)]
+    with Session(engine) as s:
+        ingest(s, raws)
+        assert len(s.exec(select(Job)).all()) == 4
+
+
+def test_smartrecruiters_poll_without_detail_keeps_approved_target(engine):
+    from recrute.models import Application
+    from recrute.sources.smartrecruiters import parse_posting
+
+    posting = {"id": "744000", "name": "Security Engineer", "company": {"name": "Acme"},
+               "location": {"city": "Austin", "region": "TX", "country": "us"}}
+    detail = {"postingUrl": "https://jobs.smartrecruiters.com/Acme/744000-security-engineer",
+              "applyUrl": "https://jobs.smartrecruiters.com/Acme/744000-security-engineer"
+                          "?oga=true"}
+    with Session(engine) as s:
+        ingest(s, [parse_posting(posting, "Acme", detail=detail)])
+        job = s.exec(select(Job)).one()
+        target = job.apply_url
+        job.status = JobStatus.APPROVED
+        s.add(job)
+        s.add(Application(job_id=job.id, channel="smartrecruiters",
+                          approved_at=datetime(2026, 1, 1, tzinfo=UTC)))
+        s.commit()
+        ingest(s, [parse_posting(posting, "Acme")])  # this poll's detail budget skipped it
+        job = s.exec(select(Job)).one()
+        assert job.status == JobStatus.APPROVED and job.apply_url == target
+        assert s.exec(select(Application)).one().approved_at is not None
+        ingest(s, [parse_posting(posting, "Acme", detail=detail)])
+        assert s.exec(select(Job)).one().status == JobStatus.APPROVED
+
+
+def test_score_not_applied_when_location_changes_right_before_publication(engine):
+    from recrute.pipeline.score import ScoreStats, apply_result, scoring_version
+
+    with Session(engine) as s:
+        job = Job(title="Security Engineer", apply_url="u", canonical_url="c",
+                  locations=["New York, NY"], priority=Priority.P1, description_hash="h")
+        s.add(job)
+        s.commit()
+        job_id = job.id
+    result = {"job_id": job_id, "score": 90, "reason": "good", "seniority": "mid",
+              "us_eligible_location": True, "years_required": None, "salary_min": None,
+              "salary_max": None}
+    with Session(engine) as a:
+        job = a.get(Job, job_id)
+        a.refresh(job)
+        version = scoring_version(job)
+        with Session(engine) as b:  # a re-poll lands between the check and the write
+            other = b.get(Job, job_id)
+            other.locations, other.priority = ["London, UK"], None
+            b.add(other)
+            b.commit()
+        assert apply_result(a, job, version, result, Criteria(), None, ScoreStats()) is False
+    with Session(engine) as s:
+        assert s.get(Job, job_id).score is None
+
+
+@pytest.mark.parametrize("before,after", [(["Toronto, ON"], ["New York, NY"]),
+                                          (["New York, NY"], ["Toronto, ON"])])
+def test_rule_result_dropped_when_location_changes_during_evaluation(engine, monkeypatch,
+                                                                     before, after):
+    from recrute.pipeline import stages
+
+    with Session(engine) as s:
+        job = Job(title="Security Engineer", apply_url="u", canonical_url="c",
+                  locations=before, description_md="SIEM", description_hash="h")
+        s.add(job)
+        s.commit()
+        job_id = job.id
+    real = stages.apply_hard_filters
+
+    def racing(*a, **kw):
+        result = real(*a, **kw)
+        with Session(engine) as other:  # a re-poll lands while the rules run
+            j = other.get(Job, job_id)
+            j.locations = after
+            other.add(j)
+            other.commit()
+        return result
+
+    monkeypatch.setattr(stages, "apply_hard_filters", racing)
+    with Session(engine) as s:
+        assert filter_new(s, Criteria()).get("skipped") == 1
+    with Session(engine) as s:
+        j = s.get(Job, job_id)
+        assert j.priority is None and j.status == JobStatus.DISCOVERED and j.filter_reason is None
+    monkeypatch.setattr(stages, "apply_hard_filters", real)
+    with Session(engine) as s:  # the next pass judges the current location
+        filter_new(s, Criteria())
+        j = s.get(Job, job_id)
+        assert (j.status == JobStatus.FILTERED_OUT) == (after == ["Toronto, ON"])
+
+
+@pytest.mark.parametrize("decision", ["mark_applied", "skip"])
+def test_retarget_never_overwrites_a_concurrent_decision(engine, decision):
+    from recrute import packets
+    from recrute.models import Application
+    from recrute.pipeline.ingest import _retarget_unsent_application
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://www.linkedin.com/jobs/view/1",
+                  canonical_url="li1", status=JobStatus.PACKET_READY)
+        s.add(job)
+        s.flush()
+        s.add(Application(job_id=job.id, channel="linkedin_easy_apply", packet={"a": 1}))
+        s.commit()
+        job_id = job.id
+    with Session(engine) as a:
+        job = a.get(Job, job_id)  # ingestion looked the job up...
+        with Session(engine) as b:  # ...then you decided in the UI
+            getattr(packets, decision)(b, job_id)
+        _retarget_unsent_application(a, job)
+        a.commit()
+    with Session(engine) as s:
+        expected = JobStatus.APPLIED if decision == "mark_applied" else JobStatus.REJECTED
+        assert s.get(Job, job_id).status == expected
+
+
+def test_aggregator_postings_sharing_a_board_link_stay_separate(engine):
+    raws = [RawJob(source="remotive", source_job_id=sid, url=f"https://remotive.com/job/{sid}",
+                   apply_url="https://jobs.lever.co/acme", title=title, company="Acme",
+                   locations=["Remote"])
+            for sid, title in (("111", "Security Engineer"), ("222", "Data Analyst"))]
+    with Session(engine) as s:
+        ingest(s, raws)
+        titles = sorted(j.title for j in s.exec(select(Job)).all())
+        assert titles == ["Data Analyst", "Security Engineer"]
+
+
+def test_delayed_restore_never_overwrites_a_later_decision(engine):
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="u", canonical_url="c", status=JobStatus.FILTERED_OUT,
+                  filter_reason="requires 5+ years")
+        s.add(job)
+        s.commit()
+        job_id = job.id
+    with Session(engine) as late:
+        late.get(Job, job_id)  # the second request read it while still filtered out
+        with Session(engine) as s:
+            restore_filtered(s, job_id)
+            j = s.get(Job, job_id)
+            assert j.status == JobStatus.DISCOVERED and j.priority == Priority.P3
+            j.status = JobStatus.SHORTLISTED  # then you approved it at CP1
+            s.add(j)
+            s.commit()
+        restore_filtered(late, job_id)
+    with Session(engine) as s:
+        assert s.get(Job, job_id).status == JobStatus.SHORTLISTED
+
+
+def test_long_hn_role_titles_sharing_a_prefix_stay_separate(engine):
+    from recrute.sources.hn import jobs_from_extraction
+
+    t1 = "Security Engineer - Application Security and Cloud Infrastructure - Product"
+    t2 = "Security Engineer - Application Security and Cloud Infrastructure - Platform"
+    c = {"id": 77, "created_at_i": 1_750_000_000,
+         "text": f"Acme | Remote (US) | https://acme.example/careers<p>{t1}: build.<p>{t2}: run."}
+    rows = {"jobs": [{"comment_id": 77, "company": "Acme", "title": t, "apply_url": None}
+                     for t in (t1, t2)]}
+    raws = jobs_from_extraction(rows, [c])
+    assert raws[0].source_job_id != raws[1].source_job_id
+    with Session(engine) as s:
+        ingest(s, raws)
+        assert len(s.exec(select(Job)).all()) == 2
+
+
+def test_retarget_after_a_packet_was_published_meanwhile(engine):
+    from recrute.models import Application
+    from recrute.pipeline.ingest import _retarget_unsent_application
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://www.linkedin.com/jobs/view/1",
+                  canonical_url="li-pub", status=JobStatus.SHORTLISTED)
+        s.add(job)
+        s.flush()
+        s.add(Application(job_id=job.id, channel="linkedin_easy_apply"))
+        s.commit()
+        job_id = job.id
+    with Session(engine) as a:
+        job = a.get(Job, job_id)  # ingestion read it while still SHORTLISTED...
+        with Session(engine) as b:  # ...then a build published and was auto-approved
+            j = b.get(Job, job_id)
+            j.status = JobStatus.APPROVED
+            app = b.exec(select(Application)).one()
+            app.packet, app.approved_at = {"a": 1}, datetime(2026, 1, 1, tzinfo=UTC)
+            b.add(j)
+            b.add(app)
+            b.commit()
+        _retarget_unsent_application(a, job)
+        a.commit()
+    with Session(engine) as s:
+        assert s.get(Job, job_id).status == JobStatus.SHORTLISTED
+        assert s.exec(select(Application)).one().approved_at is None
+
+
+@pytest.mark.parametrize("stale", [JobStatus.FILTERED_OUT, JobStatus.CLOSED])
+def test_ingest_never_undoes_a_concurrent_decision(engine, stale):
+    from recrute.pipeline.ingest import RESCORABLE, _redecide
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="u", canonical_url=f"c-{stale}", status=stale)
+        s.add(job)
+        s.commit()
+        job_id = job.id
+    with Session(engine) as a:
+        job = a.get(Job, job_id)  # ingestion holds a copy saying FILTERED_OUT / CLOSED...
+        a.commit()
+        with Session(engine) as b:  # ...you restore + reject it meanwhile
+            j = b.get(Job, job_id)
+            j.status = JobStatus.REJECTED
+            b.add(j)
+            b.commit()
+        from_ = (JobStatus.CLOSED,) if stale == JobStatus.CLOSED else tuple(RESCORABLE)
+        assert _redecide(a, job, from_, "posting reopened") is False
+        a.add(job)
+        a.commit()
+    with Session(engine) as s:
+        assert s.get(Job, job_id).status == JobStatus.REJECTED
+
+
+def test_retarget_after_handoff_revokes_approval_and_blocks_assist(engine):
+    import pytest
+
+    from recrute import packets
+    from recrute.models import Application
+    from recrute.pipeline.ingest import _retarget_unsent_application
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://www.linkedin.com/jobs/view/7",
+                  canonical_url="li-cp3", status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.flush()
+        s.add(Application(job_id=job.id, channel="linkedin_easy_apply", packet={"a": 1},
+                          approved_at=datetime(2026, 1, 1, tzinfo=UTC)))
+        s.commit()
+        job.apply_url = "https://boards.greenhouse.io/acme/jobs/7"
+        _retarget_unsent_application(s, job)
+        s.add(job)
+        s.commit()
+        assert s.exec(select(Application)).one().approved_at is None
+        with pytest.raises(packets.PacketError):
+            packets.request_assist(s, job.id)  # no assisted fill of the old packet
+        packets.rebuild(s, job.id)  # recovery: a fresh packet for the new form
+        assert s.get(Job, job.id).status == JobStatus.SHORTLISTED

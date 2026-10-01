@@ -37,8 +37,8 @@
 {{ dictform('linkedin_session_budget', 'LinkedIn session budget per day') }}
 {{ dictform('auto_approve', 'Auto-approve packets (CP2)', 'When enabled, packets for jobs at or above min_score in the chosen priorities, with no new LLM-drafted answers and no verifier flags, are approved without you. Off by default.') }}
 <fieldset>
-  <legend>Trial period / follow-ups</legend>
-  {% for key in ['trial_threshold', 'follow_up_days', 'ghost_days'] %}
+  <legend>Trial period, per-company cap, follow-ups</legend>
+  {% for key in ['trial_threshold', 'follow_up_days', 'ghost_days', 'company_cap', 'company_cooldown_days'] %}
   <form hx-post="/settings/{{ key }}" hx-target="find .result" class="f">
     {{ key }}: <input name="value" type="number" min="0" value="{{ settings[key] }}"> <button>Save</button> <span class="result"></span>
   </form>

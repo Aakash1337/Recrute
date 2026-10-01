@@ -6,7 +6,8 @@
      autocomplete combobox, MultiValueSelect is a checkbox fieldset, EEOC is a radio group, the
      resume input is visually hidden behind "Upload File", plus an "autofill from resume" drop
      zone at the top (must NOT be used) and an invisible reCAPTCHA badge. The submit shows an
-     in-page thank-you (no URL change). ?extra=1 adds a required question. -->
+     in-page thank-you (no URL change). ?extra=1 adds a required question; ?extra=unnamed a required
+     unnamed custom control. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -119,6 +120,11 @@
     if (params.get('extra') === '1') {
       document.getElementById('extra-slot').innerHTML = entry('e0e0e0e0-0000-4000-8000-000000000009', 'What is your favorite security tool?', true,
         '<div><input class="ashby-application-form-input-text" id="e0e0e0e0-0000-4000-8000-000000000009" name="e0e0e0e0-0000-4000-8000-000000000009" type="text" required></div>');
+    }
+    if (params.get('extra') === 'unnamed') {  // a required custom control with no path/id/name
+      document.getElementById('extra-slot').innerHTML =
+        '<div><label>Will you require sponsorship?</label>' +
+        '<div role="combobox" aria-required="true" tabindex="0" style="display:inline-block;width:120px;height:20px">No</div></div>';
     }
     // yes/no
     root.querySelectorAll('.ashby-application-form-input-yesno').forEach(yn => {

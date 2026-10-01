@@ -6,7 +6,11 @@ by an LLM and never "optimized". If the bank has no value, the question is left 
 
 from __future__ import annotations
 
+import os
 import re
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -109,9 +113,73 @@ def load_answer_bank(paths: Paths) -> AnswerBank:
     return AnswerBank.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
 
 
+def _full_key(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "answer"
+
+
+def question_identity(q: FormQuestion) -> str:
+    """What a reusable answer is bound to: the label AND its description."""
+    return f"{q.label} -- {q.description}".strip() if q.description else q.label
+
+
 def answer_key(label: str) -> str:
-    """Stable answers.yaml key for a question label ("Why do you want X?" -> why_do_you_want_x)."""
-    return re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:60] or "answer"
+    """Stable answers.yaml key for a question label ("Why do you want X?" -> why_do_you_want_x).
+    Long labels get a digest suffix so two different questions never share a key."""
+    import hashlib
+
+    full = _full_key(label)
+    # symbols the slug would drop can change the question (C++ vs C#, >= vs <=), and so can
+    # non-ASCII text: those keys carry a digest of the exact wording
+    if len(full) <= 60 and not re.search(r"[+#<>=%$&/@*]|[^\x00-\x7f]", label):
+        return full
+    exact = " ".join(label.lower().split())
+    return f"{full[:51]}_{hashlib.sha1(exact.encode()).hexdigest()[:8]}"
+
+
+@contextmanager
+def _file_lock(target: Path, timeout: float = 30.0, stale: float = 120.0):
+    """Cross-process lock (a lock directory; mkdir is atomic on Linux and Windows)."""
+    lock = target.with_name(target.name + ".lock")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.mkdir(lock)
+            break
+        except (FileExistsError, PermissionError):
+            # Windows reports "Access is denied" while another holder is removing the lock
+            try:
+                if time.time() - lock.stat().st_mtime > stale:  # holder died
+                    os.rmdir(lock)
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"could not lock {target.name}") from None
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        for _ in range(50):  # Windows may briefly refuse while another waiter stats it
+            try:
+                os.rmdir(lock)
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                time.sleep(0.02)
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    for attempt in range(50):
+        try:
+            os.replace(tmp, path)  # readers see the old or the new file, never a partial one
+            return
+        except PermissionError:  # Windows: a reader has the target open for a moment
+            if attempt == 49:
+                raise
+            time.sleep(0.05)
 
 
 def add_answer(paths: Paths, key: str, text: str) -> str:
@@ -119,10 +187,16 @@ def add_answer(paths: Paths, key: str, text: str) -> str:
 
     A new key is appended textually to the `common:` block so the user's comments survive;
     anything else (replacing an existing key, unusual layout) rewrites the file via yaml.
+    Serialized across threads/processes, re-read under the lock, and written atomically.
     """
     key = answer_key(key)
     path = answers_path(paths)
     path.parent.mkdir(parents=True, exist_ok=True)
+    with _file_lock(path):
+        return _add_answer_locked(path, key, text)
+
+
+def _add_answer_locked(path: Path, key: str, text: str) -> str:
     original = path.read_text(encoding="utf-8") if path.exists() else ""
     data = (yaml.safe_load(original) or {}) if original else {}
     common = data.get("common") or {}
@@ -145,14 +219,16 @@ def add_answer(paths: Paths, key: str, text: str) -> str:
             candidate += "\n"
         try:
             parsed = yaml.safe_load(candidate) or {}
-            if (parsed.get("common") or {}).get(key) == text:
+            # the WHOLE file must parse to exactly the old data plus the new entry (an inline
+            # `common: {...}` mapping would otherwise be shadowed by an appended block)
+            if parsed == {**data, "common": {**common, key: text}}:
                 new_text = candidate
         except yaml.YAMLError:
             pass
     if new_text is None:  # fallback: structural rewrite (comments are lost)
         data["common"] = {**common, key: text}
         new_text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=100)
-    path.write_text(new_text, encoding="utf-8")
+    _write_atomic(path, new_text)
     return key
 
 
@@ -190,6 +266,8 @@ _FIELD_RULES: list[tuple[str, re.Pattern[str]]] = [
         ("last_name", r"(legal )?(last name|surname|family name)"),
         ("full_name", r"(full |legal |full legal )?name"),
         ("email", r"e-?mail( address)?"),
+        ("phone_country", r"(mobile |phone )?(country|dialing|calling) (calling )?code|"
+                          r"phone (number )?country( code)?"),
         ("phone", r"((mobile|cell|home|primary) )?(phone|telephone)( number)?|"
                   r"(mobile|cell)( number)?"),
         ("linkedin", r"linked ?in( profile)?( url| link)?"),
@@ -237,7 +315,15 @@ SENSITIVE_KINDS = frozenset({
     "sponsorship", "work_auth", "citizenship", "salary", "eeo_other", "eeo_hispanic",
     "eeo_race", "eeo_gender", "eeo_veteran", "eeo_disability",
 })
-CONTACT_KINDS = frozenset(k for k, _ in _FIELD_RULES)
+# A contact question about SOMEONE ELSE (a reference, a manager, an emergency contact) or a
+# different account (a work email): never answered with the applicant's own details.
+OTHER_CONTACT = "other_contact"
+CONTACT_KINDS = frozenset([*(k for k, _ in _FIELD_RULES), OTHER_CONTACT])
+_OTHER_PERSON = re.compile(
+    r"\b(?:references?|referees?|referr\w*|managers?|supervisors?|emergency|recruiters?|"
+    r"employers?|work|company|business|office|spouse|partner|parents?|guardians?|"
+    r"next of kin|contact person|previous|former|alternate|secondary|other|someone|"
+    r"their|his|her)\b", re.I)
 EEO_KINDS = frozenset({"eeo_other", "eeo_hispanic", "eeo_race", "eeo_gender", "eeo_veteran",
                        "eeo_disability"})
 
@@ -251,6 +337,47 @@ def is_yes_no(q: FormQuestion) -> bool:
     return bool(_YES_NO_START.search(clean_label(q.label)))
 
 
+_SENSITIVE_TEXT = re.compile(
+    r"\b(?:authori[sz]\w*|sponsor\w*|visas?|citizen\w*|immigration|work permit|green card|"
+    r"h-?1b|opt|cpt|salary|salaries|compensation|pay|wages?|earn(?:ed|ings?)?|clearance|"
+    r"gender|sex|race|racial|ethnic\w*|hispanic|latin[oax]|veterans?|disabilit\w*|pronouns?|"
+    r"sexual orientation|age|date of birth|birth ?date|criminal|convict\w*|felon\w*|"
+    r"arrest\w*|background check|drug (?:test|screen)\w*|social security|ssn|religio\w*|"
+    r"marital|pregnan\w*)\b",
+    re.IGNORECASE)
+
+
+def is_sensitive_question(q: FormQuestion) -> bool:
+    """Legal or personal questions (work authorization, compensation history, EEO, criminal
+    history, age...) judged on the FULL question, label and description. These are answered
+    only from your answer bank or by you; never drafted by the LLM."""
+    return bool(_SENSITIVE_TEXT.search(f"{q.label} {q.description}"))
+
+
+def is_sensitive_text(text: str) -> bool:
+    """True when free text (a saved answer's key or value) touches a sensitive subject."""
+    return bool(_SENSITIVE_TEXT.search(text.replace("_", " ")))
+
+
+def drafting_context(bank: AnswerBank, pending: list[FormQuestion],
+                     limit: int = 8) -> list[tuple[str, str]]:
+    """Saved answers worth showing the LLM while drafting `pending`: only entries RELATED to one
+    of the pending questions, and never anything touching a sensitive subject (its key or its
+    text): those stay on this machine."""
+    scored: list[tuple[float, str, str]] = []
+    labels = [clean_label(q.label) for q in pending if q.label.strip()]
+    for key, value in bank.common.items():
+        if is_sensitive_text(key) or is_sensitive_text(value):
+            continue
+        topic = key.replace("_", " ")
+        best = max((fuzz.token_set_ratio(topic, lab, processor=utils.default_process)
+                    for lab in labels), default=0.0)
+        if best >= 60:
+            scored.append((best, key, value))
+    scored.sort(key=lambda t: -t[0])
+    return [(k, v) for _, k, v in scored[:limit]]
+
+
 def classify_question(q: FormQuestion) -> str | None:
     """The bank/profile field a question asks for, or None (-> grounded LLM drafting)."""
     if q.type == "file":
@@ -259,6 +386,10 @@ def classify_question(q: FormQuestion) -> str | None:
     if q.type not in ("checkbox", "multiselect"):  # "Email me about openings" is not a field
         for kind, rx in _FIELD_RULES:
             if rx.fullmatch(core):
+                # the FULL question: "Email (of your professional reference)", or a
+                # description asking for a work / reference address
+                if _OTHER_PERSON.search(f"{q.label} {q.description}"):
+                    return OTHER_CONTACT
                 return kind
     text = clean_label(q.label)
     for kind, rx in _SCREEN_RULES:
@@ -286,7 +417,9 @@ _FUTURE_RE = re.compile(r"\bfuture\b|at any (point|time)|\bany ?time\b|\bever\b|
 _NEGATED_SPONSOR_RE = re.compile(
     r"\bwithout\b[^?]{0,80}sponsor|\bnot\b[^?]{0,30}\b(need|requir)\w*[^?]{0,40}sponsor|"
     r"sponsor\w*[^?]{0,30}\bnot\b[^?]{0,15}\b(needed|required)")
-_AUTH_WORDS_RE = re.compile(r"authori[sz]ed|eligible|legally|permitted|right to work")
+_AUTH_WORDS_RE = re.compile(r"authori[sz]ed|eligible|legally|permitted|right to work|"
+                            r"able to work|can you work|could you work|allowed to work|"
+                            r"able to (start|begin) work|work in the (us|u\.s|united states)")
 
 
 def _either(a: bool | None, b: bool | None) -> bool | None:
@@ -302,7 +435,40 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
       now OR future; no scope words -> only answered when now and future agree.
     - polarity: "able/authorized to work WITHOUT sponsorship" asks the inverse question.
     """
-    t = clean_label(label)
+    # the FULL label: parenthetical clauses like "now (or in the future)" carry the scope
+    t = " ".join(label.lower().replace("*", " ").replace("’", "'").split())
+    # only genuine employer-sponsorship questions; visa STATUS questions ("are you on an H-1B?")
+    # and other countries' sponsorship are facts the bank doesn't have
+    if not re.search(r"sponsor", t) or re.search(
+            r"\b(currently (on|hold)|do you (hold|have) an?|what is your|type of visa|"
+            r"your visa (type|status))\b|canada|kingdom|\buk\b|europe|\beu\b|india|mexico|"
+            r"australia|germany", t):
+        return None
+    # only questions about NEEDING sponsorship (or working without it): "are you currently
+    # receiving / being sponsored", "is your employer sponsoring you" ask about a status the
+    # bank doesn't hold
+    if not (re.search(r"\b(?:requir\w*|need\w*|necessitat\w*)\b", t)
+            or _NEGATED_SPONSOR_RE.search(t)):
+        return None
+    if re.search(r"\b(?:receiv\w*|being sponsored|sponsored by|currently sponsored|"
+                 r"on (?:a |an )?(?:employer )?sponsor\w*|sponsoring you)\b", t):
+        return None
+    # authorization qualifiers the bank doesn't establish: permanent / indefinite /
+    # unrestricted status, any employer
+    if re.search(r"permanent|indefinite|unrestricted|any employer|without (any )?restrictions?",
+                 t):
+        return None
+    # history ("have you ever required", "in the past") and durations ("for at least five
+    # years", "for the next 3 years") are facts the bank's now/future flags don't establish
+    if re.search(r"\b(have|has|had)\s+(you\s+)?(ever\s+)?(been\s+)?(requir|need|sponsor|us|"
+                 r"receiv|obtain|held)\w*|\bdid you\b|\bin the past\b|\bpreviously\b|"
+                 r"\bprior\b|\bhistor\w*|\bformer\w*|\bbefore\b", t):
+        return None
+    if re.search(r"\bfor (at least |a minimum of |the next |the following |up to |more than )?"
+                 r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten|several|a few)\s+"
+                 r"(years?|months?)\b|\b(years?|months?) from now\b|\bthrough(out)? \d{4}\b|"
+                 r"\buntil\b|\bduration\b|\bentire\b|\bfull term\b|\blong[- ]term\b", t):
+        return None
     now, fut = wa.requires_sponsorship_now, wa.requires_sponsorship_future
     has_now, has_fut = bool(_NOW_RE.search(t)), bool(_FUTURE_RE.search(t))
     if has_now and has_fut:
@@ -334,15 +500,36 @@ _NO_RE = re.compile(r"^\s*(no|n|false)\b", re.IGNORECASE)
 
 
 def _norm_option(text: str) -> str:
-    t = re.sub(r"\([^)]*\)", " ", text.lower().replace("’", "'"))
-    t = re.sub(r"[^a-z0-9/+'\- ]", " ", t)
+    """Case/punctuation-insensitive form of an option. Parenthetical text is KEPT: "Bachelor of
+    Science (Computer Science)" claims a major that a bare "Bachelor of Science" doesn't."""
+    t = text.lower().replace("’", "'").replace("(", " ").replace(")", " ")
+    t = re.sub(r"[^a-z0-9/+#'\- ]", " ", t)
     return " ".join(t.split())
 
 
+def _norm_eeo(text: str) -> str:
+    """EEO categories carry standard clarifications in parentheses ("White (Not Hispanic or
+    Latino)"): the category itself is what is compared."""
+    return _norm_option(re.sub(r"\([^)]*\)", " ", text))
+
+
+_BARE_REST = re.compile(r"(?:i\s+(?:am|do|will|can|have|would|could|may))?(?:\s+not)?",
+                        re.IGNORECASE)
+
+
 def match_bool_option(value: bool, options: list[str]) -> str | None:
-    """The option that literally starts with Yes/No. No fuzzy matching for booleans."""
+    """The option that is a plain Yes/No. No fuzzy matching for booleans, and nothing added:
+    "Yes, I am a US citizen or permanent resident" claims more than a bare yes, so it is left
+    for you (unless it is the ONLY way the form words it and you pick it at CP2)."""
     rx = _YES_RE if value else _NO_RE
-    hits = [o for o in options if rx.search(o)]
+    hits = []
+    for o in options:
+        m = rx.search(o)
+        if not m:
+            continue
+        rest = re.sub(r"[^\w\s]", " ", o[m.end():]).strip()
+        if _BARE_REST.fullmatch(" ".join(rest.split())):
+            hits.append(o)
     return hits[0] if len(hits) == 1 else None
 
 
@@ -350,9 +537,13 @@ def _decline_option(options: list[str]) -> str | None:
     return next((o for o in options if _DECLINE_RE.search(o)), None)
 
 
-def match_option(value: str, options: list[str], cutoff: float = 90) -> str | None:
-    """Exact (normalized) match, then a strict whole-string fuzzy match that never flips a
-    negation. Not used for EEO answers (see match_eeo_option)."""
+def match_option(value: str, options: list[str], cutoff: float = 90, *,
+                 fuzzy: bool = False) -> str | None:
+    """Exact (normalized) match. With `fuzzy` (LLM-drafted text, which you always review), also
+    a strict whole-string fuzzy match that never flips a negation. Facts from your profile or
+    answer bank are matched exactly: a near-miss is a DIFFERENT fact ("University of York" vs
+    "University of New York", "C++" vs "C#"), so it is left for you instead.
+    Not used for EEO answers (see match_eeo_option)."""
     if not value or not options:
         return None
     low = _norm_option(value)
@@ -361,6 +552,8 @@ def match_option(value: str, options: list[str], cutoff: float = 90) -> str | No
         return exact[0]
     if low in ("decline", "prefer not to say", "decline to answer"):
         return _decline_option(options)
+    if not fuzzy:
+        return None
     negated = bool(_NEG_RE.search(value))
     pool = [o for o in options if bool(_NEG_RE.search(o)) == negated]
     best = process.extractOne(value, pool, scorer=fuzz.token_sort_ratio,
@@ -388,7 +581,7 @@ _EEO_TOPIC = {"eeo_veteran": "veteran", "eeo_disability": "disabilit",
 def _polarity(kind: str, text: str) -> str | None:
     if _DECLINE_RE.search(text):
         return None
-    n = _norm_option(text)
+    n = _norm_eeo(text)
     if re.match(r"yes\b", n):
         return "yes"
     if re.match(r"no\b", n):
@@ -405,13 +598,13 @@ def match_eeo_option(kind: str, value: str, options: list[str]) -> str | None:
         return None
     if value.strip().lower() == "decline" or _DECLINE_RE.search(value):
         return _decline_option(options)
-    low = _norm_option(value)
-    exact = [o for o in options if _norm_option(o) == low]
+    low = _norm_eeo(value)
+    exact = [o for o in options if _norm_eeo(o) == low]
     if len(exact) == 1:
         return exact[0]
     if kind in _EEO_ALIASES:
         group = next((g for g in _EEO_ALIASES[kind] if low in g), {low})
-        hits = [o for o in options if _norm_option(o) in group]
+        hits = [o for o in options if _norm_eeo(o) in group]
     elif kind in _EEO_TOPIC:
         want = _polarity(kind, value)
         hits = [o for o in options if want is not None and _polarity(kind, o) == want]
@@ -424,6 +617,12 @@ def format_value(q: FormQuestion, value: bool | str | int | None) -> Any:
     """Shape a raw answer for the question type; None when it can't be expressed faithfully."""
     if value is None or value == "":
         return None
+    if not q.options and q.type in ("select", "radio", "multiselect"):
+        # a picker whose options can't be fetched before CP2 (LinkedIn's email / phone
+        # country): keep the grounded value; it must match a live option EXACTLY before it
+        # is selected or submitted (apply.dom.resolve_option), else CP3
+        text = ("Yes" if value else "No") if isinstance(value, bool) else str(value)
+        return [text] if q.type == "multiselect" else text
     if isinstance(value, bool):
         if q.type in ("select", "radio") or q.options:
             return match_bool_option(value, q.options)
@@ -444,21 +643,79 @@ def format_value(q: FormQuestion, value: bool | str | int | None) -> Any:
 # --------------------------------------------------------------------------- matching
 
 
+def _full_question(q: FormQuestion) -> str:
+    return f"{q.label} {q.description}".strip()
+
+
+_NEGATED_Q = re.compile(r"\b(not|n't|never|unable|without)\b", re.IGNORECASE)
+
+
+_PLAIN_WORK_AUTH = re.compile(
+    r"(are you |is the candidate )?(currently )?(legally )?(authori[sz]ed|eligible|permitted)"
+    r" to (work|be employed)( lawfully)? (in|for employment in|within) (the )?"
+    r"(u\.?s\.?a?|united states( of america)?)"
+    r"( (at this time|currently|today))?", re.IGNORECASE)
+
+
+def work_auth_answer(label: str, wa: WorkAuthorization) -> bool | None:
+    """Only a plain, unqualified *current* US work-authorization question is answered from
+    the bank ("Are you legally authorized to work in the United States?"). Anything else
+    (indefinitely, permanently, without sponsorship, for any employer, other countries,
+    negations, descriptions adding conditions) is left for you: a wrong legal answer is worse
+    than an unanswered one."""
+    t = " ".join(label.lower().replace("*", " ").split()).rstrip(" ?.:")
+    if not _PLAIN_WORK_AUTH.fullmatch(t):
+        return None
+    if wa.authorized_to_work_in_us is None:
+        return None
+    return bool(wa.authorized_to_work_in_us)
+
+
+_PLAIN_RELOCATE = re.compile(
+    r"(are you |would you be |would you )?(willing|open|able)( to consider)?( to)? "
+    r"relocat(e|ing|ion)( for this (role|position|job|opportunity))?", re.IGNORECASE)
+
+
+def relocation_answer(q: FormQuestion, willing: bool | None) -> bool | None:
+    """Only the plain willingness question; negations ("unwilling"), destinations, costs ("at
+    your own expense") and other conditions are yours to answer."""
+    if willing is None or (q.description or "").strip():
+        return None
+    t = " ".join(q.label.lower().replace("*", " ").split()).rstrip(" ?.:")
+    return willing if _PLAIN_RELOCATE.fullmatch(t) else None
+
+
+def phone_country(phone: str | None) -> str | None:
+    """The phone country for a "Phone country code" picker, from YOUR number: only a US/NANP
+    number (+1 or ten digits) is answered; anything else is left for you to pick."""
+    digits = re.sub(r"\D", "", phone or "")
+    if (phone or "").strip().startswith("+"):
+        return "United States (+1)" if digits.startswith("1") and len(digits) == 11 else None
+    return "United States (+1)" if len(digits) == 10 else None
+
+
 def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
               priority: str | None) -> bool | str | int | None:
     wa, c, label = bank.work_authorization, bank.contact, clean_label(q.label)
     match kind:
-        case "sponsorship":
-            return sponsorship_answer(q.label, wa) if is_yes_no(q) else None
+        case "sponsorship":  # the whole question: conditions often sit in the description
+            return sponsorship_answer(_full_question(q), wa) if is_yes_no(q) else None
         case "work_auth":
-            return wa.authorized_to_work_in_us if is_yes_no(q) else None
+            return work_auth_answer(_full_question(q), wa) if is_yes_no(q) else None
         case "relocate":
-            return bank.logistics.willing_to_relocate
+            return relocation_answer(q, bank.logistics.willing_to_relocate)
         case "start_date":
             return bank.logistics.earliest_start_date or None
         case "notice":
             return bank.logistics.notice_period or None
         case "salary":
+            full = f"{q.label} {q.description}".lower()
+            if re.search(r"\b(current|previous|prior|past|last|present|history|historical|"
+                         r"most recent|were you|was your|did you|earn(ed|ing)?)\b", full):
+                return None  # salary HISTORY: the bank only holds preferences; never invent it
+            if re.search(r"hour|hourly|/\s*hr\b|per hr|month|monthly|week|weekly|daily|per day",
+                         full) or re.search(r"\b(eur|gbp|cad|inr|aud|€|£|₹)", full):
+                return None  # our ranges are annual USD: never convert silently; you answer
             if q.type == "number":
                 lo, hi = bank.salary.range_for(priority)
                 if re.search(r"\bmin", label):
@@ -490,6 +747,8 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
             return getattr(c, kind) or None
         case "city":
             return c.current_city or None
+        case "phone_country":
+            return phone_country(c.phone)
     return None  # citizenship: deliberately not answered from the bank
 
 
@@ -506,9 +765,14 @@ def _common_answer(q: FormQuestion, bank: AnswerBank) -> tuple[str, bool] | None
     """(text, exact) from bank.common for a reusable free-text question."""
     if not bank.common or q.type not in ("text", "textarea"):
         return None
-    key = answer_key(q.label)
+    key = answer_key(question_identity(q))
     if key in bank.common:
         return bank.common[key], True
+    # label-only / legacy truncated keys: possibly another question's answer (the description
+    # can change the subject), so only ever offered for review
+    for legacy in {answer_key(q.label), _full_key(q.label)[:60]} - {key}:
+        if legacy in bank.common:
+            return bank.common[legacy], False
     keys = list(bank.common)
     best = process.extractOne(q.label, [k.replace("_", " ") for k in keys],
                               scorer=fuzz.token_set_ratio, processor=utils.default_process,

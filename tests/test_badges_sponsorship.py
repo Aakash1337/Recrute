@@ -126,10 +126,12 @@ CLEARANCE = [
     "Candidates must be eligible for a security clearance.",
     "Clearance: Secret",
     "Current DoD Secret clearance is required to start.",
-    "Must hold a Public Trust or be able to obtain one.",
     "Requires a TS/SCI with CI polygraph.",
 ]
 NOT_CLEARANCE = [
+    # Public Trust is a background investigation, not a security clearance
+    "Must hold a Public Trust or be able to obtain one.",
+    "Candidates must pass a Public Trust background investigation.",
     "Security clearance preferred.",
     "Active Secret clearance is a plus.",
     "A security clearance is nice to have but not required.",
@@ -288,3 +290,169 @@ def test_inline_markup_does_not_split_sentences():
 def test_block_elements_still_split():
     kind, quote = detect_sponsorship("<ul><li>No visa sponsorship</li><li>Remote</li></ul>")
     assert kind == "no_sponsorship" and quote == "No visa sponsorship"
+
+
+def test_caveated_negative_is_not_a_denial():
+    from recrute.badges import detect_sponsorship
+
+    text = ("Visa sponsorship: We do sponsor visas! However, we aren't able to successfully "
+            "sponsor visas for every role and every candidate. But if we make you an offer, we "
+            "will make every reasonable effort to get you a visa.")
+    kind, quote = detect_sponsorship(text)
+    assert kind == "will_sponsor" and "We do sponsor visas" in quote
+    assert detect_sponsorship("We cannot guarantee visa sponsorship.")[0] == "unknown"
+    assert detect_sponsorship("We are unable to sponsor visas for this role.")[0] == \
+        "no_sponsorship"
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("No active Secret clearance is required, but must be able to obtain a Secret clearance.",
+     True),
+    ("No active clearance is required; you must be able to obtain a TS/SCI clearance.", True),
+    ("No security clearance is required for this role.", False),
+    ("An active Secret clearance is preferred but not required.", False),
+])
+def test_clearance_mixed_clauses(text, expected):
+    from recrute.badges import eligibility_flags
+
+    assert ("clearance_required" in eligibility_flags(text)) is expected
+
+
+@pytest.mark.parametrize("text,flagged", [
+    ("You will ensure compliance with EAR export control regulations.", False),
+    ("We comply with all applicable export controls.", False),
+    ("Knowledge of ITAR regulations is a plus.", False),
+    ("This position requires access to export-controlled technical data.", True),
+    ("Applicants must be eligible to access information subject to ITAR.", True),
+])
+def test_export_duties_vs_restrictions(text, flagged):
+    from recrute.badges import eligibility_flags
+
+    assert ("itar_us_person" in eligibility_flags(text)) is flagged
+
+
+@pytest.mark.parametrize("text,flagged", [
+    ("Experience with ITAR preferred; candidates must have 2 years of Python experience.",
+     False),
+    ("U.S. person status preferred; Python experience is required.", False),
+    ("Python experience preferred; applicants must be U.S. persons under ITAR.", True),
+])
+def test_itar_requirement_bound_to_its_clause(text, flagged):
+    from recrute.badges import eligibility_flags
+
+    assert ("itar_us_person" in eligibility_flags(text)) is flagged
+
+
+@pytest.mark.parametrize("text,flagged", [
+    ("You must have experience with ITAR regulations.", False),
+    ("Candidates must have knowledge of export-control regulations.", False),
+    ("Candidates must be U.S. persons as defined by ITAR.", True),
+    ("You must be able to access export-controlled technical data.", True),
+])
+def test_itar_skills_vs_status(text, flagged):
+    from recrute.badges import eligibility_flags
+
+    assert ("itar_us_person" in eligibility_flags(text)) is flagged
+
+
+@pytest.mark.parametrize("text,flag", [
+    ("Our customers include U.S. persons.", None),
+    ("We build software for customers with Secret clearance.", None),
+    ("Candidates must be U.S. persons.", "itar_us_person"),
+    ("Must have an active Secret clearance.", "clearance_required"),
+])
+def test_customer_statements_are_not_applicant_restrictions(text, flag):
+    from recrute.badges import eligibility_flags
+
+    flags = eligibility_flags(text)
+    assert (flag in flags) if flag else not flags
+
+
+@pytest.mark.parametrize("text,flagged", [
+    ("All qualified candidates, including U.S. persons and non-U.S. persons, are encouraged "
+     "to apply.", False),
+    ("We hire regardless of U.S. person status.", False),
+    ("We work with U.S. persons across many industries.", False),
+    ("Only U.S. persons may apply; non-U.S. persons are not eligible.", True),
+    ("Due to ITAR, applicants must be U.S. persons.", True),
+])
+def test_inclusive_us_person_wording_is_not_a_restriction(text, flagged):
+    from recrute.badges.sponsorship import eligibility_flags
+
+    assert ("itar_us_person" in eligibility_flags(text)) is flagged
+
+
+@pytest.mark.parametrize("text,flag", [
+    ("No visa sponsorship is available and US citizenship is required.", "citizenship_required"),
+    ("Candidates must hold a Secret clearance and no visa sponsorship is offered.",
+     "clearance_required"),
+    ("Python experience is preferred and US citizenship is required.", "citizenship_required"),
+])
+def test_coordinated_statements_keep_their_own_requirements(text, flag):
+    from recrute.badges.sponsorship import eligibility_flags
+
+    assert flag in eligibility_flags(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Must be able to obtain and maintain a Secret clearance.",
+    "US citizenship is preferred and sponsorship is available.",
+    "A clearance is not required and we welcome all applicants.",
+])
+def test_coordination_does_not_invent_requirements(text):
+    from recrute.badges.sponsorship import coordinated_statements, eligibility_flags
+
+    flags = eligibility_flags(text)
+    if "obtain and maintain" in text:
+        assert len(coordinated_statements(text)) == 1
+        assert "clearance_required" in flags
+    else:
+        assert not flags
+
+
+@pytest.mark.parametrize("text", [
+    "U.S. citizenship is required to access protected information.",
+    "We participate in E-Verify and U.S. citizenship is required for this role.",
+])
+def test_citizenship_requirement_next_to_boilerplate_words(text):
+    from recrute.badges.sponsorship import eligibility_flags
+
+    assert "citizenship_required" in eligibility_flags(text)
+
+
+def test_eeo_boilerplate_still_ignored():
+    from recrute.badges.sponsorship import eligibility_flags
+
+    assert not eligibility_flags("We do not discriminate on the basis of citizenship, "
+                                 "protected veteran status or any other legally protected "
+                                 "characteristic.")
+
+
+@pytest.mark.parametrize("text,flagged", [
+    ("Preferred qualifications:\n- Active Secret clearance", False),
+    ("### Nice to have\n* TS/SCI clearance\n* Python", False),
+    ("<h3>Preferred Qualifications</h3><ul><li>Active Secret clearance</li></ul>", False),
+    ("Preferred qualifications:\n- Kubernetes\nRequirements:\n- Active Secret clearance", True),
+    ("Required qualifications:\n- Active TS/SCI clearance", True),
+    ("Preferred qualifications:\n- Must hold an active Secret clearance", True),
+])
+def test_preferred_section_clearance_is_optional(text, flagged):
+    from recrute.badges.sponsorship import eligibility_flags
+
+    assert ("clearance_required" in eligibility_flags(text)) is flagged
+
+
+@pytest.mark.parametrize("text,flag", [
+    ("Our customers require an active Secret clearance.", None),
+    ("Our clients must be U.S. citizens.", None),
+    ("Our customers require an active Secret clearance, and candidates must hold one too.",
+     "clearance_required"),
+    ("Candidates must be U.S. citizens to support our government clients.",
+     "citizenship_required"),
+    ("Active Secret clearance required to work with our customers.", "clearance_required"),
+])
+def test_customer_restrictions_are_not_applicant_requirements(text, flag):
+    from recrute.badges.sponsorship import eligibility_flags
+
+    flags = eligibility_flags(text)
+    assert (flag in flags) if flag else not flags

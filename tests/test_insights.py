@@ -59,8 +59,11 @@ def test_learning_loop_suggestions(engine):
 
 def test_auto_approve_rules():
     job = Job(title="t", apply_url="u", canonical_url="u", priority=Priority.P1, score=90)
-    clean = Packet(job_id=1, answers=[FormAnswer(question_id="q", value="x",
-                                                 source="answer_bank", needs_review=False)])
+    from datetime import UTC, datetime
+
+    clean = Packet(job_id=1, resume_pdf="packets/1/r.pdf", generated_at=datetime.now(UTC),
+                   answers=[FormAnswer(question_id="q", value="x", source="answer_bank",
+                                       needs_review=False)])
     rule = {"enabled": True, "min_score": 85, "priorities": ["P0", "P1"]}
     assert auto_approve_reason(job, clean, rule)
     assert auto_approve_reason(job, clean, {**rule, "enabled": False}) is None
@@ -71,3 +74,19 @@ def test_auto_approve_rules():
     assert auto_approve_reason(job, flagged, rule) is None
     job.priority = Priority.P3
     assert auto_approve_reason(job, clean, rule) is None
+
+
+def test_auto_approve_rejects_unverified_or_generated_resume_text():
+    from datetime import UTC, datetime
+
+    from recrute.schemas import ResumeSelection, SelectedEntry
+
+    job = Job(title="t", apply_url="u", canonical_url="u", priority=Priority.P1, score=95)
+    rule = {"enabled": True, "min_score": 85, "priorities": ["P1"]}
+    assert auto_approve_reason(job, Packet(job_id=1), rule) is None  # never verified
+    base = dict(job_id=1, resume_pdf="p.pdf", generated_at=datetime.now(UTC))
+    assert auto_approve_reason(job, Packet(**base, resume=ResumeSelection(summary="Invented")),
+                               rule) is None
+    rw = ResumeSelection(experience=[SelectedEntry(id="e", bullet_ids=["b"],
+                                                   rewrites={"b": "new words"})])
+    assert auto_approve_reason(job, Packet(**base, resume=rw), rule) is None

@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Packet · {{ job.title }}{% endblock %}
+{% block content %}
+<h3 style="margin:0">{{ job.title }}</h3>
+<div>{% include "_job_row_meta.html" %} · <a href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">posting ↗</a> · channel {{ app.channel }}</div>
+{% set blocks = packet.blocking_flags() %}
+<div class="split" style="margin-top:1rem">
+  <div>
+    <h2>Resume</h2>
+    {% if packet.resume_pdf %}<iframe src="/files/{{ packet.resume_pdf }}" style="width:100%;height:70vh;border:1px solid var(--line);border-radius:8px"></iframe>
+    <p><a href="/files/{{ packet.resume_pdf }}" target="_blank">open PDF</a></p>{% endif %}
+    {% if profile %}
+    <h2>Kept / reworded vs. mega resume</h2>
+    {% set items = profile.all_items() %}
+    <table>
+      {% for entry in packet.resume.experience + packet.resume.projects %}
+        {% for bid in entry.bullet_ids %}
+        <tr><td class="muted">{{ bid }}</td><td>
+          {% if entry.rewrites.get(bid) %}<div class="new">{{ entry.rewrites[bid] }}</div><div class="muted">was: {{ items[bid].text if bid in items else '?' }}</div>
+          {% else %}{{ items[bid].text if bid in items else bid }}{% endif %}
+        </td></tr>
+        {% endfor %}
+      {% endfor %}
+    </table>
+    {% set kept = [] %}{% for e in packet.resume.experience + packet.resume.projects %}{% for b in e.bullet_ids %}{% set _ = kept.append(b) %}{% endfor %}{% endfor %}
+    <p class="muted">Cut: {{ (items | length) - (kept | length) }} of {{ items | length }} items.</p>
+    {% endif %}
+  </div>
+  <div>
+    {% if packet.flags %}
+    <h2>Verifier flags</h2>
+    <ul>{% for f in packet.flags %}<li class="flag-{{ f.severity }}"><b>{{ f.severity }}</b> {{ f.where }}: “{{ f.text }}” <span class="muted">({{ f.reason }})</span></li>{% endfor %}</ul>
+    {% endif %}
+    <form hx-post="/packets/{{ job.id }}/edit" hx-target="#result">
+      <input type="hidden" name="rev" value="{{ rev }}">
+      <h2>Form answers</h2>
+      <table>
+      {% for q in packet.questions %}
+        {% set a = answers.get(q.id) %}
+        <tr class="{{ 'new' if a and a.needs_review }}">
+          <td style="width:40%">{{ q.label }}{% if q.required %} <span class="bad">*</span>{% endif %}
+            {% if q.description %}<br><span class="muted" style="font-style:italic">{{ q.description }}</span>{% endif %}
+            <br><span class="muted">{{ a.source if a else 'unanswered' }}</span></td>
+          <td>
+          {% if q.type == 'file' %}<span class="muted">{{ a.value if a else '' }}</span>
+          {% elif q.options %}
+            {% set multi = q.type in ('multiselect', 'checkbox') and q.options | length > 1 %}
+            {% if multi %}<input type="hidden" name="present__{{ q.id }}" value="1">{% endif %}
+            <select name="q__{{ q.id }}" {{ 'multiple' if multi }}>
+              <option value="">(none)</option>
+              {% for o in q.options %}<option value="{{ o }}" {{ 'selected' if a and (a.value == o or (a.value is iterable and a.value is not string and o in a.value)) }}>{{ o }}</option>{% endfor %}
+            </select>
+          {% elif q.type == 'textarea' %}<textarea name="q__{{ q.id }}">{{ a.value if a and a.value is not none else '' }}</textarea>
+          {% else %}<input name="q__{{ q.id }}" value="{{ a.value if a and a.value is not none else '' }}" style="width:100%">
+          {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </table>
+      {% if packet.cover_letter is not none %}
+      <h2>Cover letter</h2>
+      <textarea name="cover_letter" style="min-height:14rem">{{ packet.cover_letter }}</textarea>
+      {% if packet.cover_letter_pdf %}<p><a href="/files/{{ packet.cover_letter_pdf }}" target="_blank">cover letter PDF</a></p>{% endif %}
+      {% endif %}
+      {% if blocks %}<label class="f bad"><input type="checkbox" name="override"> I checked the {{ blocks | length }} blocking flag(s) and the claims are true</label>{% endif %}
+      <p>
+        <button name="then_approve" value="1" class="primary">Save &amp; Go ahead</button>
+        <button name="then_approve" value="0">Save edits</button>
+      </p>
+    </form>
+    <form hx-post="/packets/{{ job.id }}/approve" hx-target="#result" class="inline">
+      <input type="hidden" name="rev" value="{{ rev }}">
+      <button class="primary" {{ 'disabled title="resolve or override blocking flags"' if blocks }}>Go ahead (as is)</button>
+    </form>
+    <form hx-post="/packets/{{ job.id }}/regenerate" hx-target="#result" class="inline">
+      <input type="hidden" name="rev" value="{{ rev }}">
+      <input name="note" placeholder="regenerate with a note, e.g. emphasize the Kafka work" size="36"> <button>Regenerate</button>
+    </form>
+    <form hx-post="/packets/{{ job.id }}/skip" hx-target="#result" class="inline"><button class="danger">Skip job</button></form>
+    <p id="result"></p>
+  </div>
+</div>
+{% endblock %}

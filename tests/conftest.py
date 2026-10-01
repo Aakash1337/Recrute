@@ -1,6 +1,7 @@
 import os
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel
 
 from recrute.db import make_engine
@@ -33,3 +34,19 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "live" in item.keywords:
             item.add_marker(skip_live)
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("RECRUTE_HOME", str(tmp_path))
+    from recrute import db
+    from recrute.config import get_config
+    from recrute.web import app as app_module
+
+    db.get_engine.cache_clear()
+    get_config.cache_clear()
+    app_module.access_token.cache_clear()
+    with TestClient(app_module.app) as c:
+        yield c
+    db.get_engine.cache_clear()
+    app_module.access_token.cache_clear()

@@ -85,4 +85,24 @@ class AccessMiddleware(BaseHTTPMiddleware):
                 return PlainTextResponse("cross-origin request blocked", status_code=403)
             if path != "/login" and request.headers.get("hx-request") != "true":
                 return PlainTextResponse("missing HX-Request header", status_code=403)
-        return await call_next(request)
+        response = await call_next(request)
+        return no_framing(response, same_origin=path.startswith(FRAMEABLE_PATHS))
+
+
+# Served artifacts (the resume / cover-letter PDFs) are previewed in an <iframe> on the packet
+# page itself: framable by this UI only.
+FRAMEABLE_PATHS = ("/files/",)
+
+
+def no_framing(response, *, same_origin: bool = False):
+    """No page of this UI may be shown inside another site's frame (clickjacking: a disguised
+    "Approve" button would still send a genuine same-origin request). `same_origin`: only
+    this UI's own pages may frame it (artifact previews)."""
+    response.headers["X-Frame-Options"] = "SAMEORIGIN" if same_origin else "DENY"
+    ancestors = "frame-ancestors 'self'" if same_origin else "frame-ancestors 'none'"
+    csp = response.headers.get("Content-Security-Policy")
+    if csp is None:
+        response.headers["Content-Security-Policy"] = ancestors
+    elif "frame-ancestors" not in csp:
+        response.headers["Content-Security-Policy"] = f"{csp}; {ancestors}"
+    return response

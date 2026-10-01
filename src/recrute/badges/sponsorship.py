@@ -42,6 +42,33 @@ def sentences(text: str) -> list[str]:
     return out
 
 
+_PREFERRED_HEADER = re.compile(r"^\W*(?:preferred|nice[- ]to[- ]have|bonus|desired|pluses|"
+                               r"good to have|extra credit|bonus points)\b", re.I)
+_OTHER_HEADER = re.compile(r"^\W*(?:required|requirements|minimum|basic|must[- ]have|"
+                           r"qualifications|what you|who you are|you have|responsibilities|"
+                           r"about|benefits|key|your|the role|eligibility)\b", re.I)
+_MANDATORY = re.compile(r"\b(?:must|required|mandatory|condition of employment|"
+                        r"prerequisite)\b", re.I)
+
+
+def sentences_in_context(text: str) -> list[tuple[str, bool]]:
+    """(sentence, in a "preferred / nice to have" section). Sections are tracked across
+    lines, so "Preferred qualifications:\n- Active Secret clearance" is known to be optional."""
+    out: list[tuple[str, bool]] = []
+    preferred = False
+    for line in _to_text(text).splitlines():
+        head = line.strip()
+        if not head:
+            continue
+        if len(head) <= 120 and _PREFERRED_HEADER.match(head):
+            preferred = True
+        elif len(head) <= 80 and _OTHER_HEADER.match(head) and (
+                head.rstrip().endswith(":") or head.startswith("#") or len(head.split()) <= 4):
+            preferred = False
+        out += [(s, preferred) for s in sentences(line)]
+    return out
+
+
 def _snippet(s: str) -> str:
     return s if len(s) <= MAX_SNIPPET else s[: MAX_SNIPPET - 1].rstrip() + "…"
 
@@ -105,6 +132,18 @@ _POS = [re.compile(p, re.I) for p in (
 )]
 
 
+# Qualified negatives ("we can't sponsor for EVERY role", "can't guarantee sponsorship") are
+# caveats on a sponsoring employer, not a denial.
+_CAVEAT = re.compile(
+    r"\bfor\s+(?:every|all|each)\s+(?:role|position|candidate|case|applicant)s?\b"
+    r"|\b(?:every|all)\s+(?:role|position|candidate)s?\s+and\s+(?:every|all)\b"
+    r"|\b(?:cannot|can't|can not|unable to|not able to)\s+guarantee\b"
+    r"|\bnot\s+(?:always|in all cases|every time)\b"
+    r"|\bsuccessfully\s+sponsor\b",
+    re.I,
+)
+
+
 def detect_sponsorship(text: str | None) -> tuple[Sponsorship, str | None]:
     """INFORMATIONAL ONLY (never used for filtering/ranking).
 
@@ -121,6 +160,8 @@ def detect_sponsorship(text: str | None) -> tuple[Sponsorship, str | None]:
         if not _VISA_CONTEXT.search(s):
             continue
         if any(p.search(s) for p in _NEG):
+            if _CAVEAT.search(s):
+                continue  # a caveat, not a policy of not sponsoring
             return "no_sponsorship", _snippet(s)
         if positive is None and any(p.search(s) for p in _POS):
             positive = s
@@ -149,7 +190,6 @@ _CLEARANCE = re.compile(
     r"interim)\s+(?:security\s+)?clearances?\b"
     r"|\bts\s*/\s*sci\b|\btop[- ]secret\s*/\s*sci\b"
     r"|\b(?:full[- ]scope|ci|counter[- ]?intelligence|lifestyle)\s+poly(?:graph)?\b"
-    r"|\bpublic[- ]trust\b"
     r"|\bclearance\s*(?:level)?\s*[:\-–]\s*(?:secret|top secret|ts|required|active)"
     r"|\b(?:obtain|maintain|hold|possess|eligib\w+\s+(?:for|to\s+obtain))\s+" + _w(3) +
     r"clearances?\b",
@@ -171,9 +211,21 @@ _CITIZEN_ALTERNATIVE = re.compile(
     r"|\bor\s+" + _w(3) + r"(?:those|individuals|persons)\s+" + _w(3) + r"authori[sz]ed",
     re.I,
 )
-_BOILERPLATE = re.compile(r"discriminat|without regard|regardless of|protected|equal (?:employment"
-                          r"|opportunity)|immigration reform and control act|e-verify", re.I)
+# Nondiscrimination / EEO language (which mentions citizenship without requiring it). Only
+# the phrases themselves: "protected INFORMATION" or a separate "we participate in E-Verify"
+# statement must not hide a real requirement (independent statements are also evaluated on
+# their own, see eligibility_flags).
+_BOILERPLATE = re.compile(
+    r"discriminat|without regard|regardless of|protected (?:veteran|class|status|characteristic|"
+    r"categor|group|by law)|legally protected|equal (?:employment|opportunity)|"
+    r"immigration reform and control act|e-verify", re.I)
 
+_NON_US_PERSON_OK = re.compile(r"\bnon[- ]?(?:u\.?\s?s\.?|united states)\s+persons?\b|"
+                               r"\bregardless of (?:citizenship|nationality|u\.?s\.? person)",
+                               re.I)
+_NON_US_EXCLUDED = re.compile(r"\bnon[- ]?(?:u\.?\s?s\.?|united states)\s+persons?\s+"
+                              r"(?:are|is|will)\s+(?:not|ineligible|un\w+)|"
+                              r"\bnot (?:open|available) to non[- ]?u", re.I)
 _US_PERSON = re.compile(r"\bu\.?\s?s\.?\s+persons?\b|\bunited states persons?\b", re.I)
 _EXPORT = re.compile(
     r"\bITAR\b|\bEAR\b|\bexport[- ]control(?:led|s)?\b|\bexport administration regulations\b|"
@@ -187,6 +239,23 @@ _EXPORT_SKILL = re.compile(r"\b(?:knowledge|experience|familiar\w*|understanding
 _EXPORT_REQ = re.compile(r"\b(?:must|required|requires?|requirement|subject to|only|restricted|"
                          r"eligib\w+|access to|pursuant|comply|compliance with|as defined|"
                          r"condition|necessary|mandatory)\b", re.I)
+
+
+_APPLICANT_RESTRICTION = re.compile(
+    # the applicant must BE something / be ABLE TO ACCESS something (status or access), not
+    # merely know or handle regulations ("you must have experience with ITAR" is a skill)
+    r"\b(?:applicants?|candidates?|you|employees?|hires?)\s+(?:must|will need to|need to|are "
+    r"required to|shall)\s+(?:be\b|qualify\b|meet (?:the )?(?:export|itar|ear)|"
+    r"(?:be )?(?:able|eligible) to (?:access|receive|obtain|be granted))"
+    r"|\b(?:position|role|job|work)\s+(?:requires|is subject to|will require|involves)\s+"
+    r"(?:access to|u\.?s\.? person|citizenship|export|itar|an export licen)"
+    r"|\baccess to (?:export[- ]controlled|itar[- ]controlled|controlled|technical data|"
+    r"defense articles)\b"
+    r"|\beligib\w+ (?:to|for) (?:access|receive|export)\b|\brestricted to\b|"
+    r"\bonly (?:u\.?s\.?|us) (?:persons?|citizens?)\b"
+    r"|\bsubject to (?:u\.?s\.? )?(?:export|itar|ear) (?:controls? )?(?:restrictions|"
+    r"requirements|licens\w+)\b",
+    re.I)
 
 
 def _clauses(sentence: str) -> list[str]:
@@ -229,8 +298,24 @@ def _mention_required(sentence: str, pattern: re.Pattern[str]) -> bool:
     return False
 
 
+_CLEARANCE_CLAUSES = re.compile(
+    r";|,?\s+\b(?:but|however|although|though|while|yet)\b|,\s+(?=must|candidates?|applicants?|"
+    r"you)", re.IGNORECASE)
+
+
 def _clearance_required(s: str) -> bool:
+    """Evaluated per clause: "No active clearance is required, but must be able to obtain a
+    Secret clearance" -> the second clause is a requirement despite the first's negation."""
+    clauses = [c for c in _CLEARANCE_CLAUSES.split(s) if c and c.strip()]
+    if len(clauses) > 1:
+        return any(_clearance_clause(c) for c in clauses)
+    return _clearance_clause(s)
+
+
+def _clearance_clause(s: str) -> bool:
     if not _CLEARANCE.search(s) or _CLEARANCE_NEG.search(s):
+        return False
+    if _about_third_parties(s):
         return False
     if _all_mentions_negated(s, _CLEARANCE):
         return False
@@ -238,12 +323,21 @@ def _clearance_required(s: str) -> bool:
         # Bare adjectives ("active clearance") need some requirement wording in the sentence;
         # named levels (Secret, TS/SCI, polygraph) stand on their own as listed requirements.
         return bool(_REQUIRED.search(s)) or bool(re.search(
-            r"secret|ts\s*/\s*sci|poly|public[- ]trust|dod|doe|q clearance", s, re.I))
+            r"secret|ts\s*/\s*sci|poly|dod|doe|q clearance", s, re.I))
     return False
 
 
 def _citizenship_required(s: str) -> bool:
-    if not _US_CITIZEN.search(s) or _BOILERPLATE.search(s):
+    """Boilerplate is judged on the clause that mentions citizenship: "We participate in
+    E-Verify and U.S. citizenship is required" still requires citizenship."""
+    parts = [p for p in re.split(r";|,?\s+(?:and|but|however|while)\s+", s) if p.strip()]
+    if len(parts) > 1 and _BOILERPLATE.search(s):
+        return any(_citizenship_clause(p) for p in parts if _US_CITIZEN.search(p))
+    return _citizenship_clause(s)
+
+
+def _citizenship_clause(s: str) -> bool:
+    if not _US_CITIZEN.search(s) or _BOILERPLATE.search(s) or _about_third_parties(s):
         return False
     if _CITIZEN_ALTERNATIVE.search(s) or _all_mentions_negated(s, _US_CITIZEN):
         return False
@@ -252,6 +346,45 @@ def _citizenship_required(s: str) -> bool:
 
 
 def _itar_required(s: str) -> bool:
+    """Evaluated per clause: a requirement word in an unrelated clause ("... ITAR experience
+    preferred; candidates must have 2 years of Python") doesn't turn the preference into an
+    eligibility restriction."""
+    clauses = [c for c in _CLEARANCE_CLAUSES.split(s) if c and c.strip()]
+    if len(clauses) > 1:
+        return any(_itar_clause(c) for c in clauses
+                   if _US_PERSON.search(c) or _EXPORT.search(c) or _EXPORT_CI.search(c))
+    return _itar_clause(s)
+
+
+# Sentences about the company's customers/products, not about the applicant.
+_THIRD_PARTY = re.compile(r"\b(?:customers?|clients?|users?|partners?|agencies|missions?|"
+                          r"we (?:build|serve|support|protect|sell|provide|work with)|our "
+                          r"(?:products?|platform|software|solutions?|services?))\b", re.I)
+# who the restriction is about: the applicant...
+_APPLICANT_SUBJECT = re.compile(r"\b(?:applicants?|candidates?|you|your|hires?|employees?|"
+                                r"(?:this|the) (?:role|position|job|successful)|individuals?)\b",
+                                re.I)
+# ...or the company's customers ("Our customers require an active Secret clearance")
+_THIRD_PARTY_SUBJECT = re.compile(
+    r"\b(?:customers?|clients?|users?|partners?|agencies|end users?)\s+(?:\w+\s+){0,2}?"
+    r"(?:require[sd]?|must|need|needs|are required|hold|have|include|consist)\b", re.I)
+_REQUIREMENT_WORDS = re.compile(r"\b(?:must|required|requires?|eligib\w*|ability to|"
+                                r"able to)\b", re.I)
+
+
+def _about_third_parties(s: str) -> bool:
+    """A statement about the company's customers/products, not a rule for the applicant. The
+    SUBJECT decides, not the verb: "Our clients must be U.S. citizens" describes clients."""
+    if _APPLICANT_SUBJECT.search(s):
+        return False
+    if _THIRD_PARTY_SUBJECT.search(s):
+        return True
+    return bool(_THIRD_PARTY.search(s)) and not _REQUIREMENT_WORDS.search(s)
+
+
+def _itar_clause(s: str) -> bool:
+    if _about_third_parties(s):
+        return False
     if _BOILERPLATE.search(s) and not _EXPORT_CI.search(s):
         return False
     has_person = bool(_US_PERSON.search(s))
@@ -264,12 +397,19 @@ def _itar_required(s: str) -> bool:
     if _NOT_REQUIRED.search(s) and not _REQUIRED.search(s):
         return False
     if has_person:
-        return _mention_required(s, _US_PERSON) or bool(_EXPORT_REQ.search(s))
-    # Export-control mention without "U.S. person": a requirement, not a skill ("knowledge of
-    # ITAR regulations" in a trade-compliance posting is a qualification, not a restriction).
-    if _EXPORT_SKILL.search(s):
+        # "including U.S. persons and non-U.S. persons" welcomes both: no restriction
+        if _NON_US_PERSON_OK.search(s) and not _NON_US_EXCLUDED.search(s):
+            return False
+        # a bare mention isn't a rule: it must be stated as a requirement
+        return (_mention_required(s, _US_PERSON)
+                and bool(_REQUIRED.search(s) or _EXPORT_REQ.search(s)
+                         or _APPLICANT_RESTRICTION.search(s)))
+    # Export-control mention without "U.S. person": only an explicit restriction on the
+    # APPLICANT counts. Skills ("knowledge of ITAR"), job duties ("ensure compliance with EAR")
+    # and corporate policy ("we comply with export controls") are not eligibility rules.
+    if _EXPORT_SKILL.search(s) and not _APPLICANT_RESTRICTION.search(s):
         return False
-    return bool(_EXPORT_REQ.search(s))
+    return bool(_APPLICANT_RESTRICTION.search(s))
 
 
 def eligibility_flags(text: str | None) -> set[str]:
@@ -286,11 +426,38 @@ def eligibility_flags(text: str | None) -> set[str]:
     flags: set[str] = set()
     if not text:
         return flags
-    for s in sentences(text):
-        if "clearance_required" not in flags and _clearance_required(s):
-            flags.add("clearance_required")
-        if "citizenship_required" not in flags and _citizenship_required(s):
-            flags.add("citizenship_required")
-        if "itar_us_person" not in flags and _itar_required(s):
-            flags.add("itar_us_person")
+    for sentence, preferred in sentences_in_context(text):
+        if preferred and not _MANDATORY.search(sentence):
+            continue  # listed under preferred / nice-to-have qualifications: optional
+        # the whole sentence, and each independent statement joined by "and" ("No sponsorship
+        # is available and US citizenship is required"): a negation or preference in one
+        # statement must not hide a requirement stated in the other
+        parts = coordinated_statements(sentence)
+        for s in [sentence, *parts] if len(parts) > 1 else [sentence]:
+            if "clearance_required" not in flags and _clearance_required(s):
+                flags.add("clearance_required")
+            if "citizenship_required" not in flags and _citizenship_required(s):
+                flags.add("citizenship_required")
+            if "itar_us_person" not in flags and _itar_required(s):
+                flags.add("itar_us_person")
     return flags
+
+
+_FINITE = re.compile(r"\b(?:is|are|was|were|must|will|shall|required|requires|offered|"
+                     r"available|needed|provided)\b", re.I)
+
+
+def coordinated_statements(sentence: str) -> list[str]:
+    """Split "X is ... and Y is ..." into independent statements. Only where BOTH sides carry
+    their own verb, so a shared-verb phrase ("able to obtain and maintain a clearance",
+    "US citizenship and a clearance are required") stays whole."""
+    pieces = re.split(r",?\s+and\s+", sentence)
+    out: list[str] = []
+    for piece in pieces:
+        if out and _FINITE.search(out[-1]) and _FINITE.search(piece):
+            out.append(piece)
+        elif out:
+            out[-1] = f"{out[-1]} and {piece}"
+        else:
+            out.append(piece)
+    return out

@@ -65,9 +65,13 @@ def test_full_packet(paths):
     [version] = list_packet_versions(paths, 7)
     assert latest_packet_version(paths, 7) == version
     out = packet_dir(paths, 7) / version
-    assert packet.resume_pdf == f"packets/7/{version}/Jordan_Lin_Resume.pdf"
+    tag = version.rsplit("-", 1)[-1][:8]
+    assert packet.resume_pdf == f"packets/7/{version}/Jordan_Lin_{tag}_Resume.pdf"
+    # every generated file is fingerprinted so uploads can be verified against the approval
+    assert set(packet.artifacts) == {packet.resume_pdf, packet.cover_letter_pdf}
+    assert packet.verify_artifacts(paths.data) == []
     assert packet_file(paths, packet.resume_pdf).exists()
-    assert packet.cover_letter_pdf == f"packets/7/{version}/Jordan_Lin_Cover_Letter.pdf"
+    assert packet.cover_letter_pdf == f"packets/7/{version}/Jordan_Lin_{tag}_Cover_Letter.pdf"
     assert packet_file(paths, packet.cover_letter_pdf).exists()
     assert load_packet(paths, 7) == packet
     assert packet.cover_letter.startswith("I am applying for the AI Security Analyst role")
@@ -107,7 +111,7 @@ def test_cover_letter_only_when_asked(paths):
     packet, router = _build(paths, _questions(True), need_cover_letter=False)
     assert "cover" not in router.keys() and packet.cover_letter is None
     latest = latest_packet_version(paths, 7)
-    assert not (packet_dir(paths, 7) / latest / "Jordan_Lin_Cover_Letter.pdf").exists()
+    assert not list((packet_dir(paths, 7) / latest).glob("*Cover_Letter.pdf"))
     assert packet_file(paths, requested.cover_letter_pdf).exists()
     assert any(f.where == "answer:cover_letter" for f in packet.flags)  # required, unanswered
 

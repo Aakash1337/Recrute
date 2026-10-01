@@ -427,6 +427,13 @@ def test_ashby_extra_required_question_needs_human(srv, context, paths, human, r
     assert srv.posts == []
 
 
+def test_ashby_unnamed_custom_control_is_not_dropped(srv, context, paths, human, resume):
+    j = job(f"{srv.url}{ASHBY_URL}?extra=unnamed", "ashby", job_id=3)
+    out = run(j, ashby_packet(resume), context, paths, human)
+    assert out.status == "needs_human"
+    assert srv.posts == []
+
+
 # --------------------------------------------------------------------------- linkedin
 
 
@@ -444,6 +451,8 @@ def li_packet(resume: Path) -> Packet:
                               "sponsorship for employment visa status?", type="select",
                               options=["Yes", "No"])]
     return Packet(job_id=4, resume_pdf=str(resume), questions=questions, answers=[
+        a("first_name", "Ada"), a("last_name", "Lovelace"), a("email", "ada@example.com"),
+        a("phone_country", "United States (+1)"),
         a("phone", "4155550100"), a("bank_py_years", "3"), a("bank_auth", True),
         a("bank_sponsor", "No"),
     ])
@@ -548,6 +557,10 @@ def test_generic_filler_maps_once_fills_and_never_submits(srv, context, paths, h
     fields_section = router.calls[0]["prompt"].split("FORM FIELDS")[1].split("APPROVED")[0]
     assert '["fullname",' in fields_section
     assert '["q",' not in fields_section  # the header search form is not the application
+    answers_section = router.calls[0]["prompt"].split("APPROVED ANSWERS")[1]
+    assert "q_email" in answers_section and "Email" in answers_section
+    for value in ("Ada Lovelace", "ada@example.com", "Robots need security."):
+        assert value not in router.calls[0]["prompt"]  # values never leave the machine
 
 
 def test_generic_filler_ends_in_pause_even_when_fully_covered(srv, context, paths, human,
@@ -819,3 +832,422 @@ def test_case_sensitive_url_is_verified_exactly(srv, context, paths, human, resu
               paths, human, mode="submit")
     assert out.status == "submitted"
     assert "https://github.com/AdaL/Engine-Notes" in srv.posts[0]["body"].decode()
+
+
+@pytest.mark.browser
+def test_extract_fields_reads_descriptions(context):
+    from recrute.apply import dom
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <div class="field"><label for="wa">Work authorization *</label>
+        <input id="wa" name="wa" required aria-describedby="wa-help">
+        <div id="wa-help">Without employer sponsorship, now or in the future.</div></div>
+      <div class="field"><label for="n">Name</label><input id="n" name="n">
+        <small class="hint">As on your passport</small></div>
+    </form>""")
+    fields = {f.id: f for f in dom.extract_fields(page)}
+    assert "sponsorship" in fields["wa"].description.lower()
+    assert "passport" in fields["n"].description.lower()
+    page.close()
+
+
+@pytest.mark.browser
+def test_required_search_field_with_unapproved_value_is_seen(context):
+    from recrute.apply import dom
+    from recrute.apply.base import coverage_check
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <label for="n">Name</label><input id="n" name="n" required value="Ada">
+      <label for="school">School</label>
+      <input type="search" id="school" name="school" required value="Saved University">
+      <header><input type="search" name="site_search" aria-label="Search jobs"></header>
+    </form>""")
+    fields = {f.id: f for f in dom.extract_fields(page)}
+    assert "school" in fields and "site_search" not in fields
+    packet = Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")])
+    assert "school" in coverage_check(list(fields.values()), packet)  # -> CP3
+    page.close()
+
+
+@pytest.mark.browser
+def test_custom_combobox_forces_cp3(context):
+    from recrute.apply import dom
+    from recrute.apply.base import coverage_check
+    from recrute.apply.widgets import fill_fields
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <label for="n">Name</label><input id="n" name="n" required>
+      <div class="field"><span id="lab">Work location</span>
+        <button type="button" role="combobox" aria-required="true" aria-labelledby="lab"
+                id="loc">Remote - US</button></div>
+    </form>""")
+    fields = dom.extract_fields(page)
+    custom = [f for f in fields if f.widget == "custom"]
+    assert custom and custom[0].required and custom[0].current == "Remote - US"
+    packet = Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")])
+    assert custom[0].id in coverage_check(fields, packet)
+    report = fill_fields(page, custom, packet, {}, human=None)
+    assert custom[0].id in report.failed
+    page.close()
+
+
+@pytest.mark.browser
+def test_upload_widget_that_resets_input_is_seen(context):
+    from recrute.apply import dom
+
+    page = context.new_page()
+    page.set_content("""<form><div class="field"><label for="cv">Resume</label>
+      <input type="file" id="cv" name="cv">
+      <div class="attachment">Ada_1a2b3c4d_Resume.pdf <button type="button">remove</button></div>
+    </div></form>""")
+    f = next(x for x in dom.extract_fields(page) if x.widget == "file")
+    assert f.current == "Ada_1a2b3c4d_Resume.pdf"
+    page.close()
+
+
+@pytest.mark.browser
+def test_live_view_frames_and_remote_input(context, paths):
+    from recrute import live
+
+    page = context.new_page()
+    page.set_content('<input id="q" style="position:absolute;left:10px;top:10px;width:200px">')
+    sid = live.start_session(paths)
+    live.publish_frame(paths, page)
+    info = live.frame_info(paths)
+    assert info and info["fresh"] and len(live.frame_jpeg()[0]) > 0
+    target = live.page_target(page)
+    live.enqueue(paths, {"type": "click", "x": 50, "y": 20, "session": sid, "target": target})
+    live.enqueue(paths, {"type": "type", "text": "typed remotely", "session": sid,
+                         "target": target})
+    assert live.apply_inputs(paths, page) is False
+    assert page.input_value("#q") == "typed remotely"
+    live.clear(paths)
+    page.close()
+
+
+@pytest.mark.browser
+def test_hidden_populated_controls_are_verified(context):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <label for="n">Name</label><input id="n" name="n" value="Ada">
+      <input id="salary" name="salary" value="250000" style="display:none">
+      <select id="src" name="src" aria-hidden="true"><option value=""></option>
+        <option value="li" selected>LinkedIn</option></select>
+      <input type="hidden" name="csrf" value="abc123">
+    </form>""")
+    fields = {f.id: f for f in dom.extract_fields(page)}
+    assert fields["salary"].widget == "hidden_value" and fields["salary"].current == "250000"
+    assert "src" in fields and "csrf" not in fields
+    packet = Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")])
+    problems = verify_fields(list(fields.values()), packet, {})
+    assert "salary" in problems and "src" in problems and "n" not in problems
+    page.close()
+
+
+@pytest.mark.browser
+def test_hidden_checked_controls_are_verified(context):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <fieldset style="display:none"><legend>Willing to take a pay cut?</legend>
+        <label><input type="radio" name="paycut" value="yes" checked>Yes</label>
+        <label><input type="radio" name="paycut" value="no">No</label></fieldset>
+      <label><input type="checkbox" name="marketing" aria-hidden="true" checked>
+        Send me marketing emails</label>
+    </form>""")
+    fields = dom.extract_fields(page)
+    hidden = {f.id: f for f in fields if f.widget == "hidden_value"}
+    assert "paycut" in hidden and "marketing" in hidden
+    problems = verify_fields(fields, Packet(job_id=1), {})
+    assert "paycut" in problems and "marketing" in problems
+    page.close()
+
+
+@pytest.mark.browser
+def test_native_hidden_answer_is_verified(context):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <label for="n">Name</label><input id="n" name="n" value="Ada">
+      <input type="hidden" name="requires_sponsorship" value="No">
+      <input type="hidden" name="csrf_token" value="abc">
+      <input type="hidden" name="gh_src" value="linkedin">
+    </form>""")
+    fields = {f.id: f for f in dom.extract_fields(page)}
+    assert "requires_sponsorship" in fields and "csrf_token" not in fields
+    problems = verify_fields(list(fields.values()),
+                             Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")]),
+                             {})
+    assert "requires_sponsorship" in problems
+    page.close()
+
+
+@pytest.mark.browser
+def test_form_associated_external_controls_are_verified(context):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    page = context.new_page()
+    page.set_content("""<form id="application-form">
+      <label for="n">Name</label><input id="n" name="n" value="Ada">
+    </form>
+    <input form="application-form" name="requires_sponsorship" value="Yes" style="display:none">
+    <label><input type="checkbox" form="application-form" name="consent" checked>
+      I agree to be contacted</label>
+    <input form="other-form" name="unrelated" value="x">""")
+    fields = {f.id: f for f in dom.extract_fields(page, form_index=0)}
+    assert "requires_sponsorship" in fields and "consent" in fields
+    assert "unrelated" not in fields
+    problems = verify_fields(list(fields.values()),
+                             Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")]),
+                             {})
+    assert "requires_sponsorship" in problems and "consent" in problems and "n" not in problems
+    page.close()
+
+
+def test_static_form_includes_form_associated_controls():
+    from recrute.apply import dom
+
+    qs = dom.parse_static_form("""<html><body><form id="f">
+      <label for="n">Name</label><input id="n" name="n"></form>
+      <label for="s">Need sponsorship?</label>
+      <select id="s" name="sponsor" form="f"><option>Yes</option><option>No</option></select>
+      <input name="elsewhere" form="g"></body></html>""")
+    assert {q.id for q in qs} == {"n", "sponsor"}
+
+
+@pytest.mark.browser
+def test_hidden_answers_with_metadata_like_names_or_json_are_verified(context):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <label for="n">Name</label><input id="n" name="n" value="Ada">
+      <input type="hidden" name="language_proficiency" value="Native">
+      <input type="hidden" name="screening_answers" value='{"sponsorship":"No"}'>
+      <input type="hidden" name="source" value="LinkedIn">
+      <input type="hidden" name="authenticity_token" value="abc">
+      <input type="hidden" name="loginCsrfParam" value="abc">
+      <input type="hidden" name="cards[1c719ca9-0000][baseTemplate]" value='{"text":"Q"}'>
+    </form>""")
+    fields = {f.id: f for f in dom.extract_fields(page)}
+    assert {"language_proficiency", "screening_answers", "source"} <= set(fields)
+    assert "authenticity_token" not in fields and "loginCsrfParam" not in fields
+    assert "cards[1c719ca9-0000][baseTemplate]" in fields  # generic: not exempt
+    lever = {f.id for f in dom.extract_fields(
+        page, transport=[r"cards\[[0-9a-f-]+\]\[baseTemplate\]"])}
+    assert "cards[1c719ca9-0000][baseTemplate]" not in lever
+    problems = verify_fields(list(fields.values()),
+                             Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")]),
+                             {})
+    assert {"language_proficiency", "screening_answers", "source"} <= set(problems)
+    page.close()
+
+
+def test_greenhouse_keeps_populated_paste_alternatives():
+    from recrute.apply.base import LiveField, verify_fields
+
+    fields = [LiveField(id="resume_text", label="Paste resume", type="textarea",
+                        current="UNAPPROVED resume text"),
+              LiveField(id="cover_letter_text", label="Paste cover letter", type="textarea",
+                        current=None),
+              LiveField(id="iti-0__search-input", label="Search", type="text", current="x")]
+    kept = GreenhouseAdapter().postprocess(fields)
+    assert [f.id for f in kept] == ["resume_text"]
+    assert "resume_text" in verify_fields(kept, Packet(job_id=1), {})
+
+
+@pytest.mark.browser
+def test_receipt_html_never_contains_passwords(context):
+    from recrute.apply import dom
+
+    page = context.new_page()
+    page.set_content("""<form><input name="user" value="ada">
+      <input type="password" name="pw" value="CANARY-attr-secret">
+      <input id="typed" type="password" name="pw2">
+      <input autocomplete="one-time-code" name="otp" value="CANARY-otp"></form>""")
+    page.fill("#typed", "CANARY-typed-secret")
+    html = dom.serialize_html(page)
+    assert "CANARY" not in html and 'value="ada"' in html
+    page.close()
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("hidden", [False, True])
+def test_extra_attachment_in_multiple_file_input_is_caught(context, tmp_path, hidden):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    approved, private = tmp_path / "approved.pdf", tmp_path / "private.pdf"
+    approved.write_bytes(b"%PDF a")
+    private.write_bytes(b"%PDF p")
+    page = context.new_page()
+    style = ' style="display:none"' if hidden else ""
+    page.set_content(f"""<form><label for="cv">Resume</label>
+      <input type="file" id="cv" name="cv" multiple{style}></form>""")
+    page.set_input_files("#cv", [str(approved), str(private)])
+    fields = dom.extract_fields(page)
+    f = next(x for x in fields if x.id == "cv")
+    assert "private.pdf" in (f.current if isinstance(f.current, str) else " ".join(f.current))
+    packet = Packet(job_id=1, resume_pdf=str(approved),
+                    answers=[FormAnswer(question_id="cv", value="resume")])
+    assert "cv" in verify_fields(fields, packet, {"resume": approved})
+    page.close()
+
+
+def test_gate_is_rechecked_after_submit_pacing(srv, context, paths, human, resume):
+    """Active hours end / a cap is hit WHILE the pre-click pacing runs: never submitted."""
+    state = {"prepared": False}
+    adapter = GreenhouseAdapter()
+    real_prepare = adapter.prepare_submit
+
+    def prepare(page, *, human):
+        real_prepare(page, human=human)
+        state["prepared"] = True  # e.g. the clock passed the end of active hours meanwhile
+
+    adapter.prepare_submit = prepare
+    j = job(f"{srv.url}/greenhouse/acme/jobs/1001", "greenhouse")
+    out = run(j, gh_packet(resume), context, paths, human, adapter=adapter,
+              pre_submit_check=lambda: "deferred: outside active hours"
+              if state["prepared"] else None)
+    assert state["prepared"] and out.status == "needs_human"
+    assert "outside active hours" in out.reason and srv.posts == []
+
+
+@pytest.mark.browser
+def test_real_reload_changes_the_target(context):
+    from recrute import live
+
+    page = context.new_page()
+    page.set_content("<p>hi</p>")
+    before = live.page_target(page)
+    page.reload()
+    assert live.page_target(page) != before
+    page.close()
+
+
+@pytest.mark.browser
+def test_receipt_screenshots_mask_secret_fields(context, paths):
+    from datetime import UTC, datetime
+
+    from recrute.apply.receipts import Receipt
+
+    page = context.new_page()
+    page.set_content("""<input name="user" value="ada">
+      <input id="otp" name="otp" value="482913">
+      <input name="new_password" type="text" value="revealed-secret">
+      <input name="code" value="CANARY-code">
+      <input type="hidden" name="token" value="CANARY-tok">""")
+    seen = {}
+    real = page.screenshot
+
+    def spy(**kw):
+        seen["masked"] = sum(loc.count() for loc in kw.get("mask", []))
+        return real(**kw)
+
+    page.screenshot = spy
+    receipt = Receipt(paths, 1, datetime.now(UTC))
+    receipt.snapshot(page, "error")
+    assert seen["masked"] == 4 and (receipt.dir / "error.png").exists()
+    html = (receipt.dir / "error.html").read_text(encoding="utf-8")
+    for secret in ("482913", "revealed-secret", "CANARY"):
+        assert secret not in html
+    assert 'value="ada"' in html
+    receipt.snapshot(page, "blocked", screenshot=False, html=False)
+    assert not (receipt.dir / "blocked.png").exists()
+    assert not (receipt.dir / "blocked.html").exists()
+    page.close()
+
+
+@pytest.mark.browser
+def test_hidden_backing_values_of_a_picker_are_recognized(context):
+    from recrute.apply import dom
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <div class="field-wrapper select"><label for="loc">Location</label>
+        <div class="select__control"><input id="loc" role="combobox" value="Austin, TX"></div>
+        <input type="hidden" name="location_latitude" value="30.26">
+        <input type="hidden" name="location_longitude" value="-97.74"></div>
+      <label>Current city <input id="city" class="location-input" list="cities">
+        <input type="hidden" name="selectedLocation" value='{"name":"Austin"}'></label>
+      <div><label for="n">Name</label><input id="n" name="n" value="Ada">
+        <input type="hidden" name="requires_sponsorship" value="No"></div>
+    </form>""")
+    ids = {f.id for f in dom.extract_fields(page)}
+    assert not {"location_latitude", "location_longitude", "selectedLocation"} & ids
+    assert "requires_sponsorship" in ids  # next to a plain text box: still verified
+    page.close()
+
+
+@pytest.mark.browser
+def test_nameless_and_aria_checkboxes_are_verified(context):
+    from recrute.apply import dom
+    from recrute.apply.base import coverage_check, verify_fields
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <label><input type="checkbox" checked required> I consent to a background check</label>
+      <div role="checkbox" aria-checked="true" aria-label="Share my profile with partners"
+           tabindex="0" style="width:20px;height:20px"></div>
+      <div role="switch" aria-checked="true" aria-label="Marketing emails"
+           style="width:20px;height:20px"></div>
+    </form>""")
+    fields = dom.extract_fields(page)
+    assert len(fields) == 3
+    assert all(f.current in ("true", True, ["true"]) or f.current for f in fields)
+    packet = Packet(job_id=1)
+    problems = verify_fields(fields, packet, {})
+    uncovered = coverage_check(fields, packet)
+    assert set(problems) | set(uncovered) >= {f.id for f in fields}
+    page.close()
+
+
+@pytest.mark.browser
+def test_job_description_text_is_not_a_checkpoint(context):
+    from recrute.apply.adapters.linkedin_easy_apply import LinkedInEasyApplyAdapter
+
+    adapter = LinkedInEasyApplyAdapter()
+    page = context.new_page()
+    page.set_content("""<main><div class="jobs-description__content" id="job-details">
+      <p>As a Security Analyst you will investigate unusual activity and log in to our SIEM
+      to review alerts. You must be able to sign in to continue incident triage.</p></div>
+      <button aria-label="Easy Apply to Security Analyst">Easy Apply</button></main>""")
+    assert adapter.detect_blockers(page) is None
+    page.set_content("""<main><h1>Let's do a quick security check</h1>
+      <p>We noticed unusual activity on your account.</p></main>""")
+    assert adapter.detect_blockers(page) == "linkedin: security checkpoint"
+    page.close()
+
+
+@pytest.mark.browser
+def test_iframe_navigation_drops_queued_input(context, paths):
+    from recrute import live
+
+    page = context.new_page()
+    page.set_content('<input id="q"><iframe id="f" srcdoc="<p>login</p>"></iframe>')
+    live.start_session(paths)
+    live.publish_frame(paths, page)
+    target = live.page_target(page)
+    live.enqueue(paths, {"type": "click", "x": 20, "y": 10, "session": live.active_session(),
+                         "target": target})
+    live.enqueue(paths, {"type": "type", "text": "CANARY-secret",
+                         "session": live.active_session(), "target": target})
+    page.evaluate("document.getElementById('f').srcdoc = '<p>another page</p>'")
+    page.wait_for_timeout(300)
+    assert live.page_target(page) != target
+    live.apply_inputs(paths, page)
+    assert page.input_value("#q") == ""  # nothing typed after the frame changed
+    live.clear(paths)
+    page.close()

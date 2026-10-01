@@ -6,7 +6,7 @@ import re
 import unicodedata
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from markdownify import markdownify
+from recrute.htmlmd import html_to_markdown
 
 TRACKING_PARAMS = re.compile(
     r"^(utm_.*|gh_src|gh_jid_src|lever-source.*|lever-origin|source|src|ref|referrer|refid|"
@@ -44,9 +44,34 @@ def normalize_company(name: str) -> str:
     return re.sub(r"\s+", " ", _fold(LEGAL_SUFFIX.sub(" ", name))).strip()
 
 
+_LOCATION_SUFFIX = re.compile(
+    r"^\s*(remote|hybrid|on-?site|in-?office|anywhere|us|usa|u\.s\.|united states|"
+    r"north america|americas|emea|apac|nationwide)\b|,\s*[A-Z]{2}\b|\(remote|"
+    r"\b(remote|hybrid)\s*$", re.IGNORECASE)
+
+
+_SYMBOL_WORDS = [(re.compile(r"(?<![\w+#])c\+\+", re.I), " cplusplus "),
+                 (re.compile(r"(?<![\w+#])c#", re.I), " csharp "),
+                 (re.compile(r"(?<![\w+#])f#", re.I), " fsharp "),
+                 (re.compile(r"(?<![\w.])\.net\b", re.I), " dotnet ")]
+
+
+def spell_symbols(text: str) -> str:
+    """Spell out technology names that are mostly symbols, so folding punctuation away keeps
+    "C++", "C#" and "C" (and ".NET") distinct."""
+    for rx, word in _SYMBOL_WORDS:
+        text = rx.sub(word, text)
+    return text
+
+
 def normalize_title(title: str) -> str:
+    title = spell_symbols(title)
     title = re.sub(r"\((remote|hybrid|onsite|on-site|us|usa)[^)]*\)", " ", title, flags=re.I)
-    title = re.sub(r"\s[-–|]\s.*$", "", title)  # "Security Engineer - Remote" -> base title
+    # "Security Engineer - Remote (US)" -> base title, but keep specialisations
+    # ("Security Engineer - Product" and "- Infrastructure" are different openings)
+    m = re.search(r"\s[-–|]\s(?P<suf>[^-–|]+)$", title)
+    if m and _LOCATION_SUFFIX.search(m.group("suf")):
+        title = title[:m.start()]
     return _fold(title)
 
 
@@ -67,8 +92,7 @@ def description_markdown(html_text: str | None, plain: str | None) -> str:
         text = html_text
         if "&lt;" in text and "<" not in text:  # entity-escaped HTML (e.g. Greenhouse)
             text = html.unescape(text)
-        md = markdownify(text, heading_style="ATX", strip=["img", "script", "style"])
-        return re.sub(r"\n{3,}", "\n\n", md).strip()
+        return html_to_markdown(text)
     return (plain or "").strip()
 
 

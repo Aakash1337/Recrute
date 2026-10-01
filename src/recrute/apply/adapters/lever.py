@@ -92,14 +92,21 @@ class LeverAdapter(BaseAdapter):
     submit_selector = ("#btn-submit, button[data-qa=btn-submit], "
                        "#application-form button[type=submit]")
     key_prefer = ("name", "id")
+    # each question card carries its serialized definition (the questions, not answers)
+    transport_fields = (r"cards\[[0-9a-f-]+\]\[baseTemplate\]",)
     aliases: ClassVar[dict[str, list[str]]] = {}
     confirm_url_re = re.compile(r"/(thanks|confirmation)\b", re.I)
 
     def start_url(self, job: Job) -> str:
+        """The /apply form for a posting URL, keeping any query/fragment (tracking links such
+        as ?lever-source=LinkedIn)."""
+        from urllib.parse import urlsplit, urlunsplit
+
         url = job.apply_url
-        if "lever.co" in url and not url.rstrip("/").endswith("/apply"):
-            url = url.rstrip("/") + "/apply"
-        return url
+        parts = urlsplit(url)
+        if "lever.co" in parts.netloc and not parts.path.rstrip("/").endswith("/apply"):
+            parts = parts._replace(path=parts.path.rstrip("/") + "/apply")
+        return urlunsplit(parts)
 
     def fetch_questions(self, job: Job, http: Http | None, *, page: Page | None = None,
                         ) -> list[FormQuestion]:

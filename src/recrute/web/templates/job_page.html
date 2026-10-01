@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} · Recrute{% endblock %}
+{% block content %}
+<p><a href="/queue">← review queue</a></p>
+<div class="pane" style="max-height:none">{% include "_job_detail.html" %}</div>
+<p id="decision-result"></p>
+{% endblock %}
+{% block scripts %}
+<script>
+  window.recruteDecide = function (action, reason) {
+    const values = {action: action};
+    if (reason) values.reason = reason;
+    htmx.ajax('POST', '/jobs/{{ job.id }}/decide', {target: '#decision-result', values: values});
+  };
+</script>
+{% endblock %}

@@ -1,24 +1,7 @@
 import pytest
-from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
 HX = {"HX-Request": "true"}
-
-
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("RECRUTE_HOME", str(tmp_path))
-    from recrute import db
-    from recrute.config import get_config
-    from recrute.web import app as app_module
-
-    db.get_engine.cache_clear()
-    get_config.cache_clear()
-    app_module.access_token.cache_clear()
-    with TestClient(app_module.app) as c:
-        yield c
-    db.get_engine.cache_clear()
-    app_module.access_token.cache_clear()
 
 
 def seed_job(**kw):
@@ -143,3 +126,11 @@ def test_snoozed_jobs_do_not_consume_queue_limit(client):
     visible = seed_job(title="visible", score=10)
     with Session(get_engine()) as s:
         assert [j.id for j, _ in queue(s, limit=1)] == [visible]
+
+
+@pytest.mark.parametrize("path", ["/", "/packets", "/queue", "/live", "/login"])
+def test_ui_pages_cannot_be_framed(client, path):
+    r = client.get(path, headers={"Sec-Fetch-Dest": "iframe",
+                                  "Referer": "https://evil.example/"})
+    assert r.headers["X-Frame-Options"] == "DENY"
+    assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]

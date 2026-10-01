@@ -95,7 +95,20 @@ class AshbyAdapter(BaseAdapter):
             return parse_form(data)
         return super().fetch_questions(job, http, page=page)
 
-    def postprocess(self, fields: list[LiveField]) -> list[LiveField]:
-        # Only real questions live inside [data-field-path]; the "autofill from resume" drop
-        # zone at the top has no path (uploading there would overwrite typed answers).
-        return [f for f in fields if not re.fullmatch(r"field_\d+(#\d+)?", f.id)]
+    AUTOFILL_ROOT = ".ashby-application-form-autofill-input-root"
+
+    def read_form(self, page: Page) -> list[LiveField]:
+        # The "autofill from resume" drop zone at the top is not a question (uploading there
+        # would overwrite typed answers): drop ONLY that file input, positively identified in
+        # the DOM. Every other control, named or not, stays subject to coverage/verification.
+        fields = super().read_form(page)
+        root = self.form_root(page)
+        return [f for f in fields if not (f.type == "file" and self._in_autofill(root, f))]
+
+    def _in_autofill(self, root: Any, f: LiveField) -> bool:
+        try:
+            return bool(root.evaluate(
+                "([s, box]) => { const e = document.querySelector(s);"
+                " return !!(e && e.closest(box)); }", [f.selector, self.AUTOFILL_ROOT]))
+        except Exception:  # noqa: BLE001 - unknown: keep the field (safe side)
+            return False

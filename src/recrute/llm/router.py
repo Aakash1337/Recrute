@@ -8,7 +8,7 @@ from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from recrute.config import Config
 from recrute.llm.base import LLMError, LLMRequest, Provider, RateLimitedError
@@ -70,13 +70,17 @@ class LLMRouter:
                 pass  # stale/invalid cache entry: ask again
 
         errors: list[str] = []
+        limited = 0  # providers skipped/failed only because of subscription usage limits
+        tried = 0
         for route in self.config.llm.route(task):
             provider = self.providers.get(route.provider)
             if provider is None:
                 errors.append(f"{route.provider}: not configured")
                 continue
+            tried += 1
             if self._cooling_down(route.provider):
                 errors.append(f"{route.provider}: cooling down after usage limit")
+                limited += 1
                 continue
             req = LLMRequest(prompt=prompt, schema=schema, system=system, model=route.model)
             try:
@@ -91,11 +95,16 @@ class LLMRouter:
                              rate_limited=isinstance(e, RateLimitedError))
                 log.warning("LLM %s failed on %s: %s", task, route.provider, e)
                 errors.append(str(e))
+                limited += isinstance(e, RateLimitedError)
                 continue
             self._record(task, route.provider, key, ok=True, response=result.output,
                          duration_ms=result.duration_ms)
             return result.output
-        raise LLMError(f"all providers failed for task {task!r}: " + " | ".join(errors))
+        message = f"all providers failed for task {task!r}: " + " | ".join(errors)
+        if tried and limited == tried:
+            # only quota is the problem: retryable later, not a failure of the work itself
+            raise RateLimitedError(message)
+        raise LLMError(message)
 
     def _cached(self, key: str) -> Any:
         with self.session_factory() as s:
@@ -106,18 +115,31 @@ class LLMRouter:
             return row.response if row else None
 
     def _cooling_down(self, provider: str) -> bool:
-        since = utcnow() - RATE_LIMIT_COOLDOWN
+        """In cooldown after a rate limit within the last RATE_LIMIT_COOLDOWN, unless a call
+        that STARTED after that rate limit has since succeeded (quota is back). A request that
+        was already running when the limit hit, finishing later, proves nothing."""
+        now = utcnow()
+        since = now - RATE_LIMIT_COOLDOWN
+
+        def aware(dt):
+            return dt if dt.tzinfo else dt.replace(tzinfo=now.tzinfo)  # SQLite drops tzinfo
+
         with self.session_factory() as s:
-            last = s.exec(
-                select(LLMCall).where(LLMCall.provider == provider)
+            limited = s.exec(
+                select(LLMCall).where(LLMCall.provider == provider,
+                                      col(LLMCall.error).startswith("RATE_LIMIT"))
                 .order_by(LLMCall.id.desc())
             ).first()
-            if last is None or last.ok or not (last.error or "").startswith("RATE_LIMIT"):
+            if limited is None or aware(limited.created_at) <= since:
                 return False
-            created = last.created_at
-            if created.tzinfo is None:  # SQLite drops tzinfo
-                created = created.replace(tzinfo=since.tzinfo)
-            return created > since
+            hit = aware(limited.created_at)
+            for ok in s.exec(select(LLMCall).where(LLMCall.provider == provider,
+                                                   LLMCall.ok == True,  # noqa: E712
+                                                   LLMCall.id > limited.id)).all():
+                started = aware(ok.created_at) - timedelta(milliseconds=ok.duration_ms or 0)
+                if started > hit:
+                    return False
+            return True
 
     def _record(self, task: str, provider: str, key: str, *, ok: bool, response: Any = None,
                 error: str | None = None, rate_limited: bool = False, duration_ms: int = 0):

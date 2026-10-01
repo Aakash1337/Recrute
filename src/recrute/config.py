@@ -69,6 +69,12 @@ class LLMConfig(BaseModel):
             "triage": ["codex", "claude:haiku"],
             "tailor": ["claude:sonnet", "codex"],
             "verify": ["claude:sonnet", "codex"],
+            "extract": ["claude:sonnet", "codex"],
+            "extract_postings": ["codex", "claude:haiku"],
+            "answers": ["claude:sonnet", "codex"],
+            "classify_email": ["codex", "claude:haiku"],
+            "followup": ["claude:sonnet", "codex"],
+            "form_map": ["claude:sonnet", "codex"],
         }
     )
 

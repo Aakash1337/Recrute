@@ -130,8 +130,13 @@ def auto_approve_reason(job: Job, packet: Packet, rule: dict) -> str | None:
         return None
     if job.score is None or job.score < int(rule.get("min_score", 101)):
         return None
+    if packet.generated_at is None or not packet.resume_pdf:
+        return None  # never verified/rendered by the packet builder
     if packet.flags:
         return None
+    if packet.resume.summary or any(e.rewrites for e in packet.resume.experience
+                                    + packet.resume.projects):
+        return None  # generated wording on the resume: a human reads it first
     if any(a.needs_review or a.source == "llm_new" for a in packet.answers):
         return None
     if packet.cover_letter:  # free-form prose always gets a human look

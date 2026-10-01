@@ -31,6 +31,7 @@ app = FastAPI(title="Recrute", version=__version__, lifespan=lifespan, docs_url=
 app.add_middleware(AccessMiddleware, token_provider=access_token)
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
-from recrute.web import views  # noqa: E402  (routes register on import)
+from recrute.web import views, views_apps  # noqa: E402  (routes register on import)
 
 app.include_router(views.router)
+app.include_router(views_apps.router)

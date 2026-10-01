@@ -56,8 +56,10 @@
     <a href="/packets" class="{{ 'active' if p.startswith('/packets') }}">Packets{% if nav and nav.packets %}<span class="count">{{ nav.packets }}</span>{% endif %}</a>
     <a href="/applications" class="{{ 'active' if p.startswith('/applications') }}">Applications{% if nav and nav.needs_human %}<span class="count" style="background:var(--warn)">{{ nav.needs_human }}</span>{% endif %}</a>
     <a href="/inbox" class="{{ 'active' if p.startswith('/inbox') }}">Inbox</a>
+    <a href="/live" class="{{ 'active' if p.startswith('/live') }}">Live browser</a>
     <a href="/filtered" class="{{ 'active' if p.startswith('/filtered') }}">Filtered</a>
     <a href="/companies" class="{{ 'active' if p.startswith('/companies') }}">Companies</a>
+    <a href="/profile" class="{{ 'active' if p.startswith('/profile') }}">Profile</a>
     <a href="/analytics" class="{{ 'active' if p.startswith('/analytics') }}">Analytics</a>
     <a href="/settings" class="{{ 'active' if p.startswith('/settings') }}">Settings</a>
   </nav>

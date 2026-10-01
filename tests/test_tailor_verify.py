@@ -164,3 +164,29 @@ def test_generated_boolean_answers_are_claims():
     verify(profile, claims, router=router)
     assert "[answer:clear] (Q: Do you hold a security clearance?)" in router.calls[0][1]
     assert "Do you hold a security clearance?: Yes" in router.calls[0][1]
+
+
+def test_verifier_sees_requirements_in_the_question_description():
+    from recrute.schemas import FormAnswer, FormQuestion
+    from recrute.tailor.verify import collect_claims
+
+    q = FormQuestion(id="py", label="Do you have experience with Python?", type="radio",
+                     options=["Yes", "No"],
+                     description="At least 10 years of paid professional Python experience "
+                                 "are required")
+    claims = collect_claims(make_profile(), answers=[FormAnswer(question_id="py", value="Yes",
+                                                                source="llm_new")],
+                            questions=[q])
+    (c,) = claims
+    assert "10 years" in c.detail and c.question == q.label
+    captured = {}
+
+    class Router:
+        def complete(self, task, prompt, **kw):
+            captured["prompt"] = prompt
+            return {"flags": []}
+
+    from recrute.tailor.verify import llm_flags
+
+    llm_flags(make_profile(), claims, Router())
+    assert "At least 10 years of paid professional Python experience" in captured["prompt"]

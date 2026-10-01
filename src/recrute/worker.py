@@ -17,6 +17,7 @@ from sqlmodel import Session
 from recrute.config import Config, get_config
 from recrute.criteria import Criteria, get_criteria
 from recrute.db import get_engine
+from recrute.errors import safe_error, safe_traceback
 from recrute.llm.router import LLMRouter, build_providers
 from recrute.models import TaskRun, utcnow
 from recrute.paths import Paths, get_paths
@@ -66,8 +67,10 @@ def run_task(ctx: Ctx, task: Task) -> dict:
     try:
         stats = task.fn(ctx) or {}
     except Exception as e:  # a failing task must not kill the worker
-        log.exception("task %s failed", task.name)
-        ok, err = False, f"{e.__class__.__name__}: {str(e)[:300]}"
+        err = safe_error(e)
+        ok = False
+        log.error("task %s failed: %s", task.name, err)
+        log.debug("task %s traceback:\n%s", task.name, safe_traceback(e))
     with ctx.session() as s:
         run = s.get(TaskRun, task.name)
         run.last_finished_at = utcnow()
@@ -103,15 +106,27 @@ def build_ctx() -> Ctx:
 
 
 def _loop(ctx: Ctx, tasks: list[Task], tick: float) -> None:
+    """Never dies: a transient failure OUTSIDE a task body (e.g. "database is locked" while
+    recording a run) is logged and retried after a bounded backoff. A task whose start was
+    recorded isn't rerun early: its due time is based on that start."""
+    failures = 0
     while not ctx.stop.is_set():
         now = utcnow()
-        for task in tasks:
-            if ctx.stop.is_set():
-                break
-            with ctx.session() as s:
-                due = is_due(s.get(TaskRun, task.name), task.every, now)
-            if due:
-                run_task(ctx, task)
+        try:
+            for task in tasks:
+                if ctx.stop.is_set():
+                    break
+                with ctx.session() as s:
+                    due = is_due(s.get(TaskRun, task.name), task.every, now)
+                if due:
+                    run_task(ctx, task)
+            failures = 0
+        except Exception as e:  # bookkeeping / due-check failure: keep the thread alive
+            failures += 1
+            log.error("worker loop error (%s); retrying: %s", threading.current_thread().name,
+                      safe_error(e))
+            ctx.stop.wait(min(300.0, tick * 2 ** min(failures, 4)))
+            continue
         ctx.stop.wait(tick)
 
 

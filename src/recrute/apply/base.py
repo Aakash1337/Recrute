@@ -20,7 +20,7 @@ from recrute.apply import dom
 from recrute.schemas import FormAnswer, FormQuestion, Packet
 
 if TYPE_CHECKING:
-    from patchright.sync_api import Frame, Page, Response
+    from patchright.sync_api import Frame, Locator, Page, Response
 
     from recrute.apply.human import Human
     from recrute.http import Http
@@ -103,6 +103,8 @@ class Adapter(Protocol):
     def fill(self, page: Page, job: Job, packet: Packet, files: Mapping[str, Path], *,
              human: Human, pause_only: bool = False) -> FillReport: ...
 
+    def prepare_submit(self, page: Page, *, human: Human) -> None: ...
+
     def submit(self, page: Page, *, human: Human) -> None: ...
 
     def form_errors(self, page: Page) -> list[str]: ...
@@ -121,6 +123,9 @@ class Adapter(Protocol):
 
 
 # --------------------------------------------------------------------------- answers & coverage
+
+
+NO_FIELDS = "_no_fields"
 
 
 def has_value(answer: FormAnswer | None) -> bool:
@@ -158,33 +163,130 @@ CONTACT_LABEL_RE = re.compile(
 
 
 def is_contact_field(q: FormQuestion) -> bool:
-    """Name / email / phone / phone country / city-location, by label, as plain inputs."""
+    """Name / email / phone / phone country / city-location, by label, as plain inputs, and
+    with NO instructions: "Email" + "use your current employer's work email" (or a reference's
+    email) is a different question."""
     if q.type in ("file", "checkbox", "multiselect", "textarea", "radio"):
+        return False
+    if (q.description or "").strip():
         return False
     return bool(CONTACT_LABEL_RE.fullmatch(dom.norm(q.label)))
 
 
-def prefill_ok(q: FormQuestion, accept_prefilled: bool) -> bool:
-    """May a value already on the page stand without an approved answer?"""
-    return (accept_prefilled and is_contact_field(q)
-            and getattr(q, "current", None) not in (None, "", []))
+def prefill_ok(q: FormQuestion, accept_prefilled: bool, packet: Packet | None = None,
+               aliases: Mapping[str, Sequence[str]] = {}) -> bool:
+    """May a value already on the page stand without an approved answer? No: every value that
+    is submitted must be one you approved at CP2 (PLAN 3.7), contact details included. Sites
+    that prefill contact fields (LinkedIn) get those answered in the packet instead."""
+    return False
+
+
+_FAMILY = {"text": "text", "textarea": "text", "email": "text", "tel": "text", "url": "text",
+           "number": "text", "date": "date", "select": "choice", "radio": "choice",
+           "multiselect": "multi", "checkbox": "multi", "file": "file"}
+
+
+# Words whose presence/absence is purely cosmetic in a form label.
+_COSMETIC = {"please", "optional", "required", "your", "the", "a", "an", "profile", "url",
+             "link", "if", "applicable", "enter", "provide", "here"}
+# Explicit label equivalences (after normalization) that are genuinely the same field.
+_ALIASES = [{"location", "location city", "current location", "city location"},
+            {"linkedin", "linkedin profile", "linkedin url", "linkedin profile url"}]
+
+
+
+def same_question(approved: FormQuestion, live: FormQuestion) -> bool:
+    """Whether the live field still asks exactly what was approved at CP2.
+
+    Strict on purpose: labels must be equal after cosmetic normalization (case, punctuation,
+    spacing, required-markers) and may differ only by allowlisted filler words. Any change in
+    numbers ("3 years" -> "5 years") or substantive words ("Python" -> "Python and Java") makes
+    it a new question that goes to CP3."""
+    fa = _FAMILY.get(approved.type, approved.type)
+    fl = _FAMILY.get(live.type, live.type)
+    if fa != fl:
+        pair = {fa, fl}
+        small = len(approved.options) <= 2 and len(live.options) <= 2
+        # a single checkbox rendered as a yes/no choice; free text rendered as a typeahead
+        # (autocomplete) with no fixed options
+        ok = (pair == {"multi", "choice"} and small) or (
+            pair == {"text", "choice"} and not approved.options and not live.options)
+        if not ok:
+            return False
+    a, b = dom.norm(approved.label), dom.norm(live.label)
+    if fa == fl == "file" and (_GENERIC_UPLOAD.fullmatch(b) or _GENERIC_UPLOAD.fullmatch(a)):
+        # upload widgets often expose only their button text ("Attach"); the field is identified
+        # by its id, and any instructions must still match
+        return _same_description(approved.description, live.description) or (
+            not live.description)
+    if not _same_description(approved.description, live.description):
+        # The one tolerated case: the live page shows NO description (the extractor can miss
+        # help text rendered away from the field) while the label is exactly the approved one.
+        # Added or different descriptions always count as a change.
+        if live.description or not a or a != b:
+            return False
+    if not a or not b or a == b:
+        return True
+    ca, cb = _compact(a), _compact(b)
+    if ca == cb:
+        return True  # "VeteranStatus" vs "Veteran Status"
+    ta, tb = _tokens(a), _tokens(b)
+    if any({" ".join(ta), " ".join(tb)} <= group for group in _ALIASES):
+        return True
+    if [t for t in ta if any(c.isdigit() for c in t)] != \
+            [t for t in tb if any(c.isdigit() for c in t)]:
+        return False
+    # only filler words may differ, and the remaining words must be in the same order
+    return set(ta) ^ set(tb) <= _COSMETIC and \
+        [t for t in ta if t not in _COSMETIC] == [t for t in tb if t not in _COSMETIC]
+
+
+_GENERIC_UPLOAD = re.compile(r"(attach|upload|choose( a)? file|browse|select file|add file|"
+                             r"drop files? here|drag and drop|enter manually)( file)?")
+
+# Symbols that change meaning (C++ vs C#, >= vs <=, .NET) are part of a question's identity.
+_MEANINGFUL = "+#<>=.%$/&"
+
+
+def _compact(s: str) -> str:
+    return re.sub(rf"[^a-z0-9{re.escape(_MEANINGFUL)}]", "", s)
+
+
+def _tokens(s: str) -> list[str]:
+    return re.findall(rf"[a-z0-9{re.escape(_MEANINGFUL)}]+", s)
+
+
+def _same_description(approved: str, live: str) -> bool:
+    """Descriptions must say the same thing. Added or removed help text counts as a change:
+    conditions ("with Kubernetes", "in Canada") often live there."""
+    a, b = dom.norm(approved or ""), dom.norm(live or "")
+    return a == b or _compact(a) == _compact(b)
 
 
 def resolve_answer(q: FormQuestion, packet: Packet, aliases: Mapping[str, Sequence[str]] = {},
                    ) -> FormAnswer | None:
     """The approved answer for a live question: by id, then adapter aliases (DOM id vs API id),
-    then by an exactly-equal (normalized) label among the packet's pre-fetched questions."""
+    then by an exactly-equal (normalized) label among the packet's pre-fetched questions.
+
+    An id match only counts if the live question is still the question that was approved
+    (`same_question`); a reused id with changed wording gets no answer, which sends a required
+    field to CP3 instead of submitting an answer to a question you never saw."""
+    by_id = {pq.id: pq for pq in packet.questions}
     for qid in (q.id, *aliases.get(q.id, ())):
         a = packet.answer_for(qid)
         if a is not None:
+            approved_q = by_id.get(qid)
+            if approved_q is not None and not same_question(approved_q, q):
+                return None
             return a
     want = dom.norm(q.label)
     if want:
-        for pq in packet.questions:
-            if dom.norm(pq.label) == want:
-                a = packet.answer_for(pq.id)
-                if a is not None:
-                    return a
+        # label fallback (the site changed a field's id): the approved question must still be
+        # the same question in every respect, and the match must be unambiguous
+        hits = [pq for pq in packet.questions
+                if dom.norm(pq.label) == want and packet.answer_for(pq.id) is not None]
+        if len(hits) == 1 and same_question(hits[0], q):
+            return packet.answer_for(hits[0].id)
     return None
 
 
@@ -192,17 +294,25 @@ def file_for(q: FormQuestion, packet: Packet, files: Mapping[str, Path],
              aliases: Mapping[str, Sequence[str]] = {}) -> Path | None:
     """File to upload for a file question: an explicit packet answer naming a role/path wins,
     otherwise the role inferred from the label (resume / cover letter)."""
+    if identity_changed(q, packet, aliases):
+        return None
     a = resolve_answer(q, packet, aliases)
     if a is not None and has_value(a) and isinstance(a.value, str):
+        # the answer names a role, or the packet's own file: always the RESOLVED (verified)
+        # path from `files`, never a path looked up on its own (e.g. relative to the cwd)
         v = a.value.strip()
         if v in files:
             return files[v]
-        if Path(v).suffix and Path(v).exists():
-            return Path(v)
+        named = {packet.resume_pdf: "resume", packet.cover_letter_pdf: "cover_letter"}
+        if v in named and v:
+            return files.get(named[v])
+        if Path(v).suffix:
+            return next((p for p in files.values() if Path(v).is_absolute()
+                         and Path(v) == p), None)
     role = file_role(q)
     if a is not None and a.value is False:
         return None
-    if role and role in files:
+    if role and role in files and (a is not None or _implicit_upload_ok(q)):
         return files[role]
     return None
 
@@ -216,20 +326,44 @@ def _packet_file_roles(packet: Packet) -> set[str]:
     return roles
 
 
+def identity_changed(q: FormQuestion, packet: Packet,
+                     aliases: Mapping[str, Sequence[str]] = {}) -> bool:
+    """True when the live field corresponds to an approved question (same id/alias, or same
+    label) that no longer asks the same thing. Such a field must never fall back to any other
+    kind of match (e.g. an inferred resume upload): it goes to CP3."""
+    by_id = {pq.id: pq for pq in packet.questions}
+    for qid in (q.id, *aliases.get(q.id, ())):
+        if qid in by_id and not same_question(by_id[qid], q):
+            return True
+    want = dom.norm(q.label)
+    return bool(want) and any(dom.norm(pq.label) == want and not same_question(pq, q)
+                              for pq in packet.questions)
+
+
+def _implicit_upload_ok(q: FormQuestion) -> bool:
+    """An upload may be matched by role (resume / cover letter) only when it's a plain request:
+    extra instructions (e.g. "include your salary history") need you."""
+    return not (q.description or "").strip()
+
+
 def question_covered(q: FormQuestion, packet: Packet, *,
                      aliases: Mapping[str, Sequence[str]] = {},
                      accept_prefilled: bool = False,
                      files: Mapping[str, Path] | None = None) -> bool:
     if q.type == "file":
+        if identity_changed(q, packet, aliases):
+            return False
         a = resolve_answer(q, packet, aliases)
         if a is not None and has_value(a) and a.value is not False:
             return True
+        if not _implicit_upload_ok(q):
+            return False
         role = file_role(q)
         roles = set(files) if files is not None else _packet_file_roles(packet)
         return role in roles
     a = resolve_answer(q, packet, aliases)
     if not has_value(a):
-        return prefill_ok(q, accept_prefilled)
+        return prefill_ok(q, accept_prefilled, packet, aliases)
     assert a is not None
     # Typeahead widgets don't expose options until opened; fall back to the option list that
     # was fetched ahead of CP2 (same id), so the value is still validated before filling.
@@ -301,6 +435,21 @@ def verify_fields(fields: Sequence[LiveField], packet: Packet, files: Mapping[st
     problems: dict[str, str] = {}
     for f in fields:
         cur = f.current
+        if f.widget == "custom":
+            if f.required or cur not in (None, "", []):
+                problems[f.id] = "custom control we can't verify (needs you)"
+            continue
+        if f.widget == "hidden_value":
+            if f.type == "file":  # a hidden upload input: must hold exactly the approved file
+                path = file_for(f, packet, files, aliases)
+                if path is None or cur != path.name:
+                    problems[f.id] = f"a hidden upload holds {cur!r}, not the approved file"
+                continue
+            a = resolve_answer(f, packet, aliases)
+            if not has_value(a) or not value_matches(f, cur, a.value):
+                problems[f.id] = ("a hidden field would submit a value you didn't approve: "
+                                  f"{str(cur)[:60]!r}")
+            continue
         if f.widget == "file" or f.type == "file":
             path = file_for(f, packet, files, aliases)
             if path is not None and cur != path.name:
@@ -313,7 +462,7 @@ def verify_fields(fields: Sequence[LiveField], packet: Packet, files: Mapping[st
             assert a is not None
             if not value_matches(f, cur, a.value):
                 problems[f.id] = f"shows {cur!r}, approved {a.value!r}"
-        elif cur not in (None, "", []) and not prefill_ok(f, accept_prefilled):
+        elif cur not in (None, "", []) and not prefill_ok(f, accept_prefilled, packet, aliases):
             problems[f.id] = f"unapproved value present: {cur!r}"
     return problems
 
@@ -355,6 +504,13 @@ class BaseAdapter:
     submit_selector: str = "button[type=submit], input[type=submit]"
     key_prefer: tuple[str, ...] = ("id", "name")
     container_key_attr: str | None = None
+    # a single-page ATS form always has fields: reading none means it wasn't verified.
+    # (Multi-step flows whose review step has no fields validate that step themselves.)
+    requires_fields: ClassVar[bool] = True
+    # CSS selector of custom controls this adapter verifies with its own dedicated check
+    adapter_verified: ClassVar[str] = ""
+    # names (regex, full match) of this site's hidden metadata inputs: never answers
+    transport_fields: tuple[str, ...] = ()
     aliases: ClassVar[dict[str, list[str]]] = {}
     blocker_patterns: ClassVar[tuple[tuple[str, str], ...]] = ()
     confirm_text_re: re.Pattern[str] = CONFIRM_TEXT_RE
@@ -446,7 +602,9 @@ class BaseAdapter:
         root = self.form_root(page)
         return self.postprocess(dom.extract_fields(root, scope=self.form_selector,
                                                    prefer=self.key_prefer,
-                                                   container_key_attr=self.container_key_attr))
+                                                   container_key_attr=self.container_key_attr,
+                                                   transport=self.transport_fields,
+                                                   ignore=self.adapter_verified))
 
     def postprocess(self, fields: list[LiveField]) -> list[LiveField]:
         return fields
@@ -465,6 +623,8 @@ class BaseAdapter:
         final = self.read_form(page)
         report.unmatched = self.coverage(final, packet, files)
         report.problems.update(self.verify(final, packet, files))
+        if not final and self.requires_fields:
+            report.problems[NO_FIELDS] = "no form fields found: the form could not be verified"
         report.ready_to_submit = not (report.unmatched or report.failed or report.problems)
         return report
 
@@ -484,7 +644,10 @@ class BaseAdapter:
                 report.notes.append(f"pass {i + 1}: newly revealed {[f.id for f in fields]}")
             seen |= {f.id for f in fields}
             report.merge(fill_fields(root, fields, packet, files, human, aliases=self.aliases,
-                                     accept_prefilled=self.accept_prefilled))
+                                     accept_prefilled=self.accept_prefilled,
+                                     blocker_check=lambda: self.detect_blockers(page)))
+            if report.blocker:
+                break
             # a challenge can pop up while typing (behavioural scoring): stop right there
             if blocker := self.detect_blockers(page):
                 report.blocker = blocker
@@ -504,15 +667,25 @@ class BaseAdapter:
         fields = self.read_form(page)
         problems = {u: "required, not covered by the approved packet"
                     for u in self.coverage(fields, packet, files)}
+        if not fields and self.requires_fields:
+            # nothing was read: the form disappeared / rerendered, so nothing was verified
+            problems[NO_FIELDS] = "no form fields found: the form could not be verified"
         for k, v in self.verify(fields, packet, files).items():
             problems.setdefault(k, v)
         return problems
 
-    def submit(self, page: Page, *, human: Human) -> None:
-        root = self.form_root(page)
-        btn = root.locator(self.submit_selector).locator("visible=true").first
+    def submit_button(self, page: Page) -> Locator:
+        return self.form_root(page).locator(self.submit_selector).locator("visible=true").first
+
+    def prepare_submit(self, page: Page, *, human: Human) -> None:
+        """All human pacing BEFORE the final checks: hesitate, bring the cursor onto the
+        submit button. The runner then re-checks everything and calls submit(), which only
+        presses."""
         human.dwell()
-        human.click(btn)
+        human.move_to(self.submit_button(page))
+
+    def submit(self, page: Page, *, human: Human) -> None:
+        human.click_here(self.submit_button(page))
 
     def form_errors(self, page: Page) -> list[str]:
         try:

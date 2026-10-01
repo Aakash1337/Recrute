@@ -103,6 +103,7 @@ def parse_jobs(payload: dict[str, Any], token: str, company: str | None = None) 
 
 
 class GreenhouseSource(BoardSource):
+    jobs_key = "jobs"
     name = "greenhouse"
 
     def fetch_board(self, ctx: SourceContext, company: CompanyRef) -> Any:

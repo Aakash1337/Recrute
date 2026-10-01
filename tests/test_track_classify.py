@@ -107,10 +107,24 @@ def test_classify_batches_and_maps_indices():
     assert len(router.calls) == 3
     assert all(c[0] == "classify_email" and c[2] is CLASSIFY_SCHEMA for c in router.calls)
     assert len(out) == 12
+    # every batch omitted one email: incomplete answers are unresolved (retried later), never
+    # silently stored as "other"
+    assert out == [None] * 12
+
+
+def test_complete_batches_map_indices():
+    msgs = [msg(str(i), "no-reply@greenhouse.io", f"Application {i}") for i in range(7)]
+
+    def responder(prompt):
+        idx = [int(x) for x in re.findall(r"### EMAIL (\d+)", prompt)]
+        return {"results": [{"index": i, "kind": "confirmation", "company": f"C{i}",
+                             "job_title": "", "confidence": 1.7, "summary": "ok"}
+                            for i in reversed(idx)]}
+
+    out = classify_messages(FakeRouter(responder), msgs, batch_size=5)
     assert out[0].kind == "confirmation" and out[0].company == "C0"
     assert out[0].confidence == 1.0  # clamped
-    assert out[4].kind == "other" and out[4].confidence == 0.0  # missing -> other
-    assert out[10].company == "C0"  # indices are per batch
+    assert out[5].company == "C0"  # indices are per batch
 
 
 def test_prompt_contains_email_and_injection_warning():
@@ -395,3 +409,189 @@ def test_interleaved_mark_ghosted_loses_to_reply(engine, db):
         assert s.get(Job, db["soc"]).status == JobStatus.INTERVIEWING
         assert not s.exec(select(StatusEvent).where(
             StatusEvent.status == JobStatus.GHOSTED)).all()
+
+
+def test_confirmed_email_records_manual_submission(engine):
+    from datetime import UTC, datetime
+
+    from recrute.models import Application, EmailEvent, Job, JobStatus
+    from recrute.track.classify import confirm_event
+    from recrute.track.reminders import application_states
+
+    with Session(engine) as s:
+        job = Job(title="SOC Analyst", apply_url="u", canonical_url="u",
+                  status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.flush()
+        ev = EmailEvent(message_id="<m1>", job_id=job.id, kind="confirmation",
+                        received_at=datetime(2026, 9, 20, tzinfo=UTC), subject="Thanks")
+        s.add(ev)
+        s.commit()
+        assert confirm_event(s, ev.id)
+        app = s.exec(select(Application).where(Application.job_id == job.id)).one()
+        assert app.submitted_at is not None
+        assert any(st.job_id == job.id for st in application_states(s))
+
+
+@pytest.mark.parametrize("subject,text", [
+    ("Your sign-in code", "Use 482913 to sign in to Workday."),
+    ("Reset your password", "Click https://acme.myworkday.com/reset?token=CANARYTOKEN"),
+    ("Verify your email", "Confirm your email address to continue."),
+])
+def test_auth_mail_never_reaches_the_llm(subject, text):
+    from recrute.track.classify import prefilter
+
+    assert not prefilter(msg("a", "no-reply@myworkday.com", subject, text))
+
+
+def test_secrets_are_redacted_from_relevant_mail():
+    router = FakeRouter(lambda p: {"results": []})
+    body = ("Thanks for applying to Security Engineer. Track your application: "
+            "https://acme.greenhouse.io/status?token=CANARY1 . Your candidate PIN: CANARY42 "
+            "Reference 12345678. Session aBcDeFgHiJkLmNoPqRsTuVwXyZ0123")
+    classify_messages(router, [msg("1", "no-reply@greenhouse.io", "Application received", body)])
+    prompt = router.calls[0][1]
+    assert "CANARY" not in prompt and "12345678" not in prompt and "aBcDeFgHiJ" not in prompt
+    assert "Security Engineer" in prompt and "[link to acme.greenhouse.io]" in prompt
+
+
+@pytest.mark.parametrize("link", ["https://assess.example/invite/Ab12Cd34Ef56Gh78",
+                                  "https://user:CANARYPW@status.example/app/Xy12",
+                                  "http://tests.example/t/CANARYshort"])
+def test_links_never_reach_the_llm_beyond_their_host(link):
+    router = FakeRouter(lambda p: {"results": []})
+    classify_messages(router, [msg("1", "no-reply@greenhouse.io", "Complete your assessment",
+                                   f"Start here: {link} Good luck!")])
+    prompt = router.calls[0][1]
+    assert "CANARY" not in prompt and "Ab12Cd34" not in prompt and "Xy12" not in prompt
+    assert "[link to " in prompt and "Good luck!" in prompt
+
+
+def test_old_email_does_not_update_a_newer_application(engine, db):
+    from datetime import timedelta
+
+    from recrute.models import Application
+    from recrute.track.classify import process_messages
+
+    now = datetime.now(UTC)
+    with Session(engine) as s:
+        s.add(Application(job_id=db["ml"], channel="greenhouse",
+                          submitted_at=now - timedelta(days=1)))
+        s.commit()
+        old = MailMessage(message_id="<old>", date=now - timedelta(days=10),
+                          sender="talent@neuralwidgets.example", subject="Update on ML Engineer",
+                          text="We will not be moving forward.")
+        router = FakeRouter(lambda p: {"results": [{
+            "index": 0, "kind": "rejection", "company": "Neural Widgets",
+            "job_title": "ML Engineer", "confidence": 0.99, "summary": "rejected"}]})
+        process_messages(s, router, [old])
+        assert s.get(Job, db["ml"]).status == JobStatus.INTERVIEWING  # unchanged
+        ev = s.exec(select(EmailEvent)).one()
+        assert ev.job_id == db["ml"] and not ev.confirmed  # suggested, for you to confirm
+
+
+@pytest.mark.parametrize("subject,auto", [
+    ("Your application for ML Engineer at Neural Widgets", True),
+    ("Your application for Senior Applied ML Engineer", False),
+    ("Your application for ML Engineer, Robotics Platform", False),
+])
+def test_subject_title_must_be_complete_for_a_confident_match(engine, db, subject, auto):
+    from recrute.track.classify import AUTO_APPLY_THRESHOLD
+
+    with Session(engine) as s:
+        job_id, conf = match_job(s, cls("rejection", "Neural Widgets"),
+                                 "talent@neuralwidgets.example", subject)
+        assert job_id == db["ml"] and (conf >= AUTO_APPLY_THRESHOLD) is auto
+
+
+def test_credentials_in_assessment_invites_are_redacted():
+    router = FakeRouter(lambda p: {"results": []})
+    body = ("Hi Ada, please complete the Security Engineer assessment for Acme.\n"
+            "Sign in using these credentials:\n"
+            "Username: ada.lovelace@example.com\n"
+            "Temporary password: AuditCanary123!\n"
+            "Your PIN is 90210CANARY. Access code - CANARYCODE\n"
+            "Good luck!")
+    m = msg("1", "support@hackerrank.com", "Complete your Acme assessment", body)
+    assert prefilter(m)  # still tracked as an assessment...
+    classify_messages(router, [m])
+    prompt = router.calls[0][1]
+    assert "CANARY" not in prompt and "AuditCanary" not in prompt  # ...without the secrets
+    assert "Temporary password: [redacted]" in prompt and "Good luck!" in prompt
+
+
+@pytest.mark.parametrize("line", [
+    "Your temporary password is: CANARY!42",
+    "Your verification code is: 1234",
+    "Your PIN is 9021",
+    "Password for your assessment - CANARYpw",
+    "Login: CANARYuser",
+    "Your one-time passcode is CANARY77",
+    "Temporary password \u2014 CANARYem",
+    "Access code \u2015 CANARYbar",
+    "Password CANARYnosep",
+    "Your password (case sensitive) | CANARYpipe",
+])
+def test_credential_phrasings_never_reach_the_llm(line):
+    router = FakeRouter(lambda p: {"results": []})
+    m = msg("1", "support@hackerrank.com", "Complete your Acme assessment",
+            f"Please complete your assessment for Acme.\n{line}\nGood luck!")
+    classify_messages(router, [m])
+    prompt = router.calls[0][1]
+    assert "CANARY" not in prompt and "1234" not in prompt and "9021" not in prompt
+    assert "[redacted]" in prompt and "Good luck!" in prompt
+
+
+def test_newer_uncertain_submission_is_matched_but_never_auto_updated(engine):
+    from recrute.models import Application
+    from recrute.track.classify import AUTO_APPLY_THRESHOLD, process_messages
+
+    with Session(engine) as s:
+        c = Company(name="Globex", domain="globex.example")
+        s.add(c)
+        s.flush()
+        old = Job(company_id=c.id, title="Security Engineer", apply_url="u1",
+                  canonical_url="g1", status=JobStatus.APPLIED)
+        new = Job(company_id=c.id, title="Security Engineer", apply_url="u2",
+                  canonical_url="g2", status=JobStatus.NEEDS_HUMAN)
+        s.add_all([old, new])
+        s.flush()
+        s.add(Application(job_id=new.id, channel="greenhouse",
+                          outcome={"status": "needs_human",
+                                   "details": {"submit_attempted": True}}))
+        s.commit()
+        job_id, conf = match_job(s, cls("rejection", "Globex", "Security Engineer"),
+                                 "talent@globex.example", "Update on Security Engineer")
+        assert conf < AUTO_APPLY_THRESHOLD  # two applications fit: you decide which
+        router = FakeRouter(lambda p: {"results": [{
+            "index": 0, "kind": "rejection", "company": "Globex",
+            "job_title": "Security Engineer", "confidence": 0.99, "summary": "no"}]})
+        process_messages(s, router, [msg("r", "talent@globex.example",
+                                         "Update on Security Engineer", "Not moving forward.")])
+        assert s.get(Job, old.id).status == JobStatus.APPLIED  # not declined by mistake
+
+
+def test_vague_reply_about_an_unconfirmed_submission_is_not_skipped(engine):
+    from recrute.models import Application
+    from recrute.track.classify import process_messages
+
+    with Session(engine) as s:
+        c = Company(name="Initech", domain="initech.example")
+        s.add(c)
+        s.flush()
+        job = Job(company_id=c.id, title="Security Engineer", apply_url="u",
+                  canonical_url="i1", status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.flush()
+        s.add(Application(job_id=job.id, channel="greenhouse",
+                          outcome={"status": "needs_human",
+                                   "details": {"submit_attempted": True}}))
+        s.commit()
+        router = FakeRouter(lambda p: {"results": [{
+            "index": 0, "kind": "interview", "company": "Initech", "job_title": "",
+            "confidence": 0.9, "summary": "wants a chat"}]})
+        process_messages(s, router, [msg("v", "jane@initech.example", "Hello",
+                                         "Would you have time for a quick chat this week?")])
+        assert len(router.calls) == 1  # classified, not silently skipped
+        ev = s.exec(select(EmailEvent)).one()
+        assert ev.job_id == job.id and not ev.confirmed  # suggested; you confirm it

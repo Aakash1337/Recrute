@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Packets · Recrute{% endblock %}
+{% block content %}
+<p class="muted">CP2: review each application packet (focused resume, cover letter if needed, every form answer), then press <b>Go ahead</b>.</p>
+{% if profile_missing %}<p class="warn">No structured profile yet: add your mega resume to <code>resources/resume/</code> and ingest it on the <a href="/profile">Profile</a> page. Packets can't be built until then.</p>{% endif %}
+{% if building %}<p class="muted">Building {{ building | length }} packet(s)…</p>{% endif %}
+<table>
+  <tr><th>job</th><th>new answers</th><th>flags</th><th></th></tr>
+  {% for job, company, p in items %}
+  {% set blocks = p.flags | selectattr('severity', 'equalto', 'block') | list %}
+  <tr>
+    <td><a href="/packets/{{ job.id }}"><b>{{ job.title }}</b></a><br>{% include "_job_row_meta.html" %}</td>
+    <td>{{ p.answers | selectattr('needs_review') | list | length }}</td>
+    <td>{% if blocks %}<span class="flag-block">{{ blocks | length }} blocking</span>{% endif %} {{ (p.flags | length) - (blocks | length) }} warn</td>
+    <td><a class="btn" href="/packets/{{ job.id }}">Review</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="muted">No packets waiting.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

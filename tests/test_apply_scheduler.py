@@ -670,6 +670,7 @@ def gate_runner(before=None, status_if_ok="submitted"):
         calls.append({"job_id": job_.id, "packet": packet})
         if before:
             before()
+        calls[-1]["job_url"] = job_.apply_url  # what the runner would navigate to now
         why = kw["pre_submit_check"]()
         calls[-1]["gate"] = why
         if why:
@@ -871,3 +872,95 @@ def test_company_cooldown(session, paths):
     assert blocked_companies(ev, now) == {1, 2}
     assert blocked_companies(ev, now, cap=2) == set()
     assert blocked_companies(ev, now, cooldown=timedelta(days=1)) == {2}
+
+
+def test_company_cap_zero_is_rejected_or_blocks_everything(engine):
+    from datetime import UTC, datetime
+
+    import pytest
+    from sqlmodel import Session
+
+    from recrute.apply.scheduler import cap_block_reason
+    from recrute.models import Company, Job, Setting
+    from recrute.settings import set_setting
+
+    with Session(engine) as s:
+        with pytest.raises(ValueError):
+            set_setting(s, "company_cap", 0)
+        s.add(Setting(key="company_cap", value=0))  # stored by an older version
+        c = Company(name="Fresh Co")
+        s.add(c)
+        s.flush()
+        job = Job(title="t", apply_url="u", canonical_url="c", company_id=c.id)
+        s.add(job)
+        s.commit()
+        # a company with no application history is still blocked by a zero cap
+        assert cap_block_reason(s, datetime.now(UTC), app_id=None, job=job,
+                                channel="greenhouse") == "deferred: company cap is 0"
+
+
+@pytest.mark.parametrize("revoke", [True, False])
+def test_target_change_during_an_attempt_stops_the_submit(engine, session, paths, revoke):
+    from recrute.models import Application, Job
+    from recrute.pipeline.ingest import _retarget_unsent_application
+
+    graduate(session)
+    app, job = add_app(session, 1)
+    make_due(session, app, at(12))
+    job_id, old_url = job.id, job.apply_url
+
+    def retarget():  # discovery moves the posting to another form meanwhile
+        with Session(engine) as other:
+            j = other.get(Job, job_id)
+            j.apply_url = "https://boards.greenhouse.io/acme/jobs/999"
+            j.ats_job_id = "999"
+            if revoke:  # (what ingestion does) ...and without it the gate still catches it
+                _retarget_unsent_application(other, j)
+            other.add(j)
+            other.commit()
+
+    runner = gate_runner(before=retarget)
+    res = run_due(session, page_factory=None, paths=paths, now=at(12), runner=runner,
+                  min_gap=timedelta(0))
+    assert runner.calls[0]["gate"] is not None
+    assert res.outcome.status == "needs_human"
+    assert runner.calls[0]["job_url"] == old_url  # the runner never saw the new form
+    if revoke:
+        with Session(engine) as s:
+            assert s.exec(select(Application).where(Application.job_id == job_id)).one() \
+                .approved_at is None
+    # recovery: the job is with you, nothing was sent, and the packet can be rebuilt for the
+    # new form (it then needs a fresh CP2 approval)
+    from recrute import packets
+
+    with Session(engine) as s:
+        assert s.get(Job, job_id).status == JobStatus.NEEDS_HUMAN
+        if not revoke:  # (the gate alone doesn't revoke; you'd regenerate after reviewing)
+            return
+        packets.rebuild(s, job_id)
+        assert s.get(Job, job_id).status == JobStatus.SHORTLISTED
+
+
+def test_late_finalize_keeps_a_newer_request_and_submission_evidence(session):
+    from recrute.apply.scheduler import finalize
+
+    app, job = add_app(session, 1, status=JobStatus.NEEDS_HUMAN)
+    # the attempt was recovered (its lease expired) and you then asked for a pre-fill
+    app.outcome = {"status": "needs_human", "assist_requested": "tok9",
+                   "details": {"attempt_id": "recovery", "submit_attempted": False}}
+    session.add(app)
+    session.commit()
+
+    class LostLease:
+        def held(self):
+            return False
+
+    late = ApplyOutcome(status="needs_human", reason="error after submit was clicked",
+                        details={"submit_attempted": True})
+    result = finalize(session, app_id=app.id, job_id=job.id, attempt_id="old", lease=LostLease(),
+                      outcome=late, adapter_name="greenhouse", max_attempts=3, now=at(12))
+    assert result.startswith("status_left_unchanged")
+    session.refresh(app)
+    assert app.outcome["assist_requested"] == "tok9"  # the newer request survives
+    assert app.outcome["details"]["submit_attempted"] is True  # never downgraded
+    assert app.outcome["late_attempts"][-1]["reason"] == "error after submit was clicked"

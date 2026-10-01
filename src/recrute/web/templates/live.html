@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Live browser · Recrute{% endblock %}
+{% block content %}
+<p class="muted">The automation browser runs on the Recrute server. When it hands a form to you
+(CP3) or you open it below, it appears here: click on the picture to click in the browser, type
+in the box to type. Press <b>Done</b> when you've finished (e.g. after submitting).</p>
+<p id="live-status" hx-get="/live/status" hx-trigger="load, every 3s"></p>
+<div style="position:relative;display:inline-block;border:1px solid var(--line)">
+  <img id="live-frame" alt="" style="max-width:100%;min-height:200px;cursor:crosshair">
+</div>
+<p>
+  <input id="live-text" placeholder="text to type into the focused field" size="50">
+  <button onclick="liveSend({type:'type', text: document.getElementById('live-text').value}); document.getElementById('live-text').value='';">Type</button>
+  {% for k in ['Enter', 'Tab', 'Backspace', 'Escape', 'ArrowDown', 'ArrowUp'] %}
+  <button onclick="liveSend({type:'key', key:'{{ k }}'})">{{ k }}</button>{% endfor %}
+  <button onclick="liveSend({type:'scroll', dy: 500})">Scroll ↓</button>
+  <button onclick="liveSend({type:'scroll', dy: -500})">Scroll ↑</button>
+  <button class="primary" onclick="liveSend({type:'done'})">Done</button>
+</p>
+<h2>Open the automation browser</h2>
+<form hx-post="/live/open" hx-target="find .result">
+  <input name="url" size="60" placeholder="https://www.linkedin.com/login" value="https://www.linkedin.com/login">
+  <button>Open</button> <span class="result"></span>
+</form>
+<p class="muted">Use this to log into LinkedIn, Google or an ATS account on the server's dedicated browser profile.</p>
+{% endblock %}
+{% block scripts %}
+<script>
+  // The session id + size come WITH each frame (response headers), so input is always bound
+  // to the picture on screen. No fresh frame -> input is ignored.
+  window.__frame = null;
+  const img = document.getElementById('live-frame');
+  // Each frame is a blob: URL. The one on screen is kept; every superseded or failed one is
+  // revoked, so a long CP3 session doesn't accumulate screenshots in memory.
+  let shownUrl = null, timer = null, stopped = false;
+  function revoke(u) { if (u) URL.revokeObjectURL(u); }
+  function show(url, meta) {
+    return new Promise(done => {
+      img.onload = () => {
+        const old = shownUrl; shownUrl = url; revoke(old);
+        window.__frame = {...meta, shownAt: meta.capturedAt}; done();
+      };
+      img.onerror = () => { revoke(url); window.__frame = null; done(); };
+      img.src = url;
+    });
+  }
+  async function loadFrame() {
+    try {
+      const r = await fetch('/live/frame', {cache: 'no-store'});
+      if (!r.ok) { window.__frame = null; return; }
+      const meta = {session: r.headers.get('X-Live-Session'),
+                    target: r.headers.get('X-Live-Target'),
+                    width: +r.headers.get('X-Live-Width'), height: +r.headers.get('X-Live-Height'),
+                    capturedAt: Date.now() - 1000 * (+r.headers.get('X-Live-Age') || 0)};
+      const blob = await r.blob();
+      if (stopped) return;
+      await show(URL.createObjectURL(blob), meta);
+    } catch (e) { window.__frame = null; }
+  }
+  async function loop() {  // one request at a time: the next starts a second after this one ends
+    await loadFrame();
+    if (!stopped) timer = setTimeout(loop, 1000);
+  }
+  loop();
+  window.addEventListener('pagehide', () => {
+    stopped = true; clearTimeout(timer); img.removeAttribute('src');
+    revoke(shownUrl); shownUrl = null;
+  });
+  window.addEventListener('pageshow', e => { if (e.persisted && stopped) { stopped = false; loop(); } });
+  function liveSend(ev) {
+    const f = window.__frame;
+    if (!f || !f.session || Date.now() - f.shownAt > 5000) return;
+    ev.session = f.session;
+    ev.target = f.target;  // the tab (and navigation) of the picture this input was made on
+    htmx.ajax('POST', '/live/input', {values: ev, swap: 'none'});
+  }
+  img.addEventListener('click', e => {
+    const f = window.__frame; if (!f) return;
+    const r = img.getBoundingClientRect();
+    const w = f.width || img.naturalWidth, h = f.height || img.naturalHeight;
+    liveSend({type: 'click', x: (e.clientX - r.left) * w / r.width, y: (e.clientY - r.top) * h / r.height});
+  });
+</script>
+{% endblock %}

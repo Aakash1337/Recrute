@@ -211,6 +211,12 @@ class LinkedInGuestSource:
         self.seen_ids = seen_ids if seen_ids is not None else set()
         self.http_factory = http_factory
         self.stats: dict[str, Any] = {"searches": 0, "details": 0, "blocked": None}  # last run
+        # Rotation through the configured queries across runs (the caller persists it): with a
+        # 10-search cap, every query still gets searched regularly, not just the first ten.
+        self.query_offset = 0
+        self.next_offset = 0
+        self.searched_ok: list[str] = []
+        self.given_up: set[str] = set()  # queries that failed too often to hold the rotation
 
     def _http(self) -> Http:
         if self.http_factory is not None:
@@ -255,8 +261,33 @@ class LinkedInGuestSource:
     def _run(self, ctx: SourceContext, http: Http) -> Iterator[RawJob]:
         cards: dict[str, Card] = {}
         tpr = self._tpr(ctx)
+        queries = [q for _, q in ctx.criteria.all_search_queries()]
+        start = self.query_offset % len(queries) if queries else 0
+        rotated = queries[start:] + queries[:start]
+        # the next run resumes at the first query that did NOT succeed (a failed or blocked
+        # query is retried, never skipped); `searched_ok` feeds per-query coverage tracking
+        self.next_offset = start
+        self.searched_ok = []
+        searched: list[str] = []
+        origin: dict[str, set[str]] = {}  # job id -> the queries that found it
+        incomplete: set[str] = set()  # queries with a posting whose details weren't fetched
+
+        def cut_short(job_id: str) -> None:
+            incomplete.update(origin.get(job_id, ()))
+
         try:
-            for _, q in ctx.criteria.all_search_queries():
+            yield from self._search_and_fetch(ctx, http, rotated, queries, tpr, cards, searched,
+                                              origin, cut_short)
+        finally:
+            # only queries ALL of whose postings were fetched in full count as covered: the
+            # rest keep their old checkpoint, so the next search still finds what was left
+            self.searched_ok = [q for q in searched if q not in incomplete]
+
+    def _search_and_fetch(self, ctx, http, rotated, queries, tpr, cards, searched, origin,
+                          cut_short) -> Iterator[RawJob]:
+        failed = False
+        try:
+            for q in rotated:
                 if self.stats["searches"] >= self.max_searches:
                     break
                 params = {"keywords": q, "location": self.location, "f_TPR": tpr, "start": 0}
@@ -265,17 +296,33 @@ class LinkedInGuestSource:
                     html = self._get(http, f"{SEARCH}?{urlencode(params)}")
                 except HttpError as e:  # e.g. 400/404 for one query: skip it
                     ctx.errors[f"linkedin_guest:{q}"] = str(e)[:300]
+                    if q in self.given_up:  # failed run after run: don't block the rotation
+                        if not failed:
+                            self.next_offset = (self.next_offset + 1) % len(queries)
+                    else:
+                        failed = True
                     continue
+                searched.append(q)
+                if not failed:
+                    self.next_offset = (self.next_offset + 1) % len(queries)
                 for c in parse_search_cards(html):
                     cards.setdefault(c.job_id, c)
+                    origin.setdefault(c.job_id, set()).add(q)
         except GuestBlocked as e:
             self._blocked(ctx, e)
+            for c in cards.values():
+                if c.job_id not in self.seen_ids:
+                    cut_short(c.job_id)
             yield from (to_rawjob(c, None) for c in cards.values())
             return
 
         pending = list(cards.values())
         for i, card in enumerate(pending):
-            if card.job_id in self.seen_ids or self.stats["details"] >= self.max_details:
+            if card.job_id in self.seen_ids:  # fetched in full on an earlier run
+                yield to_rawjob(card, None)
+                continue
+            if self.stats["details"] >= self.max_details:
+                cut_short(card.job_id)  # its details wait for a later run
                 yield to_rawjob(card, None)
                 continue
             self.stats["details"] += 1
@@ -283,11 +330,15 @@ class LinkedInGuestSource:
                 detail = parse_detail(self._get(http, DETAIL.format(id=card.job_id)))
             except GuestBlocked as e:
                 self._blocked(ctx, e)
+                for c in pending[i:]:
+                    cut_short(c.job_id)
                 yield from (to_rawjob(c, None) for c in pending[i:])
                 return
-            except HttpError as e:
+            except HttpError as e:  # retried on a later run (not marked seen)
                 log.debug("linkedin_guest detail %s: %s", card.job_id, e)
-                detail = None
+                cut_short(card.job_id)
+                yield to_rawjob(card, None)
+                continue
             self.seen_ids.add(card.job_id)
             yield to_rawjob(card, detail)
 
