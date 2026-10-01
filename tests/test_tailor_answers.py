@@ -817,16 +817,18 @@ def test_gpa_scale_qualifiers(gpa, label, desc, expected):
     assert (a.value if a else None) == expected
 
 
-@pytest.mark.parametrize("phone,expected", [("+1 415 555 0100", "United States (+1)"),
-                                            ("(415) 555-0100", "United States (+1)"),
-                                            ("+44 20 7946 0958", None), ("", None)])
-def test_phone_country_is_answered_only_for_us_numbers(phone, expected):
+@pytest.mark.parametrize("phone,location,expected", [
+    ("+1 415 555 0100", "Austin, TX", "United States (+1)"),
+    ("(415) 555-0100", "Austin, TX", "United States (+1)"),
+    ("+1 415 555 0100", "", None),  # +1 is Canada's too: where you live must say US
+    ("+44 20 7946 0958", "Austin, TX", None), ("", "Austin, TX", None)])
+def test_phone_country_is_answered_only_for_us_numbers(phone, location, expected):
     from recrute.schemas import FormQuestion, Profile
     from recrute.tailor.answer_questions import profile_answer
 
     q = FormQuestion(id="pc", label="Phone country code", type="select",
                      options=["United States (+1)", "Canada (+1)", "United Kingdom (+44)"])
-    a = profile_answer(q, Profile(name="Ada", phone=phone))
+    a = profile_answer(q, Profile(name="Ada", phone=phone, location=location))
     assert (a.value if a else None) == expected
 
 
@@ -928,7 +930,7 @@ def _real_bank():
     ("Are you legally authorized to work in the country in which this role is located?", "Yes"),
     ("Do you have the legal right to work in the country where you are applying to work?",
      "Yes"),
-    ("Do you require a work permit, visa or additional right to work support for the country "
+    ("Do you require visa sponsorship or additional right to work support for the country "
      "where you are applying to work?", "No"),
 ])
 def test_role_country_questions_for_us_only_jobs(label, expected):
@@ -1006,6 +1008,8 @@ def test_signature_date_is_today_for_review():
     (["Worldwide"], False), (["North America"], False), (["US / Canada"], False),
     (["Remote (United States | Canada)"], False), (["Americas"], False), (["Remote"], False),
     (["Austin, TX", "London"], False), ([], False),
+    (["US / Costa Rica"], False), (["Tbilisi, Georgia"], False), (["Atlanta, GA"], True),
+    (["USA - Washington DC"], True),
 ])
 def test_us_only_means_only_the_us(locations, expected):
     """Audit: 'Worldwide' / 'North America' / 'US / Canada' admit US candidates but aren't
@@ -1021,6 +1025,9 @@ def test_us_only_means_only_the_us(locations, expected):
     ("Do you not require visa support?", True),
     ("Will you require visa support?", False),
     ("Are you able to work without a work permit?", None),  # a permit isn't sponsorship
+    ("Do you currently require a work permit?", None),  # (an EAD needs no sponsor)
+    ("Do you require a work permit, visa or additional right to work support for the United "
+     "States?", None),
 ])
 def test_visa_support_polarity(label, expected):
     from recrute.tailor.answers import sponsorship_answer
@@ -1044,3 +1051,36 @@ def test_greenhouse_phone_country_comes_from_the_phone_not_residence():
     # a +1 number of someone living in Canada isn't claimed to be a US number
     canada = AnswerBank(contact=Contact(phone="+1 416 555 0100", country="Canada"))
     assert match_question(country, canada) is None
+
+
+@pytest.mark.parametrize("label,desc", [
+    ("Country (of citizenship)", ""), ("Country", "Select your country of citizenship."),
+    ("Country of birth", ""), ("State", "The state that issued your driver's license"),
+    ("Nationality", ""),
+])
+def test_residence_never_answers_citizenship_or_birthplace(label, desc):
+    """Audit: 'Country (of citizenship)' was answered with the country you live in."""
+    question = q(label, "select", [], description=desc)
+    assert match_question(question, _real_bank()) is None
+    res = answer_questions([question], profile=make_profile(), bank=_real_bank(), router=None)
+    assert res.answers[0].value is None
+
+
+def test_canadian_bank_country_is_not_overridden_by_the_profile():
+    """Audit: the bank refused a US phone country for a Canadian resident, then the profile
+    fallback supplied it anyway."""
+    from recrute.apply.adapters.greenhouse import PHONE_COUNTRY_NOTE
+    from recrute.tailor.answers import Contact
+
+    profile = make_profile()
+    profile.phone, profile.location = "+1 416 555 0100", "Austin, TX"
+    bank = AnswerBank(contact=Contact(phone="+1 416 555 0100", country="Canada"))
+    questions = [q("Country", "select", [], id="country", description=PHONE_COUNTRY_NOTE),
+                 q("Country of residence", "select", [], id="res"), q("State", id="st")]
+    a = {x.question_id: x for x in answer_questions(questions, profile=profile, bank=bank,
+                                                     router=None).answers}
+    assert a["country"].value is None and a["st"].value is None
+    assert a["res"].value == "Canada"
+    # nothing known about where you live: a +1 number isn't assumed to be a US one
+    unknown = AnswerBank(contact=Contact(phone="+1 416 555 0100"))
+    assert match_question(questions[0], unknown) is None

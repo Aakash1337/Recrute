@@ -384,11 +384,19 @@ def drafting_context(bank: AnswerBank, pending: list[FormQuestion],
     return [(k, v) for _, k, v in scored[:limit]]
 
 
+# a place field asking about something other than where you live
+_GEO_KINDS_RE = re.compile(r".*\b(country|state|province|region|nation)\b.*")
+_NOT_RESIDENCE = re.compile(r"citizen|nationalit|\bbirth|\bborn\b|passport|\bissu(ed|ing)\b|"
+                            r"\bvisa\b|\bpermit\b", re.I)
+
+
 def classify_question(q: FormQuestion) -> str | None:
     """The bank/profile field a question asks for, or None (-> grounded LLM drafting)."""
     if q.type == "file":
         return None
     core = field_core(q.label)
+    if _GEO_KINDS_RE.fullmatch(core) and _NOT_RESIDENCE.search(f"{q.label} {q.description}"):
+        return "citizenship"  # "Country (of citizenship)": residence says nothing about it
     if core == "country" and re.search(r"\b(phone|dialing|calling)\b", q.description, re.I):
         return "phone_country"  # e.g. Greenhouse's picker next to the phone number
     if q.type not in ("checkbox", "multiselect"):  # "Email me about openings" is not a field
@@ -455,11 +463,13 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
     # only questions about NEEDING sponsorship (or working without it): "are you currently
     # receiving / being sponsored", "is your employer sponsoring you" ask about a status the
     # bank doesn't hold
+    if "work permit" in t:
+        # a permit (e.g. an EAD) can be required without employer sponsorship: the bank's
+        # sponsorship flags don't say
+        return None
     # "visa support" is sponsorship in other words: the same polarity rules apply to it
-    negated = bool(_NEGATED_SPONSOR_RE.search(
-        re.sub(r"visa[^?]{0,40}?support|work permit", "sponsorship", t)))
-    if negated and "work permit" in t:
-        return None  # "able to work without a work permit?": a permit isn't sponsorship
+    negated = bool(_NEGATED_SPONSOR_RE.search(re.sub(r"visa[^?]{0,40}?support", "sponsorship",
+                                                     t)))
     if not (re.search(r"\b(?:requir\w*|need\w*|necessitat\w*)\b", t) or negated):
         return None
     if re.search(r"\b(?:receiv\w*|being sponsored|sponsored by|currently sponsored|"
@@ -722,9 +732,9 @@ _US_NAMES = {"united states", "united states of america", "usa", "us", "u.s", "u
 
 def phone_country(phone: str | None, residence: str | None = None) -> str | None:
     """The phone country for a "Phone country code" picker, from YOUR number: only a US/NANP
-    number (+1 or ten digits) is answered, and not when you live outside the US (+1 is
-    Canada's code too); anything else is left for you to pick."""
-    if residence and residence.strip().casefold().rstrip(".") not in _US_NAMES:
+    number (+1 or ten digits), and only when you're known to live in the US (+1 is Canada's
+    and the Caribbean's code too); anything else is left for you to pick."""
+    if not residence or residence.strip().casefold().rstrip(".") not in _US_NAMES:
         return None
     digits = re.sub(r"\D", "", phone or "")
     if (phone or "").strip().startswith("+"):

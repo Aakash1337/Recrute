@@ -394,6 +394,9 @@ _SIGNATURE_DATE_LABEL = re.compile(
     r"(today'?s|signature|signing) date|date (signed|of signature)", re.I)
 
 
+_GEO_KINDS = frozenset({"phone_country", "country", "us_state"})
+
+
 def _is_signature_date(q: FormQuestion, questions: list[FormQuestion]) -> bool:
     """The date next to an e-signature (EEO disability form, attestation): "Date" alone counts
     only right after a signature field."""
@@ -436,8 +439,10 @@ def answer_questions(questions: list[FormQuestion], *, profile: Profile, bank: A
                                     value=_fit_length(cover_letter_text, q.max_length),
                                     source="default", confidence=0.8, needs_review=False)
             continue
-        hit = match_question(q, bank, priority=priority,
-                             us_role=bool(job and job.us_only)) or profile_answer(q, profile)
+        hit = match_question(q, bank, priority=priority, us_role=bool(job and job.us_only))
+        if hit is None and not (bank.contact.country and classify_question(q) in _GEO_KINDS):
+            # (a country you set in the bank is not overridden by the profile's city)
+            hit = profile_answer(q, profile)
         if hit is not None:
             if q.type == "date" and hit.value not in (None, "") and parse_date(hit.value) is None:
                 # "May 2024" / "2024" is not a calendar date: never pad it with an invented day

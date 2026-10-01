@@ -68,23 +68,52 @@ def admits_us(locations: list[str] | str | None) -> bool | None:
     return False if all(v is False for v in verdicts) else None
 
 
-_US_COUNTRY = re.compile(
-    r"\b(united states( of america)?|u\.s\.a?\.?|usa|us)\b|"
-    r"\b(" + "|".join(sorted((re.escape(n.lower()) for n in US_STATES.values()), key=len,
-                             reverse=True)) + r")\b",
-    re.I,
-)
-# admit the US but aren't (only) the US
-_WIDER = re.compile(r"\b(america|americas|north america|northern america|nationwide|anywhere|"
-                    r"worldwide|world ?wide|global|international|est|pst|mst|cst|edt|pdt|"
-                    r"timezones?|time zones?)\b", re.I)
+
+_US_COUNTRY_PART = re.compile(r"(the )?(united states( of america)?|usa?|u\.s\.(a\.)?)", re.I)
+_STATE_NAMES = {n.lower(): a for a, n in US_STATES.items()}
+# words that say how/where-ish but name no other place
+_FILLER = frozenset("remote hybrid onsite on-site in-office office only based anywhere in within "
+                    "update location locations multiple various wfh fully".split())
+
+
+def _part_kind(part: str, has_country: bool) -> str:
+    """us | state | filler | other, for one comma/slash-separated piece of a location."""
+    p = " ".join(part.split())
+    words = p.lower().split()
+    if not words:
+        return "filler"
+    if all(w in _FILLER for w in words):
+        return "filler"
+    core = " ".join(w for w in p.split() if w.lower() not in _FILLER)
+    if _US_COUNTRY_PART.fullmatch(core):
+        return "us"
+    abbr = core.replace(".", "")
+    if abbr in US_STATES and abbr == abbr.upper() and len(abbr) == 2:
+        return "state"
+    name = core.lower()
+    if name in _STATE_NAMES and (name != "georgia" or has_country):  # (Georgia: the country?)
+        return "state"
+    # "Washington DC" / "Austin TX" in one piece
+    last = core.split()[-1].replace(".", "")
+    if len(core.split()) > 1 and last in US_STATES and last.isupper():
+        return "state"
+    return "other"
 
 
 def us_exclusive(loc: str) -> bool:
-    """Conservative: the location names the US (country or a state) and nothing wider or
-    foreign. "Remote - US", "Austin, TX", "New York, New York, United States" -> True;
-    "Worldwide", "North America", "US / Canada", "Remote", "Austin" -> False."""
-    rest = _US_COUNTRY.sub(" ", loc)
-    named = bool(_US_COUNTRY.search(loc) or _US_STATE_ABBR.search(loc))
-    return named and not _WIDER.search(rest) and not _FOREIGN.search(loc) \
-        and not _FOREIGN_AMERICAS.search(loc)
+    """Conservative: the location positively reads as US-only: every piece is the US, a US state,
+    a city right before its state, or a word like "Remote". "Remote - US", "Austin, TX",
+    "New York, New York, United States" -> True; "Worldwide", "North America", "US / Canada",
+    "US / Costa Rica", "Tbilisi, Georgia", "Remote", "Austin" -> False."""
+    if _FOREIGN.search(loc) or _FOREIGN_AMERICAS.search(loc):
+        return False
+    parts = [x for x in re.split(r"\s+-\s+|[,/|;()]|\s+(?:or|and|&)\s+", loc) if x.strip()]
+    has_country = any(_part_kind(x, False) == "us" for x in parts)
+    kinds = [_part_kind(x, has_country) for x in parts]
+    if not any(k in ("us", "state") for k in kinds):
+        return False
+    for i, k in enumerate(kinds):
+        # an unknown piece is only a city when its state follows it ("Austin, TX")
+        if k == "other" and not (i + 1 < len(kinds) and kinds[i + 1] == "state"):
+            return False
+    return True
