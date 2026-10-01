@@ -458,3 +458,30 @@ def test_option_fallbacks_never_change_an_answer():
     assert "y" in coverage_check([years], packet(a("y", "1")))
     shown = years.model_copy(update={"current": "10+"})
     assert "y" in verify_fields([shown], packet(a("y", "1")), {})
+
+
+def test_lever_eeo_questions_parsed_as_the_live_form_shows_them():
+    """Real Lever wraps each EEO question (label, select, option definitions) in ONE <label>:
+    its text is not the question. Mismatched labels made every EEO answer go unused."""
+    from recrute.apply.base import LiveField, same_question
+
+    html = """<form id="application-form"><div class="eeo-section">
+      <div class="application-question"><label><div class="application-label">Gender</div>
+        <div class="application-field"><select name="eeo[gender]"><option value="">Select ...
+        </option><option value="Male">Male</option><option value="Decline to self-identify">
+        Decline to self-identify</option></select></div></label></div>
+      <div class="application-question"><label><div class="application-label">Race</div>
+        <div class="application-field"><select name="eeo[race]"><option value="">Select ...
+        </option><option value="Asian">Asian</option></select></div>
+        <ul class="eeo-expandable-description" style="display: none;"><li><div>Asian</div>
+        <div class="eeo-option-description">A person having origins in the Far East.</div>
+        </li></ul></label></div>
+    </div></form>"""
+    qs = {q.id: q for q in parse_apply_html(html)}
+    assert qs["eeo[gender]"].label == "Gender"
+    assert qs["eeo[gender]"].options == ["Male", "Decline to self-identify"]
+    assert qs["eeo[race]"].label == "Race"
+    # what the live extractor reads for the same field (its hidden definitions included)
+    live = LiveField(id="eeo[race]", label="Race", type="select", options=["Asian"],
+                     description="AsianA person having origins in the Far East.")
+    assert same_question(qs["eeo[race]"], live)

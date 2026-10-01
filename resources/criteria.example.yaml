@@ -56,6 +56,7 @@ tracks:
   - security data scientist
   - detection data scientist
   - ai threat
+  - ai cybersecurity
   description_keywords:
   - adversarial machine learning
   - prompt injection
@@ -73,6 +74,7 @@ tracks:
   - soc analyst
   - soc engineer
   - cyber
+  - cybersecurity
   - infosec
   - incident response
   - threat

@@ -12,13 +12,14 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
-from recrute.apply.dom import parse_date
+from recrute.apply.dom import norm, parse_date
 from recrute.schemas import FormAnswer, FormQuestion, Profile, ResumeSelection
 from recrute.tailor.answers import (
     CONTACT_KINDS,
     SENSITIVE_KINDS,
     AnswerBank,
     classify_question,
+    country_from_city,
     drafting_context,
     field_core,
     format_value,
@@ -26,6 +27,7 @@ from recrute.tailor.answers import (
     match_option,
     match_question,
     phone_country,
+    state_from_city,
 )
 from recrute.tailor.common import (
     STR,
@@ -43,6 +45,21 @@ from recrute.tailor.cover_letter import is_cover_letter_field
 
 _RESUME_RE = re.compile(r"resume|résumé|\bcv\b|curriculum", re.IGNORECASE)
 _CONSENT_RE = re.compile(r"\b(agree|acknowledge|consent|certify|confirm|attest)\b", re.IGNORECASE)
+_POLICY_RE = re.compile(r"\b(?:privacy|policy|policies|terms|consent|acknowledg\w*|"
+                        r"read and understand|have read|agree)\b", re.IGNORECASE)
+_AGREE_OPTION = re.compile(r"^\s*(?:yes|i agree|agree|i acknowledge|acknowledge(?:d)?|"
+                           r"i accept|accept|i consent|i understand|confirm(?:ed)?|"
+                           r"acknowledge/confirm)\b", re.IGNORECASE)
+
+
+def _acknowledgement_option(q: FormQuestion) -> str | None:
+    """The single 'I agree' option of a policy acknowledgement (no 'No' alternative)."""
+    if not q.options or q.type not in ("select", "radio", "multiselect", "checkbox"):
+        return None
+    if not _POLICY_RE.search(f"{q.label} {q.description}"):
+        return None
+    agree = [o for o in q.options if _AGREE_OPTION.match(o)]
+    return agree[0] if len(agree) == 1 and len(q.options) == 1 else None
 
 
 @dataclass
@@ -145,6 +162,8 @@ def _profile_value(kind: str, profile: Profile) -> str | None:
         "phone": profile.phone or None,
         "phone_country": phone_country(profile.phone),
         "city": profile.location or None,
+        "country": country_from_city(profile.location),
+        "us_state": state_from_city(profile.location),
         "linkedin": links.get("linkedin"),
         "github": links.get("github"),
         "portfolio": links.get("portfolio") or links.get("website"),
@@ -345,7 +364,9 @@ def _llm_answers(pending: list[FormQuestion], *, profile: Profile, bank: AnswerB
         ids = [i for e in selection.experience + selection.projects for i in (e.id, *e.bullet_ids)]
     else:
         ids = list(profile.all_items())[:25]
-    common = "\n".join(f"- {k}: {truncate(v, 400)}" for k, v in drafting_context(bank, pending))
+    shown = drafting_context(bank, pending)
+    common = "\n".join(f"- {k}: {truncate(v, 400)}" for k, v in shown)
+    approved = {norm(v) for _, v in shown if norm(v)}
     note = f"USER NOTE (follow it): {user_note.strip()}\n" if user_note.strip() else ""
     prompt = ANSWER_PROMPT.format(
         note=note, title=job.title if job else "", company=f" @ {job.company}" if job and
@@ -362,12 +383,34 @@ def _llm_answers(pending: list[FormQuestion], *, profile: Profile, bank: AnswerB
     for q in pending:
         a = by_id.get(q.id)
         value = _coerce(q, a.answer) if a else None
-        answers.append(FormAnswer(question_id=q.id, value=value, source="llm_new",
-                                  confidence=0.5 if value is not None else 0.0,
+        # a previously approved answer reused VERBATIM is the user's own fact, not a new claim
+        # (the verifier only fact-checks new ones); still highlighted: it's a new question
+        reused = isinstance(value, str) and norm(value) in approved
+        answers.append(FormAnswer(question_id=q.id, value=value,
+                                  source="answer_bank" if reused else "llm_new",
+                                  confidence=0.8 if reused else 0.5 if value is not None else 0.0,
                                   needs_review=True))
         if a and value is not None:
             cited[q.id] = [i for i in a.cited_ids if i in known]
     return answers, cited
+
+
+_SIGNATURE_DATE_ID = re.compile(r"signature.?date|date.?signed|signed.?date", re.I)
+_SIGNATURE_DATE_LABEL = re.compile(
+    r"(today'?s|signature|signing) date|date (signed|of signature)", re.I)
+
+
+def _is_signature_date(q: FormQuestion, questions: list[FormQuestion]) -> bool:
+    """The date next to an e-signature (EEO disability form, attestation): "Date" alone counts
+    only right after a signature field."""
+    label = norm(q.label)
+    if q.type not in ("text", "date") or q.options:
+        return False
+    if _SIGNATURE_DATE_ID.search(q.id) or _SIGNATURE_DATE_LABEL.fullmatch(label):
+        return True
+    i = next(i for i, o in enumerate(questions) if o is q)
+    return label == "date" and i > 0 and "signature" in (
+        f"{questions[i - 1].id} {questions[i - 1].label}".lower())
 
 
 # --------------------------------------------------------------------------- entry point
@@ -399,12 +442,20 @@ def answer_questions(questions: list[FormQuestion], *, profile: Profile, bank: A
                                     value=_fit_length(cover_letter_text, q.max_length),
                                     source="default", confidence=0.8, needs_review=False)
             continue
-        hit = match_question(q, bank, priority=priority) or profile_answer(q, profile)
+        hit = match_question(q, bank, priority=priority,
+                             us_role=bool(job and job.us_only)) or profile_answer(q, profile)
         if hit is not None:
             if q.type == "date" and hit.value not in (None, "") and parse_date(hit.value) is None:
                 # "May 2024" / "2024" is not a calendar date: never pad it with an invented day
                 hit = hit.model_copy(update={"needs_review": True, "confidence": 0.3})
             done[q.id] = hit
+            continue
+        if _is_signature_date(q, questions):
+            # the date you sign the form you approve: today, in the US form order; yours to check
+            from datetime import date
+
+            done[q.id] = FormAnswer(question_id=q.id, value=date.today().strftime("%m/%d/%Y"),
+                                    source="default", confidence=0.6, needs_review=True)
             continue
         kind = classify_question(q)
         if (kind in SENSITIVE_KINDS or kind in CONTACT_KINDS or q.type == "date"
@@ -414,6 +465,12 @@ def answer_questions(questions: list[FormQuestion], *, profile: Profile, bank: A
         elif q.type == "checkbox" and not q.options and _CONSENT_RE.search(q.label):
             done[q.id] = FormAnswer(question_id=q.id, value=True, source="default",
                                     confidence=0.6, needs_review=True)
+        elif (agree := _acknowledgement_option(q)) is not None:
+            # "I have read the privacy policy" [Yes] / "Privacy Policy" [I Agree]: an
+            # acknowledgement, not a claim about you; pre-selected, and yours to confirm
+            done[q.id] = FormAnswer(question_id=q.id,
+                                    value=[agree] if q.type == "multiselect" else agree,
+                                    source="default", confidence=0.6, needs_review=True)
         else:
             pending.append(q)
     cited: dict[str, list[str]] = {}

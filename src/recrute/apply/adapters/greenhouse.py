@@ -84,7 +84,18 @@ def parse_questions(data: dict[str, Any]) -> list[FormQuestion]:
         out.append(FormQuestion(id="country", label="Country", type="select", required=True))
     for block in data.get("compliance") or []:
         for q in block.get("questions") or []:
-            _question(q, out, seen)
+            # the API labels EEO questions in CamelCase ("VeteranStatus"); the live form says
+            # "Veteran Status"
+            label = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", q.get("label") or "")
+            _question({**q, "label": label}, out, seen)
+            names = {f.get("name") for f in q.get("fields") or []}
+            if "race" in names and "hispanic_ethnicity" not in seen:
+                # the live form splits "Race" into a Hispanic/Latino question + race picker
+                seen.add("hispanic_ethnicity")
+                out.append(FormQuestion(
+                    id="hispanic_ethnicity", label="Are you Hispanic/Latino?", type="select",
+                    required=bool(q.get("required")),
+                    options=["Yes", "No", "Decline To Self Identify"]))
     demo = data.get("demographic_questions") or {}
     for q in demo.get("questions") or []:
         qid = f"demographic_{q.get('id')}"

@@ -34,6 +34,24 @@ def ease_min_jerk(t: float) -> float:
     return t * t * t * (10 - 15 * t + 6 * t * t)
 
 
+# Is the element's centre under an overlay pinned to the viewport (position fixed/sticky) that
+# isn't the element's own label/container?
+_COVERED_JS = """e => {
+  const r = e.getBoundingClientRect();
+  const x = r.x + r.width / 2, y = r.y + r.height / 2;
+  if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return false;
+  const at = document.elementFromPoint(x, y);
+  if (!at || at === e || e.contains(at) || at.contains(e)) return false;
+  if ([...(e.labels || [])].some(l => l.contains(at))) return false;
+  for (let n = at; n && n !== document.body; n = n.parentElement) {
+    if (n.contains(e)) return false;
+    const pos = getComputedStyle(n).position;
+    if (pos === 'fixed' || pos === 'sticky') return true;
+  }
+  return false;
+}"""
+
+
 def target_point(box: dict[str, float], rng: random.Random) -> Point:
     """A random point inside the element, biased toward (but rarely exactly at) the centre."""
     w, h = box["width"], box["height"]
@@ -192,7 +210,29 @@ class Human:
     # ----- scrolling
 
     def scroll_into_view(self, locator: Locator) -> None:
-        """Wheel-scroll in natural steps until the element sits comfortably in the viewport."""
+        """Wheel-scroll in natural steps until the element sits comfortably in the viewport,
+        and out from under any fixed/sticky overlay (cookie banner, sticky header/footer)."""
+        self._scroll_steps(locator)
+        self._uncover(locator)
+
+    def _uncover(self, locator: Locator) -> None:
+        """An overlay pinned to the viewport would swallow the click: move the element to
+        another part of the viewport (never dismiss or click the overlay itself)."""
+        page = locator.page
+        _, vh = self._viewport(page)
+        for frac in (0.3, 0.15, 0.55, 0.75):
+            try:
+                if not locator.evaluate(_COVERED_JS):
+                    return
+                box = locator.bounding_box()
+            except Exception:  # noqa: BLE001 - detached / navigating: the click will say
+                return
+            if box is None:
+                return
+            page.mouse.wheel(0, box["y"] - vh * frac)
+            self.pause(0.1, 0.3)
+
+    def _scroll_steps(self, locator: Locator) -> None:
         page = locator.page
         try:
             box = locator.bounding_box()

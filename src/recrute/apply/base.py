@@ -398,6 +398,18 @@ def coverage_check(questions_on_page: Sequence[FormQuestion], packet: Packet, *,
                                                    accept_prefilled=accept_prefilled, files=files)]
 
 
+# country names an approved answer may use -> the flag code a phone-country picker shows
+_COUNTRY_CODES = {"united states": "us", "united states of america": "us", "usa": "us",
+                  "us": "us", "u.s": "us", "canada": "ca", "united kingdom": "gb",
+                  "india": "in"}
+
+
+def flag_country(value: Any) -> str | None:
+    """The flag code a phone-country picker shows for an approved country ("United States",
+    "United States +1") or None."""
+    return _COUNTRY_CODES.get(dom.norm(re.sub(r"\(?\+\d+\)?", "", str(value))))
+
+
 def value_matches(f: LiveField, current: Any, value: Any) -> bool:
     """Does what the live control shows equal the approved value?"""
     empty = current in (None, "", [])
@@ -421,6 +433,9 @@ def value_matches(f: LiveField, current: Any, value: Any) -> bool:
         want = dom.resolve_option(value, f.options)
         return want is not None and dom.norm(str(current)) == dom.norm(want)
     if f.widget == "combobox":  # shows the chosen option's label (e.g. "United States +1")
+        flagged = re.fullmatch(r"\+\d{1,4} \[([a-z]{2})\]", str(current).strip())
+        if flagged:  # a phone-country picker showing "+1" and the chosen country's flag
+            return flag_country(value) == flagged.group(1)
         return dom.resolve_option(value, [str(current)]) is not None
     if f.type == "date" or f.widget == "date":
         return dom.dates_equal(value, str(current), f.hint)
@@ -609,6 +624,10 @@ class BaseAdapter:
     def postprocess(self, fields: list[LiveField]) -> list[LiveField]:
         return fields
 
+    def after_upload(self, root: Page | Frame, f: LiveField) -> None:
+        """Called after a file was attached (sites that parse it and autofill the form wait
+        here, so their autofill can't race the typing)."""
+
     def coverage(self, fields: Sequence[LiveField], packet: Packet,
                  files: Mapping[str, Path] | None = None) -> list[str]:
         return coverage_check(fields, packet, aliases=self.aliases,
@@ -645,7 +664,8 @@ class BaseAdapter:
             seen |= {f.id for f in fields}
             report.merge(fill_fields(root, fields, packet, files, human, aliases=self.aliases,
                                      accept_prefilled=self.accept_prefilled,
-                                     blocker_check=lambda: self.detect_blockers(page)))
+                                     blocker_check=lambda: self.detect_blockers(page),
+                                     after_upload=lambda f: self.after_upload(root, f)))
             if report.blocker:
                 break
             # a challenge can pop up while typing (behavioural scoring): stop right there

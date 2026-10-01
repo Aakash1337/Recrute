@@ -48,6 +48,7 @@ class Contact(_Section):
     email: str = ""
     phone: str = ""
     current_city: str = ""
+    country: str = ""  # of residence, e.g. "United States" (derived from a US city if blank)
     linkedin: str = ""
     github: str = ""
     portfolio: str = ""
@@ -268,6 +269,10 @@ _FIELD_RULES: list[tuple[str, re.Pattern[str]]] = [
         ("email", r"e-?mail( address)?"),
         ("phone_country", r"(mobile |phone )?(country|dialing|calling) (calling )?code|"
                           r"phone (number )?country( code)?"),
+        ("country", r"(current )?country( of (current )?residence)?|country you (live|reside) in|"
+                    r"(current )?country of residence"),
+        ("us_state", r"(current )?state( of residence)?|state/province|"
+                     r"(please )?select the state (where|in which) you (currently )?(reside|live)"),
         ("phone", r"((mobile|cell|home|primary) )?(phone|telephone)( number)?|"
                   r"(mobile|cell)( number)?"),
         ("linkedin", r"linked ?in( profile)?( url| link)?"),
@@ -282,7 +287,8 @@ _FIELD_RULES: list[tuple[str, re.Pattern[str]]] = [
 # Keyword rules for screening questions, in priority order.
 _SCREEN_RULES: list[tuple[str, re.Pattern[str]]] = [
     (kind, re.compile(rx)) for kind, rx in [
-        ("sponsorship", r"sponsor|h-?1b|visa support"),
+        ("sponsorship", r"sponsor|h-?1b|visa support|require[^?]{0,20}work permit|"
+                        r"visa[^?]{0,40}support"),
         ("work_auth", r"authori[sz]ed to work|legally (authori[sz]ed|eligible|permitted)|"
                       r"eligib\w* to work|right to work|work authori[sz]ation|"
                       r"employment eligibility"),
@@ -439,7 +445,7 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
     t = " ".join(label.lower().replace("*", " ").replace("’", "'").split())
     # only genuine employer-sponsorship questions; visa STATUS questions ("are you on an H-1B?")
     # and other countries' sponsorship are facts the bank doesn't have
-    if not re.search(r"sponsor", t) or re.search(
+    if not re.search(r"sponsor|work permit|visa[^?]{0,40}support", t) or re.search(
             r"\b(currently (on|hold)|do you (hold|have) an?|what is your|type of visa|"
             r"your visa (type|status))\b|canada|kingdom|\buk\b|europe|\beu\b|india|mexico|"
             r"australia|germany", t):
@@ -452,6 +458,10 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
         return None
     if re.search(r"\b(?:receiv\w*|being sponsored|sponsored by|currently sponsored|"
                  r"on (?:a |an )?(?:employer )?sponsor\w*|sponsoring you)\b", t):
+        return None
+    # "the country where this role is located / you are applying": unless the job is US-only
+    # (then localize_question already wrote "the United States"), an unknown country
+    if _ROLE_COUNTRY.search(t):
         return None
     # authorization qualifiers the bank doesn't establish: permanent / indefinite /
     # unrestricted status, any employer
@@ -651,9 +661,9 @@ _NEGATED_Q = re.compile(r"\b(not|n't|never|unable|without)\b", re.IGNORECASE)
 
 
 _PLAIN_WORK_AUTH = re.compile(
-    r"(are you |is the candidate )?(currently )?(legally )?(authori[sz]ed|eligible|permitted)"
-    r" to (work|be employed)( lawfully)? (in|for employment in|within) (the )?"
-    r"(u\.?s\.?a?|united states( of america)?)"
+    r"(?:(are you |is the candidate )?(currently )?(legally )?(authori[sz]ed|eligible|permitted)"
+    r" to (work|be employed)( lawfully)?|(do you (currently )?have )?(the )?(legal )?right to "
+    r"work) (in|for employment in|within) (the )?(u\.?s\.?a?|united states( of america)?)"
     r"( (at this time|currently|today))?", re.IGNORECASE)
 
 
@@ -683,6 +693,22 @@ def relocation_answer(q: FormQuestion, willing: bool | None) -> bool | None:
         return None
     t = " ".join(q.label.lower().replace("*", " ").split()).rstrip(" ?.:")
     return willing if _PLAIN_RELOCATE.fullmatch(t) else None
+
+
+def state_from_city(city: str | None) -> str | None:
+    """"Austin, TX" -> "Texas" (from the US state code in your own city)."""
+    from recrute.location import US_STATES
+
+    m = re.search(r",\s*([A-Z]{2})\b", city or "")
+    return US_STATES.get(m.group(1)) if m else None
+
+
+def country_from_city(city: str | None) -> str | None:
+    """"Austin, TX" -> "United States" (a US state code makes it a fact); else unknown."""
+    from recrute.location import US_STATES
+
+    m = re.search(r",\s*([A-Z]{2})\b", city or "")
+    return "United States" if m and m.group(1) in US_STATES else None
 
 
 def phone_country(phone: str | None) -> str | None:
@@ -749,6 +775,10 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
             return c.current_city or None
         case "phone_country":
             return phone_country(c.phone)
+        case "country":
+            return c.country or country_from_city(c.current_city)
+        case "us_state":
+            return state_from_city(c.current_city)
     return None  # citizenship: deliberately not answered from the bank
 
 
@@ -782,9 +812,29 @@ def _common_answer(q: FormQuestion, bank: AnswerBank) -> tuple[str, bool] | None
     return bank.common[keys[best[2]]], False
 
 
+_ROLE_COUNTRY = re.compile(
+    r"\b(?:the|this) country (?:in which|where) (?:this|the) (?:role|position|job) is "
+    r"(?:located|based|listed)|\bthe country (?:in which|where) you (?:are|will be) "
+    r"(?:applying(?: to work)?|working)|\bwhere (?:this|the) (?:role|position|job) is "
+    r"(?:located|based|listed)", re.IGNORECASE)
+
+
+def localize_question(q: FormQuestion, us_role: bool) -> FormQuestion:
+    """For a job located ONLY in the US, "the country where this role is located" IS the
+    United States: the question is rewritten so the US work-authorization / sponsorship facts
+    apply. Otherwise unchanged (another or several countries: yours to answer)."""
+    if not us_role:
+        return q
+    label = _ROLE_COUNTRY.sub("the United States", q.label)
+    desc = _ROLE_COUNTRY.sub("the United States", q.description or "")
+    return q if (label, desc) == (q.label, q.description or "") else \
+        q.model_copy(update={"label": label, "description": desc})
+
+
 def match_question(q: FormQuestion, bank: AnswerBank, *,
-                   priority: str | None = None) -> FormAnswer | None:
+                   priority: str | None = None, us_role: bool = False) -> FormAnswer | None:
     """Answer `q` from the bank, or None if the bank can't answer it faithfully."""
+    q = localize_question(q, us_role)
     kind = classify_question(q)
     if kind is not None:
         raw = _bank_raw(kind, q, bank, priority)

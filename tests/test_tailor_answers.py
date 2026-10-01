@@ -911,3 +911,107 @@ def test_unchanged_template_answers_no_personal_yes_no(paths):
                   "Are you willing to relocate?"):
         hit = match_question(q(label, "radio", YES_NO), bank)
         assert hit is None or hit.needs_review  # never a trusted "Yes" from the template
+
+
+# --- wording seen on real application forms (end-to-end test, Oct 2026) -------------------
+
+def _real_bank():
+    from recrute.tailor.answers import Contact, WorkAuthorization
+
+    return AnswerBank(contact=Contact(full_name="Test Candidate", current_city="Austin, TX"),
+                      work_authorization=WorkAuthorization(
+                          authorized_to_work_in_us=True, requires_sponsorship_now=False,
+                          requires_sponsorship_future=False))
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("Are you legally authorized to work in the country in which this role is located?", "Yes"),
+    ("Do you have the legal right to work in the country where you are applying to work?",
+     "Yes"),
+    ("Do you require a work permit, visa or additional right to work support for the country "
+     "where you are applying to work?", "No"),
+])
+def test_role_country_questions_for_us_only_jobs(label, expected):
+    bank = _real_bank()
+    question = q(label, "select", YES_NO)
+    hit = match_question(question, bank, us_role=True)
+    assert hit is not None and hit.value == expected and not hit.needs_review
+    # a job located elsewhere (or in several countries): left for you
+    assert match_question(question, bank, us_role=False) is None
+
+
+def test_country_answered_from_bank_or_us_city():
+    bank = _real_bank()
+    hit = match_question(q("Country", "select", []), bank)
+    assert hit is not None and hit.value == "United States"
+    from recrute.tailor.answers import Contact
+    abroad = AnswerBank(contact=Contact(current_city="Toronto"))
+    assert match_question(q("Country", "select", []), abroad) is None  # unknown: yours
+
+
+@pytest.mark.parametrize("label,qtype,options,desc", [
+    ("Zscaler Privacy Policy", "multiselect", ["I Agree"], "By proceeding with your application"),
+    ('I have read and understand Tailscale\'s "Candidate Privacy Policy"', "select", ["Yes"],
+     "Candidate Privacy Policy AI Policy"),
+])
+def test_policy_acknowledgements_are_preselected_for_review(label, qtype, options, desc):
+    res = answer_questions([q(label, qtype, options, description=desc)], profile=make_profile(),
+                           bank=_real_bank(), router=None)
+    a = res.answers[0]
+    assert a.source == "default" and a.needs_review
+    assert a.value in (options[0], [options[0]])
+
+
+def test_experience_questions_only_warn_in_the_verifier():
+    from recrute.schemas import FormAnswer
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    question = q("Do you have experience with Endpoint Detection and Response (EDR) products?",
+                 "select", YES_NO, id="edr")
+    claims = collect_claims(make_profile(), answers=[FormAnswer(
+        question_id="edr", value="Yes", source="llm_new")], questions=[question])
+    flags = deterministic_flags(make_profile(), claims)
+    assert flags and all(f.severity == "warn" for f in flags)
+    hold = q("Do you hold an active OSCP certification?", "select", YES_NO, id="oscp")
+    claims = collect_claims(make_profile(), answers=[FormAnswer(
+        question_id="oscp", value="Yes", source="llm_new")], questions=[hold])
+    assert any(f.severity == "block" for f in deterministic_flags(make_profile(), claims))
+
+
+@pytest.mark.parametrize("label", ["Please select the state where you currently reside",
+                                   "State/Province", "State"])
+def test_us_state_from_your_city(label):
+    hit = match_question(q(label, "select", ["Texas", "California"]), _real_bank())
+    assert hit is not None and hit.value == "Texas"
+
+
+def test_llm_reusing_an_approved_answer_verbatim_is_not_a_new_claim():
+    """Seen live: an address the user typed at CP2 for one form, drafted by the LLM onto another
+    form's differently-worded question, was blocked by the verifier as 'not in the profile'."""
+    profile, bank = make_profile(), make_bank()
+    addr = "100 Congress Ave, Austin, TX 78701, United States"
+    bank.common["home_address_please_enter_your_full_address"] = addr
+    questions = [q("Current address", id="addr"), q("Anything else?", "textarea", id="other")]
+    router = FakeRouter({"answers": {"answers": [
+        {"id": "addr", "answer": addr, "cited_ids": []},
+        {"id": "other", "answer": "I live at 1 Main St", "cited_ids": []}]}})
+    res = answer_questions(questions, profile=profile, bank=bank, router=router)
+    a = {x.question_id: x for x in res.answers}
+    assert addr in router.calls[0][1]  # it was shown as a previously approved answer
+    assert a["addr"].source == "answer_bank" and a["addr"].needs_review
+    assert a["other"].source == "llm_new"  # anything else is still a new, checked claim
+
+
+def test_signature_date_is_today_for_review():
+    from datetime import date
+
+    profile, bank = make_profile(), make_bank()
+    questions = [q("Date", id="avail"), q("Signature", id="sig"), q("Date", id="signed_on"),
+                 q("Date", id="eeo[disabilitySignatureDate]"), q("Today's date", id="td")]
+    res = answer_questions(questions, profile=profile, bank=bank, router=None)
+    a = {x.question_id: x for x in res.answers}
+    today = date.today().strftime("%m/%d/%Y")
+    assert a["avail"].value is None  # a bare "Date" not next to a signature: not guessed
+    assert a["signed_on"].value == today  # right after the signature
+    assert a["eeo[disabilitySignatureDate]"].value == today and a["td"].value == today
+    assert a["td"].needs_review and a["td"].source == "default"

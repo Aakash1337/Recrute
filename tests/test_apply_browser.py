@@ -367,7 +367,7 @@ def test_lever_submit(srv, context, paths, human, resume):
     assert out.status == "submitted", out
     assert len(srv.posts) == 1 and srv.posts[0]["path"] == "/lever/acme/abc-123/apply"
     body = srv.posts[0]["body"].decode("utf-8", "replace")
-    for name, value in [("name", "Ada Lovelace"), ("location", "San Francisco, CA"),
+    for name, value in [("name", "Ada Lovelace"), ("location", "San Francisco, CA, USA"),
                         (f"{LEVER_WA}[field0]", "Yes"), (f"{LEVER_WA}[field1]", "No"),
                         (f"{LEVER_HEAR}[field0]", "LinkedIn"), (f"{LEVER_ADD}[field1]", "Hindi"),
                         ("eeo[gender]", "Decline to self-identify")]:
@@ -1250,4 +1250,103 @@ def test_iframe_navigation_drops_queued_input(context, paths):
     live.apply_inputs(paths, page)
     assert page.input_value("#q") == ""  # nothing typed after the frame changed
     live.clear(paths)
+    page.close()
+
+
+@pytest.mark.browser
+def test_radio_under_a_fixed_cookie_banner_is_scrolled_clear(context):
+    """Seen live on Lever: a cookie banner pinned to the bottom of the viewport swallowed the
+    clicks on radios that scrolling had left underneath it. The banner is never clicked."""
+    page = context.new_page()
+    page.set_content("""<div style="height:1400px"></div>
+      <form><label><input type="radio" name="spon" value="No" id="no"> No</label></form>
+      <div style="height:1400px"></div>
+      <div id="banner" style="position:fixed;left:0;right:0;bottom:0;height:420px;
+           background:#333" onclick="window.bannerClicked = true">We use cookies</div>""")
+    box = page.locator("#no")
+    # the radio at y=650 of 900: "comfortably in view" for scrolling, but under the banner
+    page.evaluate("y => window.scrollTo(0, y)", 1400 - 650)
+    Human(rng=random.Random(3), fast=True).check(box, True)
+    assert box.is_checked()
+    assert not page.evaluate("window.bannerClicked === true")
+    page.close()
+
+
+_REACT_SELECT = """<form><div class="field"><label for="hear">How did you hear?</label>
+  <div class="select-shell"><div class="select__control {multi}">
+    <div class="vals"></div>
+    <input id="hear" role="combobox" aria-controls="hear-listbox"></div>
+    <div id="hear-listbox" role="listbox" style="display:none">
+      {options}</div></div></div></form>
+<script>
+  const inp = document.getElementById('hear'), lb = document.getElementById('hear-listbox');
+  const vals = document.querySelector('.vals');
+  const show = () => {{ lb.style.display = 'block';
+    for (const o of lb.children) o.style.display =
+      o.innerText.toLowerCase().includes(inp.value.toLowerCase()) ? 'block' : 'none'; }};
+  inp.addEventListener('input', show); inp.addEventListener('focus', show);
+  for (const o of lb.children) o.addEventListener('click', () => {{
+    {pick}; inp.value = ''; lb.style.display = 'none'; }});
+</script>"""
+
+
+@pytest.mark.browser
+def test_multi_value_combobox_picks_each_value(context, human):
+    from recrute.apply import dom
+    from recrute.apply.widgets import fill_one
+
+    page = context.new_page()
+    opts = "".join(f'<div role="option" class="select__option">{o}</div>'
+                   for o in ("Glassdoor", "Linkedin", "Referral"))
+    page.set_content(_REACT_SELECT.format(
+        multi="select__value-container--is-multi", options=opts,
+        pick="vals.insertAdjacentHTML('beforeend', "
+             "`<div class=\"select__multi-value__label\">${o.innerText}</div>`)"))
+    f = next(x for x in dom.extract_fields(page) if x.id == "hear")
+    assert f.type == "multiselect" and f.widget == "combobox"
+    assert fill_one(page, f, ["Linkedin", "Referral"], human) == ["Linkedin", "Referral"]
+    f = next(x for x in dom.extract_fields(page) if x.id == "hear")
+    assert sorted(f.current) == ["Linkedin", "Referral"]
+    page.close()
+
+
+@pytest.mark.browser
+def test_phone_country_picker_showing_only_a_flag_is_verified(context, human):
+    from recrute.apply import dom
+    from recrute.apply.base import value_matches
+    from recrute.apply.widgets import fill_one
+
+    page = context.new_page()
+    opts = "".join(f'<div role="option" class="select__option" data-cc="{cc}">{o}</div>'
+                   for o, cc in (("Canada +1", "ca"), ("United States +1", "us")))
+    page.set_content(_REACT_SELECT.format(
+        multi="", options=opts,
+        pick="vals.innerHTML = `<div class=\"select__single-value\"><div "
+             "class=\"iti__flag iti__${o.dataset.cc}\"></div>+1</div>`"))
+    f = next(x for x in dom.extract_fields(page) if x.id == "hear")
+    assert fill_one(page, f, "United States", human) == "United States +1"
+    f = next(x for x in dom.extract_fields(page) if x.id == "hear")
+    assert f.current == "+1 [us]"
+    assert value_matches(f, f.current, "United States")
+    assert not value_matches(f, f.current, "Canada")
+    page.close()
+
+
+@pytest.mark.browser
+def test_text_typed_while_a_page_script_autofills_is_retyped(context, human):
+    """Seen live on Lever: its resume parser filled the name while we typed it, leaving
+    'Test CandidateCandidate'. The field is retyped once and still checked."""
+    from recrute.apply import dom
+    from recrute.apply.widgets import fill_one
+
+    page = context.new_page()
+    page.set_content("""<form><label for="name">Full name</label><input id="name" name="name">
+      </form><script>
+      let done = false;
+      document.getElementById('name').addEventListener('input', e => {
+        if (!done && e.target.value.length === 3) { done = true; e.target.value = 'Ada Lovelace'; }
+      });</script>""")
+    f = next(x for x in dom.extract_fields(page) if x.id == "name")
+    assert fill_one(page, f, "Ada Lovelace", human) == "Ada Lovelace"
+    assert page.input_value("#name") == "Ada Lovelace"
     page.close()

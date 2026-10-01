@@ -19,11 +19,11 @@ from typing import TYPE_CHECKING, ClassVar
 from bs4 import BeautifulSoup
 
 from recrute.apply import dom
-from recrute.apply.base import BaseAdapter
+from recrute.apply.base import BaseAdapter, LiveField
 from recrute.schemas import FormQuestion
 
 if TYPE_CHECKING:
-    from patchright.sync_api import Page
+    from patchright.sync_api import Frame, Page
 
     from recrute.http import Http
     from recrute.models import Job
@@ -74,7 +74,23 @@ def parse_apply_html(html: str) -> list[FormQuestion]:
                 required=bool(fld.get("required")),
                 options=[str(o.get("text")) for o in fld.get("options") or []],
                 description=(fld.get("description") or "").strip()))
-    # anything else (EEO selects, "Additional information")
+    # EEO selects: the whole question sits inside one <label> (so its text would include every
+    # option); read it as the live form shows it: the .application-label, plus the (collapsed)
+    # option definitions as its description
+    for sel in form.find_all("select", attrs={"name": re.compile(r"^eeo\[")}):
+        name = str(sel["name"])
+        box = sel.find_parent(class_="application-question")
+        if box is None or name in seen:
+            continue
+        lab_el = box.select_one(".application-label")
+        desc_el = box.select_one('[class*="description"]')
+        seen.add(name)
+        out.append(FormQuestion(
+            id=name, label=lab_el.get_text(" ", strip=True) if lab_el else name, type="select",
+            required=sel.has_attr("required"),
+            options=[o.get_text(strip=True) for o in sel.find_all("option") if o.get("value")],
+            description=" ".join(desc_el.get_text().split())[:500] if desc_el else ""))
+    # anything else ("Additional information", the disability form's signature)
     for q in dom.parse_static_form(str(form)):
         if q.id in seen or q.id.startswith("cards[") or q.id in (
                 "h-captcha-response", "g-recaptcha-response"):
@@ -92,8 +108,11 @@ class LeverAdapter(BaseAdapter):
     submit_selector = ("#btn-submit, button[data-qa=btn-submit], "
                        "#application-form button[type=submit]")
     key_prefer = ("name", "id")
-    # each question card carries its serialized definition (the questions, not answers)
-    transport_fields = (r"cards\[[0-9a-f-]+\]\[baseTemplate\]",)
+    # each question card carries its serialized definition (the questions, not answers); the
+    # page's scripts also set the board's account id, the browser's time zone and the stored
+    # upload's id
+    transport_fields = (r"cards\[[0-9a-f-]+\]\[baseTemplate\]", r"accountId", r"timezone",
+                        r"resumeStorageId")
     aliases: ClassVar[dict[str, list[str]]] = {}
     confirm_url_re = re.compile(r"/(thanks|confirmation)\b", re.I)
 
@@ -107,6 +126,24 @@ class LeverAdapter(BaseAdapter):
         if "lever.co" in parts.netloc and not parts.path.rstrip("/").endswith("/apply"):
             parts = parts._replace(path=parts.path.rstrip("/") + "/apply")
         return urlunsplit(parts)
+
+    def postprocess(self, fields: list[LiveField]) -> list[LiveField]:
+        # "Current location" is a typeahead without ARIA roles: typed text alone is dropped,
+        # and its open suggestion list swallows the next click (picking a random place)
+        return [f.model_copy(update={"widget": "combobox"})
+                if f.id == "location" and f.widget == "text" else f for f in fields]
+
+    def after_upload(self, root: Page | Frame, f: LiveField) -> None:
+        # Lever reads the resume ("Analyzing resume...") and then autofills name, email,
+        # phone, ...: typing before it is done gets mixed with its autofill
+        if f.id != "resume":
+            return
+        try:
+            root.wait_for_function(
+                "() => { const w = document.querySelector('.resume-upload-working');"
+                " return !w || getComputedStyle(w).display === 'none'; }", timeout=20000)
+        except Exception:  # noqa: BLE001 - still analyzing: the typing re-checks every field
+            pass
 
     def fetch_questions(self, job: Job, http: Http | None, *, page: Page | None = None,
                         ) -> list[FormQuestion]:

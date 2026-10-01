@@ -55,6 +55,10 @@ _TRUE = {"yes", "true", "y"}
 _FALSE = {"no", "false", "n"}
 
 
+_US_CITY = re.compile(r"[^\W\d_][^,]*, ?[A-Z]{2}")
+_US_SUFFIX = re.compile(r",? ?(usa|us|u\.s\.a?\.?|united states( of america)?)")
+
+
 def resolve_option(value: Any, options: Sequence[str]) -> str | None:
     """Map an approved answer onto one of the form's option labels, deterministically.
 
@@ -63,7 +67,9 @@ def resolve_option(value: Any, options: Sequence[str]) -> str | None:
       * booleans onto a Yes/No (True/False) option, or True onto the only option of a
         single-option acknowledgement ("I agree", "Acknowledge/Confirm");
       * a country name onto the unique option that is that country plus its dialing code
-        ("United States" -> "United States +1" / "United States (+1)").
+        ("United States" -> "United States +1" / "United States (+1)");
+      * a US "City, ST" onto the unique option that is it plus the country
+        ("Austin, TX" -> "Austin, TX, USA").
     Nothing looser: "1" never becomes "10+", True never becomes a lone "No".
     """
     if not options:
@@ -90,6 +96,12 @@ def resolve_option(value: Any, options: Sequence[str]) -> str | None:
              and _DIAL_SUFFIX.fullmatch(norm(o)[len(v):])]
     if len(loose) == 1:
         return loose[0]
+    if _US_CITY.fullmatch(str(value).strip()):
+        # a location typeahead names the country too: "Austin, TX" -> "Austin, TX, USA"
+        us = [o for o in options if norm(o).startswith(v)
+              and _US_SUFFIX.fullmatch(norm(o)[len(v):])]
+        if len(us) == 1:
+            return us[0]
     return None
 
 

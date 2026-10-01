@@ -98,6 +98,11 @@ working work earned completed obtained certified certification certifications le
 """.split())
 
 
+_EXPERIENCE_Q = re.compile(r"\b(?:have|has)\s+(?:any\s+|prior\s+|previous\s+|hands-on\s+|"
+                          r"professional\s+)?(?:experience|worked|familiarity|exposure)\b",
+                          re.IGNORECASE)
+
+
 def _affirmative_flags(c: Claim, whole: SupportIndex) -> list[VerifierFlag]:
     """A "Yes" to "Do you hold/have X?" claims X: X's content words must be in the profile."""
     words = [w for w in keywords(c.question) if w not in _QUESTION_STOP
@@ -105,7 +110,10 @@ def _affirmative_flags(c: Claim, whole: SupportIndex) -> list[VerifierFlag]:
     missing = [w for w in words if not whole.has_term(w)]
     if not missing:
         return []
-    severity = "block" if _POSSESSION_RE.search(c.question) else "warn"
+    # holding a credential ("Do you hold / have an active ...") blocks; "experience with X" is
+    # judged by the LLM verifier and you, so a missing keyword only warns
+    severity = "block" if _POSSESSION_RE.search(c.question) and not _EXPERIENCE_Q.search(
+        c.question) else "warn"
     return [VerifierFlag(where=c.where, text=c.text, severity=severity,
                          reason="answered Yes, but the profile never mentions "
                                 + ", ".join(f"'{w}'" for w in missing))]
