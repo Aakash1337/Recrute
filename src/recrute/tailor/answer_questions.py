@@ -231,7 +231,7 @@ def education_for(q: FormQuestion, profile: Profile, need: str = ""):
     import re
 
     text = f"{q.label} {q.description}".lower()
-    entries = [ed for ed in profile.education if not need or (getattr(ed, need) or "").strip()]
+    entries = list(profile.education)  # the entry the question is ABOUT, then its field
 
     def level(ed) -> int:
         return next((r for rx, r in _DEGREE_RANK if re.search(rx, ed.degree or "", re.I)), 0)
@@ -243,12 +243,16 @@ def education_for(q: FormQuestion, profile: Profile, need: str = ""):
     elif re.search(r"most recent|current|latest", text):
         hits = entries[:1]
     else:
-        hits = entries
+        # unqualified: among the entries that HAVE the field
+        hits = [ed for ed in entries if not need or (getattr(ed, need) or "").strip()]
         if len(hits) > 1 and need in ("school", "field", "end"):
             # an unqualified "School"/"Major" means the highest degree actually earned
             best = highest_completed_degree(profile)
             hits = [ed for ed in hits if best and ed.degree == best and _completed(ed)][:1]
-    return hits[0] if len(hits) == 1 else None
+    if len(hits) != 1:
+        return None
+    # that entry lacks the field: unanswered, never the field of ANOTHER degree
+    return hits[0] if not need or (getattr(hits[0], need) or "").strip() else None
 
 
 def gpa_for(q: FormQuestion, profile: Profile) -> str | None:

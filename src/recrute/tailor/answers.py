@@ -395,13 +395,11 @@ _ADDRESS_VALUE_RE = re.compile(r"\d+\s+\w+.*\b(st|street|ave|avenue|rd|road|blvd
                                re.IGNORECASE)
 
 
-# a question that asks for a postal address ("How do you address incidents?" doesn't)
-_ADDRESS_REQUEST = re.compile(
-    r"\byour\s+(?:(?:full|home|current|mailing|street|postal|residential|permanent|"
-    r"physical)\s+)*address\b|^\W*(?:(?:full|home|current|mailing|street|postal|residential|"
-    r"permanent|physical)\s+)*address\b(?!\s+(?:the|this|these|those|it|them|any|a|an)\b)|"
-    r"^\W*(?:address\s*(?:line|1|2)|(?:zip|postal)\s*code|postcode|street|apartment|apt)\b|"
-    r"\bwhere do you live\b", re.IGNORECASE)
+
+
+def is_postal_address(key: str, value: str) -> bool:
+    """A saved answer that is (or is about) a postal address."""
+    return bool(_ADDRESS_RE.search(key.replace("_", " ")) or _ADDRESS_VALUE_RE.search(value))
 
 
 def subject_terms(text: str) -> set[str]:
@@ -412,15 +410,13 @@ def subject_terms(text: str) -> set[str]:
 def saved_relevance(key: str, value: str, questions: list[str]) -> float:
     """How strongly a saved answer (its key is the question it answered) is about the same
     SUBJECT as one of `questions`: the share of subject words in common (0 = unrelated).
-    Shared filler ("what is your ...") doesn't count, and an address is only ever related to
-    a question about an address."""
+    Shared filler ("what is your ...") doesn't count, and a postal address is never shared."""
     topic = re.sub(r"_[0-9a-f]{8}$", "", key).replace("_", " ")
     t_terms = subject_terms(topic)
-    addressy = bool(_ADDRESS_RE.search(topic) or _ADDRESS_VALUE_RE.search(str(value)))
+    if is_postal_address(topic, str(value)):
+        return 0.0  # a postal address never goes to the LLM: answered locally or by you
     best = 0.0
     for question in questions:
-        if addressy and not _ADDRESS_REQUEST.search(question):
-            continue
         q_terms = subject_terms(question)
         common = t_terms & q_terms
         if common and t_terms and q_terms:
@@ -561,7 +557,8 @@ def _non_us_scope(t: str) -> bool:
     return False
 
 
-def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
+def sponsorship_answer(label: str, wa: WorkAuthorization, *, scope_from: str | None = None,
+                       scope_detail: str = "") -> bool | None:
     """Yes/No for a sponsorship question, strictly from the bank; None when unsure.
 
     - scope: "now" -> requires_now; "future"/"at any time"/"ever" -> requires_future; both ->
@@ -621,11 +618,16 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
                  r"\buntil\b|\bduration\b|\bentire\b|\bfull term\b|\blong[- ]term\b", t):
         return None
     now, fut = wa.requires_sponsorship_now, wa.requires_sponsorship_future
-    # time words from what is asked of YOU: an employer's policy ("we cannot provide
-    # sponsorship in the future") doesn't change the question's scope
-    asked = " ".join(s for s in re.split(r"(?<=[.?!])\s+", t)
-                     if not re.search(r"\b(we|our|us|the company|the employer)\b", s)
-                     or re.search(r"\byou\b|\byour\b", s)) or t
+    # time words from what is asked of YOU: the question itself (the label); its description
+    # only when the label has none and the description asks you something. An employer's
+    # policy ("we cannot provide sponsorship for you in the future") never sets the scope.
+    asked = t
+    if scope_from is not None:
+        own = scope_from.lower()
+        detail = scope_detail.lower()
+        asked = own if (_NOW_RE.search(own) or _FUTURE_RE.search(own)) else " ".join(
+            s for s in re.split(r"(?<=[.?!])\s+", detail)
+            if not re.search(r"\b(we|our|the company|the employer)\b", s)) or own
     has_now, has_fut = bool(_NOW_RE.search(asked)), bool(_FUTURE_RE.search(asked))
     if has_now and has_fut:
         required = _either(now, fut)
@@ -747,7 +749,8 @@ def _polarity(kind: str, text: str) -> str | None:
     return None
 
 
-def match_eeo_option(kind: str, value: str, options: list[str]) -> str | None:
+def match_eeo_option(kind: str, value: str, options: list[str],
+                     question: str = "") -> str | None:
     """EEO answers: decline options, exact matches and explicit aliases only. Never fuzzy
     ("Male" must not match "Female"); unmatched stays unanswered."""
     if not value or not options:
@@ -763,6 +766,14 @@ def match_eeo_option(kind: str, value: str, options: list[str]) -> str | None:
         hits = [o for o in options if _norm_eeo(o) in group]
     elif kind in _EEO_TOPIC:
         want = _polarity(kind, value)
+        if kind == "eeo_veteran":
+            v_prot = "protected" in low
+            q_prot = "protected" in f"{question} {' '.join(options)}".lower()
+            # "not a PROTECTED veteran" says nothing about being a veteran at all; being a
+            # veteran says nothing about being a PROTECTED one (the other directions hold)
+            if (v_prot and not q_prot and want == "no") or (
+                    q_prot and not v_prot and want == "yes"):
+                return None
         hits = [o for o in options if want is not None and _polarity(kind, o) == want]
     else:
         hits = []
@@ -895,7 +906,8 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
     wa, c, label = bank.work_authorization, bank.contact, clean_label(q.label)
     match kind:
         case "sponsorship":  # the whole question: conditions often sit in the description
-            return sponsorship_answer(_full_question(q), wa) if is_yes_no(q) else None
+            return sponsorship_answer(_full_question(q), wa, scope_from=q.label,
+                                      scope_detail=q.description) if is_yes_no(q) else None
         case "work_auth":
             return work_auth_answer(_full_question(q), wa) if is_yes_no(q) else None
         case "relocate":
@@ -954,7 +966,7 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
 
 def _eeo_value(kind: str, q: FormQuestion, raw: str) -> Any:
     if q.options:
-        hit = match_eeo_option(kind, raw, q.options)
+        hit = match_eeo_option(kind, raw, q.options, _full_question(q))
         return [hit] if hit and q.type == "multiselect" else hit
     if q.type in ("text", "textarea"):
         return "Decline to self-identify" if raw.strip().lower() == "decline" else raw
