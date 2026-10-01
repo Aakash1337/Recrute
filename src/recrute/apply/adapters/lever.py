@@ -53,7 +53,8 @@ def parse_apply_html(html: str) -> list[FormQuestion]:
         t = (ctl.get("type") or "").lower()
         qt = ("file" if t == "file" else "email" if t == "email" or name == "email"
               else "tel" if name == "phone" else "textarea" if ctl.name == "textarea"
-              else "select" if ctl.name == "select" else "text")
+              else ("multiselect" if ctl.has_attr("multiple") else "select")
+              if ctl.name == "select" else "text")
         opts = ([o.get_text(strip=True) for o in ctl.find_all("option") if o.get("value")]
                 if ctl.name == "select" else [])
         seen.add(name)
@@ -86,7 +87,8 @@ def parse_apply_html(html: str) -> list[FormQuestion]:
         desc_el = box.select_one('[class*="description"]')
         seen.add(name)
         out.append(FormQuestion(
-            id=name, label=lab_el.get_text(" ", strip=True) if lab_el else name, type="select",
+            id=name, label=lab_el.get_text(" ", strip=True) if lab_el else name,
+            type="multiselect" if sel.has_attr("multiple") else "select",
             required=sel.has_attr("required"),
             options=[o.get_text(strip=True) for o in sel.find_all("option") if o.get("value")],
             description=" ".join(desc_el.get_text().split())[:500] if desc_el else ""))

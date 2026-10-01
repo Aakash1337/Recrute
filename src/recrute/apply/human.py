@@ -34,11 +34,11 @@ def ease_min_jerk(t: float) -> float:
     return t * t * t * (10 - 15 * t + 6 * t * t)
 
 
-# Is the element's centre under an overlay pinned to the viewport (position fixed/sticky) that
-# isn't the element's own label/container?
-_COVERED_JS = """e => {
+# Is the point (fx, fy: fractions of the element's box) under an overlay pinned to the viewport
+# (position fixed/sticky) that isn't the element's own label/container?
+_COVERED_JS = """(e, [fx, fy]) => {
   const r = e.getBoundingClientRect();
-  const x = r.x + r.width / 2, y = r.y + r.height / 2;
+  const x = r.x + r.width * fx, y = r.y + r.height * fy;
   if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return false;
   const at = document.elementFromPoint(x, y);
   if (!at || at === e || e.contains(at) || at.contains(e)) return false;
@@ -50,6 +50,14 @@ _COVERED_JS = """e => {
   }
   return false;
 }"""
+
+
+# the centre and the corners of the area target_point picks from
+_CLICK_AREA = ([0.5, 0.5], [0.18, 0.22], [0.82, 0.22], [0.18, 0.78], [0.82, 0.78])
+
+
+class CoveredError(RuntimeError):
+    """The element is under a fixed overlay: clicking would hit the overlay instead."""
 
 
 def target_point(box: dict[str, float], rng: random.Random) -> Point:
@@ -175,6 +183,13 @@ class Human:
         if not box or box["width"] <= 0 or box["height"] <= 0:
             return None
         end = target_point(box, self.rng)
+        try:
+            covered = locator.evaluate(_COVERED_JS, [(end[0] - box["x"]) / box["width"],
+                                                     (end[1] - box["y"]) / box["height"]])
+        except Exception:  # noqa: BLE001 - detached / navigating: the action will say
+            covered = False
+        if covered:  # never click (or hover) a point that lands on an overlay
+            raise CoveredError("an overlay covers the point to click")
         start = self._current(page)
         if not self.fast and math.dist(start, end) > 150 and self.rng.random() < 0.35:
             self._move(page, overshoot_point(start, end, self.rng))
@@ -220,17 +235,22 @@ class Human:
         another part of the viewport (never dismiss or click the overlay itself)."""
         page = locator.page
         _, vh = self._viewport(page)
-        for frac in (0.3, 0.15, 0.55, 0.75):
+        for frac in (0.3, 0.15, 0.55, 0.75, None):
             try:
-                if not locator.evaluate(_COVERED_JS):
+                # the whole area a click may land on (see target_point), not just the centre
+                if not any(locator.evaluate(_COVERED_JS, pt) for pt in _CLICK_AREA):
                     return
                 box = locator.bounding_box()
             except Exception:  # noqa: BLE001 - detached / navigating: the click will say
                 return
             if box is None:
                 return
+            if frac is None:
+                break
             page.mouse.wheel(0, box["y"] - vh * frac)
             self.pause(0.1, 0.3)
+        raise CoveredError("an overlay (banner/sticky bar) covers the element and scrolling "
+                           "can't clear it: not clicking through it")
 
     def _scroll_steps(self, locator: Locator) -> None:
         page = locator.page

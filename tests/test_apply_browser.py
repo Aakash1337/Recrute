@@ -1350,3 +1350,63 @@ def test_text_typed_while_a_page_script_autofills_is_retyped(context, human):
     assert fill_one(page, f, "Ada Lovelace", human) == "Ada Lovelace"
     assert page.input_value("#name") == "Ada Lovelace"
     page.close()
+
+
+def test_lever_submit_with_parsed_questions_in_the_packet(srv, context, paths, human, resume):
+    """Audit: answers are checked against the APPROVED questions (as parsed before the form
+    was opened); a multi-select EEO question parsed as a single select was never filled."""
+    from recrute.apply.adapters.lever import parse_apply_html
+
+    questions = parse_apply_html((FIX / "lever.html").read_text(encoding="utf-8"))
+    assert {x.id: x for x in questions}["eeo[race]"].type == "multiselect"
+    packet = lever_packet(resume).model_copy(update={"questions": questions})
+    packet.answers.append(a("eeo[race]", ["Decline to self-identify"]))
+    j = job(f"{srv.url}/lever/acme/abc-123/apply", "lever", job_id=2)
+    out = run(j, packet, context, paths, human)
+    assert out.status == "submitted", out
+    body = srv.posts[0]["body"].decode("utf-8", "replace")
+    assert 'name="eeo[race]"\r\n\r\nDecline to self-identify\r\n' in body
+
+
+@pytest.mark.browser
+def test_overlay_that_cannot_be_scrolled_clear_is_never_clicked(context):
+    """Audit: when scrolling can't move the element out from under a fixed footer, the click
+    must not go through to the overlay."""
+    from recrute.apply.human import CoveredError
+
+    page = context.new_page()
+    page.set_content("""<body style="margin:0">
+      <form style="position:absolute;top:700px"><label>
+        <input type="checkbox" id="agree"> I agree</label></form>
+      <div style="position:fixed;left:0;right:0;bottom:0;height:400px;background:#333"
+           onclick="window.bannerClicked = true">We use cookies</div></body>""")
+    box = page.locator("#agree")
+    with pytest.raises(CoveredError):
+        Human(rng=random.Random(5), fast=True).check(box, True)
+    assert not box.is_checked()
+    assert not page.evaluate("window.bannerClicked === true")
+    page.close()
+
+
+@pytest.mark.browser
+def test_field_half_under_a_banner_is_scrolled_fully_clear(context):
+    """Seen live on Lever: a field's centre was clear but its lower edge was under the cookie
+    banner, where the (randomized) click point landed."""
+    from recrute.apply import dom
+    from recrute.apply.widgets import fill_one
+
+    page = context.new_page()
+    page.set_content("""<div style="height:1400px"></div>
+      <form><label for="li">LinkedIn URL</label>
+        <input id="li" name="li" style="height:60px;width:400px"></form>
+      <div style="height:1400px"></div>
+      <div style="position:fixed;left:0;right:0;bottom:0;height:300px;background:#333"
+           onclick="window.bannerClicked = true">We use cookies</div>""")
+    # the input spans y=580..640 of the 900px viewport; the banner starts at y=600
+    page.evaluate("y => window.scrollTo(0, y)", 1400 + 22 - 580)
+    f = next(x for x in dom.extract_fields(page) if x.id == "li")
+    for seed in range(5):  # whichever point inside the field is picked
+        human = Human(rng=random.Random(seed), fast=True)
+        assert fill_one(page, f, f"https://linkedin.com/in/ada{seed}", human)
+    assert not page.evaluate("window.bannerClicked === true")
+    page.close()

@@ -711,20 +711,28 @@ def relocation_answer(q: FormQuestion, willing: bool | None) -> bool | None:
     return willing if _PLAIN_RELOCATE.fullmatch(t) else None
 
 
+def _us_state_code(city: str | None) -> str | None:
+    """The state code of a location that reads as US-only as a WHOLE ("Austin, TX",
+    "Austin, TX, USA"), never of "Perth, WA, Australia" or "Berlin, DE, Germany"."""
+    from recrute.location import US_STATES, us_exclusive
+
+    if not city or not us_exclusive(city):
+        return None
+    m = re.search(r",\s*([A-Z]{2})\b", city)
+    return m.group(1) if m and m.group(1) in US_STATES else None
+
+
 def state_from_city(city: str | None) -> str | None:
     """"Austin, TX" -> "Texas" (from the US state code in your own city)."""
     from recrute.location import US_STATES
 
-    m = re.search(r",\s*([A-Z]{2})\b", city or "")
-    return US_STATES.get(m.group(1)) if m else None
+    code = _us_state_code(city)
+    return US_STATES[code] if code else None
 
 
 def country_from_city(city: str | None) -> str | None:
     """"Austin, TX" -> "United States" (a US state code makes it a fact); else unknown."""
-    from recrute.location import US_STATES
-
-    m = re.search(r",\s*([A-Z]{2})\b", city or "")
-    return "United States" if m and m.group(1) in US_STATES else None
+    return "United States" if _us_state_code(city) else None
 
 
 _US_NAMES = {"united states", "united states of america", "usa", "us", "u.s", "u.s.a"}

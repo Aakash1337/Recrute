@@ -1084,3 +1084,29 @@ def test_canadian_bank_country_is_not_overridden_by_the_profile():
     # nothing known about where you live: a +1 number isn't assumed to be a US one
     unknown = AnswerBank(contact=Contact(phone="+1 416 555 0100"))
     assert match_question(questions[0], unknown) is None
+
+
+@pytest.mark.parametrize("city", ["Perth, WA, Australia", "Berlin, DE, Germany"])
+def test_foreign_city_with_a_state_like_code_is_not_us(city):
+    """Audit: 'Perth, WA, Australia' was read as Washington, United States."""
+    from recrute.tailor.answers import country_from_city, state_from_city
+
+    assert country_from_city(city) is None and state_from_city(city) is None
+    assert country_from_city("Austin, TX, USA") == "United States"
+
+
+def test_phone_country_never_comes_from_a_different_number():
+    """Audit: a UK number in the bank + an older US number in the profile gave the UK phone a
+    'United States (+1)' country."""
+    from recrute.apply.adapters.greenhouse import PHONE_COUNTRY_NOTE
+    from recrute.tailor.answers import Contact
+
+    profile = make_profile()
+    profile.phone, profile.location = "+1 415 555 0100", "Austin, TX"
+    bank = AnswerBank(contact=Contact(phone="+44 20 7946 0958", current_city="Austin, TX"))
+    country = q("Country", "select", [], id="country", description=PHONE_COUNTRY_NOTE)
+    res = answer_questions([country], profile=profile, bank=bank, router=None)
+    assert res.answers[0].value is None
+    # with no number in the bank, the profile's own number (and city) still answer it
+    res = answer_questions([country], profile=profile, bank=AnswerBank(), router=None)
+    assert res.answers[0].value == "United States (+1)"

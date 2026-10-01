@@ -397,6 +397,15 @@ _SIGNATURE_DATE_LABEL = re.compile(
 _GEO_KINDS = frozenset({"phone_country", "country", "us_state"})
 
 
+def _bank_decides(q: FormQuestion, bank: AnswerBank) -> bool:
+    """The bank's own facts settle this question even when they leave it unanswered: a country
+    you set isn't overridden by the profile's city, and the country of YOUR phone (the bank's
+    number) is never taken from another number in the profile."""
+    kind = classify_question(q)
+    return (kind in _GEO_KINDS and bool(bank.contact.country)) or (
+        kind == "phone_country" and bool(bank.contact.phone))
+
+
 def _is_signature_date(q: FormQuestion, questions: list[FormQuestion]) -> bool:
     """The date next to an e-signature (EEO disability form, attestation): "Date" alone counts
     only right after a signature field."""
@@ -440,8 +449,7 @@ def answer_questions(questions: list[FormQuestion], *, profile: Profile, bank: A
                                     source="default", confidence=0.8, needs_review=False)
             continue
         hit = match_question(q, bank, priority=priority, us_role=bool(job and job.us_only))
-        if hit is None and not (bank.contact.country and classify_question(q) in _GEO_KINDS):
-            # (a country you set in the bank is not overridden by the profile's city)
+        if hit is None and not _bank_decides(q, bank):
             hit = profile_answer(q, profile)
         if hit is not None:
             if q.type == "date" and hit.value not in (None, "") and parse_date(hit.value) is None:
