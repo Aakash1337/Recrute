@@ -237,3 +237,13 @@ def test_paraphrased_saved_answers_on_the_same_topic_are_evidence():
     prompt = router.calls[0][1]
     assert "(Q: describe your go experience) I built five Go microservices." in prompt
     assert "Climbing and chess" not in prompt  # unrelated topic
+
+
+def test_saved_address_is_not_evidence_for_an_unrelated_answer():
+    profile = make_profile()
+    questions = [FormQuestion(id="py", label="What is your experience with Python?")]
+    answers = [FormAnswer(question_id="py", value="Five years of Python", source="llm_new")]
+    router = FakeRouter({"verify": {"flags": []}})
+    verify(profile, collect_claims(profile, answers=answers, questions=questions),
+           router=router, saved=[("what_is_your_address", "100 Congress Ave, Austin, TX")])
+    assert "Congress" not in router.calls[0][1]

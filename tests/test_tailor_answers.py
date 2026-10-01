@@ -1215,3 +1215,48 @@ def test_unresolved_or_foreign_destinations_are_left_for_you(label):
     res = answer_questions([q(label, "select", YES_NO)], profile=make_profile(),
                            bank=_real_bank(), router=None, job=make_job())
     assert res.answers[0].value is None
+
+
+@pytest.mark.parametrize("label", [
+    "Will you require sponsorship for a Panama work visa?",
+    "Will you need sponsorship to work outside the United States?",
+])
+def test_foreign_visa_and_outside_us_scopes_are_left_for_you(label):
+    res = answer_questions([q(label, "select", YES_NO)], profile=make_profile(),
+                           bank=_real_bank(), router=None)
+    assert res.answers[0].value is None and res.answers[0].needs_review
+
+
+def test_saved_address_is_never_shared_for_unrelated_questions():
+    """Audit: 'What is your address' scored as related to 'What is your experience with
+    Python?' on the generic wording, sending a home address to the LLM."""
+    from recrute.tailor.answers import drafting_context
+
+    bank = make_bank()
+    bank.common["what_is_your_address"] = "100 Congress Ave, Austin, TX 78701"
+    bank.common["describe_your_python_experience"] = "Five years of Python tooling"
+    ctx = dict(drafting_context(bank, [q("What is your experience with Python?", "textarea")]))
+    assert "what_is_your_address" not in ctx
+    assert "describe_your_python_experience" in ctx
+    ctx = dict(drafting_context(bank, [q("Mailing address", "textarea")]))
+    assert "what_is_your_address" in ctx
+
+
+def test_factual_attestation_is_not_pre_checked():
+    """Audit: 'I confirm that I have completed a bachelor's degree.' was checked as consent."""
+    res = answer_questions([q("I confirm that I have completed a bachelor's degree.",
+                              "checkbox", id="deg")], profile=make_profile(), bank=make_bank(),
+                           router=None)
+    assert res.answers[0].value is not True
+
+
+def test_invalid_education_date_does_not_crash_drafting():
+    """Audit: an education end date of 2024-02-30 crashed answering even an Email question."""
+    from recrute.tailor.answer_questions import completion_date
+
+    assert completion_date("2024-02-30") is None
+    profile = make_profile()
+    profile.education[0].end = "2024-02-30"
+    res = answer_questions([q("Email", "email", id="em"), q("Highest degree", id="deg")],
+                           profile=profile, bank=AnswerBank(), router=None)
+    assert res.answers[0].value == profile.email

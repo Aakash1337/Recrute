@@ -248,24 +248,21 @@ def _saved_evidence(claims: list[Claim], saved: Iterable[tuple[str, str]],
     """Your earlier approved answers relevant to the drafted ones, each with the question it
     answered: those a draft repeats (an address typed for one form, drafted for another) and
     those saved for a question on the same topic (the same facts, reworded)."""
-    from rapidfuzz import fuzz, utils
-
-    from recrute.tailor.answers import clean_label, is_sensitive_text
+    from recrute.tailor.answers import is_sensitive_text, saved_relevance
 
     answers = [c for c in claims if c.kind == "answer"]
     texts = [" ".join(c.text.split()).casefold() for c in answers]
-    labels = [clean_label(c.question) for c in answers if c.question.strip()]
+    labels = [f"{c.question} {c.detail}" for c in answers if c.question.strip()]
     scored: list[tuple[float, str]] = []
     for key, value in saved:
         v = " ".join(str(value).split()).casefold()
         if len(v) < 4 or is_sensitive_text(key) or is_sensitive_text(str(value)):
             continue
         topic = re.sub(r"_[0-9a-f]{8}$", "", key).replace("_", " ")
-        related = max((fuzz.token_set_ratio(topic, lab, processor=utils.default_process)
-                       for lab in labels), default=0.0)
+        related = saved_relevance(key, str(value), labels)
         if any(v in t for t in texts):
-            scored.append((101.0, f"- (Q: {topic}) {value}"))
-        elif related >= 60:
+            scored.append((2.0, f"- (Q: {topic}) {value}"))
+        elif related > 0:
             scored.append((related, f"- (Q: {topic}) {value}"))
     scored.sort(key=lambda s: -s[0])
     lines = [line for _, line in scored[:limit]]

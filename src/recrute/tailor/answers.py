@@ -371,17 +371,54 @@ def drafting_context(bank: AnswerBank, pending: list[FormQuestion],
     of the pending questions, and never anything touching a sensitive subject (its key or its
     text): those stay on this machine."""
     scored: list[tuple[float, str, str]] = []
-    labels = [clean_label(q.label) for q in pending if q.label.strip()]
+    questions = [f"{q.label} {q.description}" for q in pending if q.label.strip()]
     for key, value in bank.common.items():
         if is_sensitive_text(key) or is_sensitive_text(value):
             continue
-        topic = key.replace("_", " ")
-        best = max((fuzz.token_set_ratio(topic, lab, processor=utils.default_process)
-                    for lab in labels), default=0.0)
-        if best >= 60:
+        best = saved_relevance(key, value, questions)
+        if best > 0:
             scored.append((best, key, value))
     scored.sort(key=lambda t: -t[0])
     return [(k, v) for _, k, v in scored[:limit]]
+
+
+# question wording that says nothing about the subject ("What is your experience with X?")
+_GENERIC_WORDS = frozenset("""what is your are you do does did have has had the a an of with in
+on for to please describe tell us about any how why when where which who can could would will
+provide list enter explain give share briefly me my i yours current currently if and or this
+that experience experiences years year skills skill background knowledge familiarity level
+includi including include full""".split())
+_ADDRESS_RE = re.compile(r"\b(address|street|zip|postal|postcode|mailing|apartment|apt)\b",
+                         re.IGNORECASE)
+_ADDRESS_VALUE_RE = re.compile(r"\d+\s+\w+.*\b(st|street|ave|avenue|rd|road|blvd|boulevard|"
+                               r"lane|ln|dr|drive|way|ct|court|pl|place|hwy)\b|\b\d{5}(-\d{4})?\b",
+                               re.IGNORECASE)
+
+
+def subject_terms(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9+#]+", text.lower())
+            if w not in _GENERIC_WORDS and len(w) > 1}
+
+
+def saved_relevance(key: str, value: str, questions: list[str]) -> float:
+    """How strongly a saved answer (its key is the question it answered) is about the same
+    SUBJECT as one of `questions`: the share of subject words in common (0 = unrelated).
+    Shared filler ("what is your ...") doesn't count, and an address is only ever related to
+    a question about an address."""
+    topic = re.sub(r"_[0-9a-f]{8}$", "", key).replace("_", " ")
+    t_terms = subject_terms(topic)
+    addressy = bool(_ADDRESS_RE.search(topic) or _ADDRESS_VALUE_RE.search(str(value)))
+    best = 0.0
+    for question in questions:
+        if addressy and not _ADDRESS_RE.search(question):
+            continue
+        q_terms = subject_terms(question)
+        common = t_terms & q_terms
+        if common and t_terms and q_terms:
+            share = len(common) / min(len(t_terms), len(q_terms))
+            if share >= 0.5:
+                best = max(best, share)
+    return best
 
 
 # a place field asking about something other than where you live
@@ -472,9 +509,29 @@ _NOT_A_PLACE = re.compile(r"(the\s+)?(future|order|this|that|these|those|any|all
                           r"the job|the company|the past|the meantime)\b")
 
 
+# a place named before the visa: "a Panama work visa" (original case: proper nouns)
+_VISA_MODIFIER = re.compile(r"\b([A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*)*)\s+(?:[Ww]ork\s+|"
+                            r"[Ee]mployment\s+)?(?:[Vv]isas?|[Pp]ermits?)\b")
+_US_MODIFIERS = re.compile(r"(?i)(us|u\.s\.?|usa|u\.s\.a\.?|american|united states|work|"
+                           r"employment|h-?1b|h|o-?1|l-?1|e-?3|tn|f-?1|opt|stem opt|j-?1|"
+                           r"visa|any|a|the|will|do|does|would|are|is|have|has)")
+
+
+def _foreign_visa(label: str) -> bool:
+    for m in _VISA_MODIFIER.finditer(label):
+        words = m.group(1).split()
+        # the first word may just open the sentence ("Visa sponsorship", "Will you ...")
+        place = " ".join(words[1:] if len(words) > 1 and m.start(1) == 0 else words)
+        if place and not _US_MODIFIERS.fullmatch(place):
+            return True
+    return False
+
+
 def _non_us_scope(t: str) -> bool:
     """The question names a place to work/live in that isn't the US ("visa support for
     employment in Costa Rica"): the bank's US facts don't answer it."""
+    if re.search(r"\b(outside|overseas|abroad|internationally|foreign|other than)\b", t):
+        return True  # anywhere but (or besides) the US
     if _UNRESOLVED_COUNTRY.search(t):
         return True  # which country? (role-country questions of US-only jobs were already
         # rewritten to "the United States" before this point)
@@ -515,7 +572,8 @@ def sponsorship_answer(label: str, wa: WorkAuthorization) -> bool | None:
     # bank doesn't hold
     from recrute.location import _FOREIGN
 
-    if _FOREIGN.search(t) or re.search(r"\btravel", t) or _non_us_scope(t):
+    if _FOREIGN.search(t) or re.search(r"\btravel", t) or _non_us_scope(t) \
+            or _foreign_visa(label):
         return None  # another country's sponsorship / a travel visa: not the bank's US facts
     if "sponsor" not in t and not re.search(r"\b(work\w*|employ\w*|jobs?|roles?|positions?|"
                                              r"hir\w*)\b", t):
