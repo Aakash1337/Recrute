@@ -1239,7 +1239,7 @@ def test_saved_address_is_never_shared_for_unrelated_questions():
     assert "what_is_your_address" not in ctx
     assert "describe_your_python_experience" in ctx
     ctx = dict(drafting_context(bank, [q("Mailing address", "textarea")]))
-    assert "what_is_your_address" in ctx
+    assert "what_is_your_address" not in ctx  # a postal address never goes to the LLM
 
 
 def test_factual_attestation_is_not_pre_checked():
@@ -1341,3 +1341,54 @@ def test_technical_address_questions_never_get_the_saved_address(label):
     bank = make_bank()
     bank.common["what_is_your_address"] = "100 Congress Ave, Austin, TX 78701"
     assert "what_is_your_address" not in dict(drafting_context(bank, [q(label, "textarea")]))
+
+
+@pytest.mark.parametrize("label,desc", [
+    ("Do you currently require visa sponsorship?",
+     "We cannot provide sponsorship for you in the future."),
+    ("Do you currently require visa sponsorship", "We cannot provide sponsorship in the future."),
+])
+def test_employer_policy_with_you_never_sets_the_time_scope(label, desc):
+    from recrute.tailor.answers import WorkAuthorization
+
+    bank = AnswerBank(work_authorization=WorkAuthorization(
+        requires_sponsorship_now=False, requires_sponsorship_future=True))
+    hit = match_question(q(label, "select", YES_NO, description=desc), bank)
+    assert hit is not None and hit.value == "No"
+
+
+def test_postal_address_never_reaches_any_llm_prompt():
+    """Audit: 'How would you validate your mailing address in Python?' sent the saved home
+    address to the LLM. Postal addresses are now never shared for drafting."""
+    canary = "1 Canary Lane, Austin, TX 78701"
+    bank = make_bank()
+    bank.common["what_is_your_address"] = canary
+    router = FakeRouter({"answers": {"answers": [{"id": "v", "answer": "", "cited_ids": []}]}})
+    answer_questions([q("How would you validate your mailing address in Python?", "textarea",
+                        id="v")], profile=make_profile(), bank=bank, router=router)
+    assert all("Canary" not in call[1] for call in router.calls)
+
+
+@pytest.mark.parametrize("value,label,options,expected", [
+    ("I am not a protected veteran", "Are you a veteran?", ["Yes", "No"], None),
+    ("not a veteran", "Are you a protected veteran?", ["Yes", "No"], "No"),
+])
+def test_protected_veteran_status_is_not_general_veteran_status(value, label, options,
+                                                                 expected):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option("eeo_veteran", value, options, label) == expected
+
+
+def test_missing_field_of_the_asked_degree_is_not_taken_from_another():
+    """Audit: 'Major' of the CURRENT degree (blank) was answered with an older degree's."""
+    from recrute.schemas import Education, Profile
+    from recrute.tailor.answer_questions import profile_answer
+
+    p = Profile(name="Ada", education=[
+        Education(id="e1", school="Tech U", degree="Master of Science", end="Present", field=""),
+        Education(id="e2", school="State U", degree="Bachelor of Science", end="2020",
+                  field="Computer Science")])
+    a = profile_answer(FormQuestion(id="m", label="Major", description="Your current degree"),
+                       p)
+    assert a is None or a.value in (None, "")

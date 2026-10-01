@@ -212,7 +212,7 @@ def test_repeated_saved_answers_are_evidence_for_the_llm_verifier():
     claims = collect_claims(profile, answers=answers, questions=questions)
     verify(profile, claims, router=router, saved=saved.items())
     prompt = router.calls[0][1]
-    assert f"(Q: home address please enter your full address includi) {addr}" in prompt
+    assert "Congress" not in prompt.split("CLAIMS")[0]  # a postal address: never evidence
     assert "(Q: describe your python experience) Five years of Python tooling" in prompt
     assert "only on the same subject" in prompt
     assert "Something nobody repeated" not in prompt and "visa" not in prompt.lower()
