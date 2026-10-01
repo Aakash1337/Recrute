@@ -11,13 +11,13 @@ contact:
   portfolio: ""
 
 work_authorization:
-  authorized_to_work_in_us: true
+  authorized_to_work_in_us: null      # true/false: only YOU can say; blank = asked at CP2
   requires_sponsorship_now: null      # true/false: answered truthfully, never gamed
   requires_sponsorship_future: null
   status_note: ""                     # e.g. "citizen", "green card", "F-1 OPT"; shown to you only
 
 logistics:
-  willing_to_relocate: true
+  willing_to_relocate: null           # true/false; blank = asked at CP2
   earliest_start_date: ""             # e.g. "2 weeks after offer"
   notice_period: ""
 

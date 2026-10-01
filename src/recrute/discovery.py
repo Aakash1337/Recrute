@@ -98,6 +98,35 @@ def discover_boards(ctx) -> dict:
     return totals
 
 
+def _close_listings(session, source: str, job_ids) -> int:
+    """Close the open jobs whose `source` listing is positively closed (never ones already
+    applied to: conditional on an open status)."""
+    from sqlalchemy import update
+    from sqlmodel import col
+
+    from recrute.models import Job, JobSource, JobStatus
+
+    open_states = [JobStatus.DISCOVERED, JobStatus.SHORTLISTED, JobStatus.SNOOZED,
+                   JobStatus.PACKET_READY, JobStatus.FILTERED_OUT]
+    ids = select(JobSource.job_id).where(JobSource.source == source,
+                                         col(JobSource.source_job_id).in_(list(job_ids)))
+    # an expired LinkedIn listing says nothing about the employer's own posting: a job that
+    # is also known from ANOTHER source (its ATS board...) is left to that source to close
+    # ...and a job merged from several listings stays open while any OTHER listing of it (from
+    # this source too) isn't known to be closed
+    elsewhere = select(JobSource.id).where(
+        JobSource.job_id == Job.id,
+        (JobSource.source != source)
+        | col(JobSource.source_job_id).is_(None)
+        | col(JobSource.source_job_id).not_in(list(job_ids))).exists()
+    res = session.execute(update(Job).where(col(Job.id).in_(ids), ~elsewhere,
+                                            col(Job.status).in_(open_states))
+                          .values(status=JobStatus.CLOSED, closed_at=datetime.now(UTC))
+                          .execution_options(synchronize_session=False))
+    session.commit()
+    return res.rowcount or 0
+
+
 def discover_search(ctx) -> dict:
     """Aggregators, HN and logged-out LinkedIn, each on its own cadence and backoff."""
     out: dict = {}
@@ -124,6 +153,7 @@ def discover_search(ctx) -> dict:
                     src.done = state.get("done") or {}
                 if name == "linkedin_guest":  # postings already fetched in full: not again
                     src.seen_ids = set(state.get("seen_ids") or [])
+                    src.known_closed = set(state.get("closed_ids") or [])
                 rotating = hasattr(src, "query_offset")
                 if rotating:
                     import math
@@ -170,7 +200,8 @@ def discover_search(ctx) -> dict:
                         out[name] = ingest(s, raws).as_dict()
                         state = {"last_ok": now.isoformat(),
                                  **{k: state[k] for k in ("query_ok", "query_failures", "done",
-                                                          "seen_ids") if k in state}}
+                                                          "seen_ids", "closed_ids")
+                                    if k in state}}
                         ingested_ok = True
                 except HttpError as e:
                     s.rollback()
@@ -183,6 +214,14 @@ def discover_search(ctx) -> dict:
                     out[name] = f"error: {e.__class__.__name__}"
                 if sctx.errors:
                     state["errors"] = dict(list(sctx.errors.items())[:5])
+                if ingested_ok and getattr(src, "closed_ids", None):
+                    known = list(state.get("closed_ids") or [])
+                    # every listing known closed so far (a merged job's other listing may have
+                    # closed in an earlier run)
+                    _close_listings(s, getattr(src, "raw_source", name),
+                                    set(known) | set(src.closed_ids))
+                    known += [i for i in sorted(src.closed_ids) if i not in set(known)]
+                    state["closed_ids"] = known[-5000:]
                 if ingested_ok and name == "linkedin_guest":
                     # their postings are stored now: remember them (bounded, newest kept)
                     known = list(state.get("seen_ids") or [])

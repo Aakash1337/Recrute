@@ -132,6 +132,27 @@ class Detail:
     easy_apply: bool | None = None
 
 
+# a posting LinkedIn says is closed: nothing more to fetch, ever
+_CLOSED_RE = re.compile(r"no longer accepting applications|this job is no longer available",
+                        re.I)
+
+
+def is_closed_page(html: str) -> bool:
+    """LinkedIn's own closed-posting notice, judged OUTSIDE the job description (a description
+    saying "we're no longer accepting applications by email" is not a closed posting)."""
+    soup = BeautifulSoup(html or "", "lxml")
+    for el in soup.select(".show-more-less-html__markup, .description__text, "
+                          ".description, script, style"):
+        el.decompose()
+    return bool(_CLOSED_RE.search(soup.get_text(" ")))
+
+
+def _meaningful(html: str | None) -> bool:
+    """A description with actual words in it (not "<p><br></p>" or a non-breaking space)."""
+    text = BeautifulSoup(html or "", "lxml").get_text(" ")
+    return re.search(r"[^\W_]", text) is not None
+
+
 def parse_detail(html: str) -> Detail:
     soup = BeautifulSoup(html, "lxml")
     d = Detail()
@@ -197,6 +218,7 @@ def to_rawjob(card: Card, detail: Detail | None) -> RawJob:
 
 
 class LinkedInGuestSource:
+    raw_source = "linkedin"  # the `source` its RawJobs carry (JobSource rows)
     name = "linkedin_guest"
     cadence = timedelta(hours=12)
 
@@ -209,6 +231,8 @@ class LinkedInGuestSource:
         self.min_interval = max(min_interval, MIN_INTERVAL)
         self.location = location
         self.seen_ids = seen_ids if seen_ids is not None else set()
+        self.closed_ids: set[str] = set()  # postings LinkedIn says are closed (this run)
+        self.known_closed: set[str] = set()  # ...and all known so far (kept by the caller)
         self.http_factory = http_factory
         self.stats: dict[str, Any] = {"searches": 0, "details": 0, "blocked": None}  # last run
         # Rotation through the configured queries across runs (the caller persists it): with a
@@ -250,6 +274,7 @@ class LinkedInGuestSource:
     def _all(self, ctx: SourceContext) -> Iterator[RawJob]:
         # Caps are per run: reset the counters every fetch (seen_ids persists across runs).
         self.stats = {"searches": 0, "details": 0, "blocked": None}
+        self.closed_ids = set()
         http = self._http()
         own = self.http_factory is None
         try:
@@ -306,6 +331,8 @@ class LinkedInGuestSource:
                 if not failed:
                     self.next_offset = (self.next_offset + 1) % len(queries)
                 for c in parse_search_cards(html):
+                    if c.job_id in self.known_closed:
+                        continue  # LinkedIn said it's closed: never emitted again, any path
                     cards.setdefault(c.job_id, c)
                     origin.setdefault(c.job_id, set()).add(q)
         except GuestBlocked as e:
@@ -327,7 +354,8 @@ class LinkedInGuestSource:
                 continue
             self.stats["details"] += 1
             try:
-                detail = parse_detail(self._get(http, DETAIL.format(id=card.job_id)))
+                page = self._get(http, DETAIL.format(id=card.job_id))
+                detail = parse_detail(page)
             except GuestBlocked as e:
                 self._blocked(ctx, e)
                 for c in pending[i:]:
@@ -336,6 +364,20 @@ class LinkedInGuestSource:
                 return
             except HttpError as e:  # retried on a later run (not marked seen)
                 log.debug("linkedin_guest detail %s: %s", card.job_id, e)
+                cut_short(card.job_id)
+                yield to_rawjob(card, None)
+                continue
+            if is_closed_page(page):
+                # positively closed: not an active job (and an already-known listing must not
+                # be reopened by it): reported for closing, never yielded
+                self.seen_ids.add(card.job_id)
+                self.closed_ids.add(card.job_id)
+                self.known_closed.add(card.job_id)
+                continue
+            if not _meaningful(detail.description_html):
+                # an empty / malformed page (no posting in it): not "fetched in full", so it
+                # is retried later rather than remembered as done
+                ctx.errors[f"linkedin_guest:detail:{card.job_id}"] = "incomplete job page"
                 cut_short(card.job_id)
                 yield to_rawjob(card, None)
                 continue

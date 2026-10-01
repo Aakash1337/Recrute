@@ -225,16 +225,70 @@ def role_sections(text: str, titles: list[str]) -> dict[str, str]:
     plus ONLY its own section, not other roles' requirements (a junior role mustn't inherit a
     senior role's "10+ years"). A title not found in the text gets just the shared header."""
     header, own = _split_roles(text, titles)
-    return {t: (header + "\n\n" + own[t]).strip() if own.get(t) else header for t in titles}
+    extra: dict[str, list[str]] = {t: [] for t in titles}
+    # In the shared text (with or without body headings), e.g. a header that LISTS the roles
+    # ("Security Engineer (8+ years; US citizenship), Security Analyst | Remote (US) | US
+    # citizenship required"): every item naming a role goes to THAT role only; everything
+    # else (other segments, unnamed items) is shared.
+    low = [(t, t.lower()) for t in titles if t]
+
+    def items(segment: str) -> list[str]:  # split on commas outside parentheses
+        out, depth, cur = [], 0, ""
+        for ch in segment:
+            depth += ch == "("
+            depth -= ch == ")"
+            if ch == "," and depth <= 0:
+                out.append(cur)
+                cur = ""
+            else:
+                cur += ch
+        return [*out, cur]
+
+    shared_lines = []
+    for line in header.splitlines():
+        kept = []
+        for segment in re.split(r"\s+[|•·]\s+", line):
+            if not any(lt in segment.lower() for _, lt in low):
+                kept.append(segment)
+                continue
+            for item in items(segment):
+                named = [t for t, lt in low if lt in item.lower()]
+                # a title inside a longer named one ("Security Engineer" in "Senior
+                # Security Engineer") isn't named on its own; an item naming several
+                # roles applies to each of them
+                owners = [t for t in named
+                          if not any(t != o and t.lower() in o.lower() for o in named)]
+                if not owners:
+                    kept.append(item.strip())
+                for o in owners:
+                    extra[o].append(item.strip())
+        if kept := [k.strip() for k in kept if k.strip()]:
+            shared_lines.append(" | ".join(kept))
+    header = "\n".join(shared_lines)
+
+    def describe(t: str) -> str:
+        parts = [header, *extra.get(t, []), own.get(t, "")]
+        return "\n\n".join(p for p in parts if p and p.strip()).strip()
+
+    return {t: describe(t) for t in titles}
 
 
 def _split_roles(text: str, titles: list[str]) -> tuple[str, dict[str, str]]:
     """(shared header, {title: that role's own section}) for a multi-role comment."""
     # every whole-word occurrence of every title; where titles overlap ("Senior Security
     # Engineer" contains "Security Engineer") the longest one owns the text
+    def heading(m: re.Match[str]) -> bool:  # the title starts its own line ("- Analyst: ...")
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        # (a Markdown link around the title, "[Security Analyst](url): ...", is a heading too)
+        return re.fullmatch(r"[\s\-*•#>\d.)\[]*", text[line_start:m.start()]) is not None
+
     def occurrences(t: str) -> list[re.Match[str]]:
         whole = list(re.finditer(r"(?<!\w)" + re.escape(t) + r"(?!\w)", text, re.I))
-        return whole or list(re.finditer(re.escape(t), text, re.I))
+        found = whole or list(re.finditer(re.escape(t), text, re.I))
+        # a role's section starts ONLY where it is a heading; a mention inside a list of roles
+        # ("Acme | Senior Security Engineer, Security Analyst") or prose is never a boundary.
+        # A role without a heading keeps the shared text (requirements included).
+        return [m for m in found if heading(m)]
 
     cands = sorted((m.start(), -len(t), m.end(), t) for t in dict.fromkeys(titles) if t
                    for m in occurrences(t))
@@ -248,10 +302,22 @@ def _split_roles(text: str, titles: list[str]) -> tuple[str, dict[str, str]]:
     found = sorted((p, t) for t, p in first.items())
     header_end = found[0][0] if found else len(text)
     own: dict[str, str] = {}
+    shared_tail: list[str] = []
     for i, (pos, t) in enumerate(found):
         end = found[i + 1][0] if i + 1 < len(found) else len(text)
-        own[t] = text[pos:end].strip()
-    return text[:header_end].strip(), own
+        mine = []
+        for line in text[pos:end].strip().splitlines():
+            # "All roles require US citizenship" inside a role's section is company-wide
+            (shared_tail if _ALL_ROLES.search(line) else mine).append(line)
+        own[t] = "\n".join(mine).strip()
+    header = "\n".join([text[:header_end].strip(), *shared_tail]).strip()
+    return header, own
+
+
+_ALL_ROLES = re.compile(r"\b(?:all|every|each|both) (?:of (?:the|our|these) )?(?:roles?|"
+                        r"positions?|openings?|jobs?|candidates?|applicants?|hires?)\b|"
+                        r"\bfor (?:all|both|every) (?:roles?|positions?)\b|\bcompany[- ]wide\b",
+                        re.I)
 
 
 def jobs_from_extraction(result: Any, batch: list[dict[str, Any]]) -> list[RawJob]:
@@ -277,7 +343,14 @@ def jobs_from_extraction(result: Any, batch: list[dict[str, Any]]) -> list[RawJo
         role_text = link_text = None
         if len(titles) > 1:  # several roles in one comment: role-specific description
             role_text = role_sections(comment_text(c), titles).get(j["title"].strip())
-            link_text = _split_roles(comment_text(c), titles)[1].get(j["title"].strip(), "")
+            shared, sections = _split_roles(comment_text(c), titles)
+            link_text = sections.get(j["title"].strip(), "")
+            # an explicit link the model gave must not belong to ANOTHER role's section (it
+            # would send this role's application to that requisition)
+            if apply_url and apply_url not in link_text and apply_url not in shared and any(
+                    apply_url in sec for t, sec in sections.items()
+                    if t != j["title"].strip()):
+                apply_url = None
         rj = _rawjob(c, j["company"], j["title"], j.get("locations") or [],
                      j.get("remote"), apply_url, j.get("employment_type"),
                      lo if isinstance(lo, int) and lo > 0 else None,

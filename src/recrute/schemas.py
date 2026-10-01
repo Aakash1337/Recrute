@@ -155,6 +155,9 @@ class SelectedEntry(BaseModel):
 
 class ResumeSelection(BaseModel):
     summary: str = ""
+    # True when `summary` is newly generated wording (not your profile's own summary): such a
+    # resume always gets a human look before it is sent
+    summary_generated: bool = True
     experience: list[SelectedEntry] = Field(default_factory=list)
     projects: list[SelectedEntry] = Field(default_factory=list)
     education_ids: list[str] = Field(default_factory=list)

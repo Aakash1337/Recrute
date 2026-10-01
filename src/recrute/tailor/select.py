@@ -222,6 +222,7 @@ def validate_selection(profile: Profile, raw: _Selection | dict[str, Any]) -> Re
     summary = " ".join(sentences[:2]).strip() or profile.summary
     return ResumeSelection(
         summary=summary,
+        summary_generated=" ".join(summary.split()) != " ".join(profile.summary.split()),
         experience=entries(raw.experience, profile.experience, chrono=True),
         projects=entries(raw.projects, profile.projects, chrono=False),
         education_ids=education or [e.id for e in profile.education],

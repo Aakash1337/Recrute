@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
+
 from recrute.criteria import Criteria, Track
 from recrute.http import HttpError
 from recrute.llm.base import LLMError
@@ -314,8 +316,8 @@ def test_himalayas_application_link_is_apply_url():
 def test_hn_roles_get_their_own_requirements():
     from recrute.sources.hn import role_sections
 
-    text = ("Acme | Remote (US) | Full-time\\nWe protect hospitals.\\n"
-            "Security Analyst: 2+ years of SOC experience.\\n"
+    text = ("Acme | Remote (US) | Full-time\nWe protect hospitals.\n"
+            "Security Analyst: 2+ years of SOC experience.\n"
             "Senior Security Engineer: 10+ years of experience required.")
     secs = role_sections(text, ["Security Analyst", "Senior Security Engineer"])
     assert "10+" not in secs["Security Analyst"] and "2+" in secs["Security Analyst"]
@@ -379,3 +381,139 @@ def test_hn_backlog_beyond_max_comments_is_drained_by_later_runs():
     src.done = done
     list(src.fetch(SourceContext(http=hn_http(), criteria=Criteria())))
     assert src.processed == [] and src.backlog == 0
+
+
+def test_hn_header_role_list_is_not_a_section_boundary():
+    from recrute.sources.hn import role_sections
+
+    text = ("Acme | Remote (US) | Senior Security Engineer, Security Analyst\n"
+            "We protect hospitals.\n"
+            "Senior Security Engineer: 10+ years of experience required.\n"
+            "Security Analyst: 2+ years of SOC experience.")
+    secs = role_sections(text, ["Senior Security Engineer", "Security Analyst"])
+    assert "2+" in secs["Security Analyst"] and "10+" not in secs["Security Analyst"]
+    senior = secs["Senior Security Engineer"]
+    assert "10+" in senior and "2+" not in senior
+
+
+def test_hn_role_list_with_qualifiers_in_header_is_not_shared():
+    from recrute.pipeline.filter import years_required
+    from recrute.sources.hn import role_sections
+
+    text = ("Acme | Remote (US) | Senior Security Engineer (10+ years of experience), "
+            "Security Analyst\nWe protect hospitals.\n"
+            "Senior Security Engineer: lead detection engineering.\n"
+            "Security Analyst: 2+ years of SOC experience.")
+    secs = role_sections(text, ["Senior Security Engineer", "Security Analyst"])
+    assert years_required(secs["Security Analyst"]) == 2
+    assert "We protect hospitals" in secs["Security Analyst"]
+
+
+def test_hn_markdown_linked_role_headings():
+    from recrute.sources.hn import jobs_from_extraction
+
+    c = {"id": 88, "created_at_i": 1_750_000_000,
+         "text": "Acme | Remote (US) | Senior Security Engineer, Security Analyst<p>"
+                 '<a href="https://boards.greenhouse.io/acme/jobs/111">Senior Security '
+                 "Engineer</a>: 10+ years.<p>"
+                 '<a href="https://boards.greenhouse.io/acme/jobs/222">Security Analyst</a>: '
+                 "2+ years of SOC experience."}
+    rows = {"jobs": [{"comment_id": 88, "company": "Acme", "title": t, "apply_url": None}
+                     for t in ("Senior Security Engineer", "Security Analyst")]}
+    jobs = {j.title: j for j in jobs_from_extraction(rows, [c])}
+    assert jobs["Senior Security Engineer"].ats_job_id == "111"
+    assert jobs["Security Analyst"].ats_job_id == "222"
+    assert "10+" not in (jobs["Security Analyst"].description_text or "")
+
+
+def test_hn_shared_requirements_in_the_header_survive_role_splitting():
+    from recrute.badges.sponsorship import eligibility_flags
+    from recrute.sources.hn import role_sections
+
+    text = ("Acme | Security Engineer, Security Analyst | Remote (US) | "
+            "US citizenship required\n"
+            "Security Engineer: build detections.\nSecurity Analyst: triage alerts.")
+    secs = role_sections(text, ["Security Engineer", "Security Analyst"])
+    for t in ("Security Engineer", "Security Analyst"):
+        assert "citizenship_required" in eligibility_flags(secs[t])
+    assert "triage" not in secs["Security Engineer"]
+
+
+def test_hn_header_qualifiers_go_to_their_own_role_and_shared_ones_to_all():
+    from recrute.badges.sponsorship import eligibility_flags
+    from recrute.pipeline.filter import years_required
+    from recrute.sources.hn import role_sections
+
+    titles = ["Security Engineer", "Security Analyst"]
+    text = ("Acme | Security Engineer (8+ years of experience; US citizenship required), "
+            "Security Analyst | Remote (US)\n"
+            "Security Engineer: build detections.\nSecurity Analyst: 2+ years of SOC experience.")
+    secs = role_sections(text, titles)
+    assert years_required(secs["Security Engineer"]) == 8
+    assert "citizenship_required" in eligibility_flags(secs["Security Engineer"])
+    assert years_required(secs["Security Analyst"]) == 2
+    assert "citizenship_required" not in eligibility_flags(secs["Security Analyst"])
+
+    both = ("Acme | Remote (US)\nWe're hiring a Security Engineer and a Security Analyst; "
+            "US citizenship is required.\n"
+            "Security Engineer: build detections.\nSecurity Analyst: triage alerts.")
+    secs = role_sections(both, titles)
+    for t in titles:
+        assert "citizenship_required" in eligibility_flags(secs[t])
+
+
+@pytest.mark.parametrize("bodies", [
+    "All roles require US citizenship and 2+ years of experience.",
+    "All roles require US citizenship and 2+ years of experience.\n"
+    "Security Analyst: triage alerts.",  # only one role has its own heading
+])
+def test_hn_roles_without_headings_keep_the_shared_text(bodies):
+    from recrute.badges.sponsorship import eligibility_flags
+    from recrute.pipeline.filter import years_required
+    from recrute.sources.hn import role_sections
+
+    text = f"Acme | Security Engineer, Security Analyst | Remote (US)\n{bodies}"
+    secs = role_sections(text, ["Security Engineer", "Security Analyst"])
+    for t in ("Security Engineer", "Security Analyst"):
+        assert "citizenship_required" in eligibility_flags(secs[t])
+        assert years_required(secs[t]) == 2
+
+
+def test_hn_role_qualifiers_separated_without_body_headings():
+    from recrute.badges.sponsorship import eligibility_flags
+    from recrute.pipeline.filter import years_required
+    from recrute.sources.hn import role_sections
+
+    text = ("Acme | Security Engineer (8+ years of experience; US citizenship required), "
+            "Security Analyst | Remote (US)\nWe protect hospitals.")
+    secs = role_sections(text, ["Security Engineer", "Security Analyst"])
+    assert years_required(secs["Security Engineer"]) == 8
+    assert years_required(secs["Security Analyst"]) is None
+    assert "citizenship_required" not in eligibility_flags(secs["Security Analyst"])
+    assert "We protect hospitals" in secs["Security Analyst"]
+
+
+def test_hn_trailing_all_roles_requirement_is_shared():
+    from recrute.badges.sponsorship import eligibility_flags
+    from recrute.sources.hn import role_sections
+
+    text = ("Acme | Remote (US)\nSecurity Engineer: build detections.\n"
+            "Security Analyst: triage alerts.\nAll roles require US citizenship.")
+    secs = role_sections(text, ["Security Engineer", "Security Analyst"])
+    for t in ("Security Engineer", "Security Analyst"):
+        assert "citizenship_required" in eligibility_flags(secs[t])
+
+
+def test_hn_explicit_url_of_another_role_is_rejected():
+    from recrute.sources.hn import jobs_from_extraction
+
+    c = {"id": 91, "created_at_i": 1_750_000_000,
+         "text": "Acme | Remote (US)<p>Security Engineer: "
+                 "https://boards.greenhouse.io/acme/jobs/111<p>Data Analyst: "
+                 "https://boards.greenhouse.io/acme/jobs/222"}
+    wrong = "https://boards.greenhouse.io/acme/jobs/111"
+    rows = {"jobs": [{"comment_id": 91, "company": "Acme", "title": t, "apply_url": wrong}
+                     for t in ("Security Engineer", "Data Analyst")]}
+    jobs = {j.title: j for j in jobs_from_extraction(rows, [c])}
+    assert jobs["Security Engineer"].ats_job_id == "111"
+    assert jobs["Data Analyst"].ats_job_id == "222"  # its own link, not the other role's
