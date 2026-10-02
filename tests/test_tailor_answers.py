@@ -1751,3 +1751,38 @@ def test_qualification_in_help_text_is_not_pre_checked_as_consent():
                  "certify that I hold an active Security+ certification")
     res = answer_questions([question], profile=make_profile(), bank=make_bank(), router=None)
     assert res.answers[0].value is not True
+
+
+@pytest.mark.parametrize("kind,value,label,decline", [
+    ("eeo_disability", "Yes, I have a disability, or have had one in the past",
+     "Do you currently have a disability?", "Decline to disclose disability history"),
+    ("eeo_veteran", "I am not a protected veteran", "Are you a veteran?",
+     "Decline to disclose protected veteran status"),
+])
+def test_decline_option_wording_does_not_change_the_question(kind, value, label, decline):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option(kind, value, ["Yes", "No", decline], label) is None
+
+
+@pytest.mark.parametrize("value", ["I built Python projects. Tel: 6123 4567.",
+                                   "Python work. PHONE: 6123 4567", "Call 6123 4567 anytime"])
+def test_capitalized_phone_labels_are_private(value):
+    from recrute.tailor.answers import is_private_fact
+
+    assert is_private_fact("describe_your_python_projects", value)
+
+
+def test_education_fields_come_from_one_entry():
+    """Audit: two 'Master of Science' entries: School from one, GPA from the other."""
+    from recrute.schemas import Education, Profile
+    from recrute.tailor.answer_questions import profile_answer
+
+    p = Profile(name="Ada", education=[
+        Education(id="a", school="Tech U", degree="Master of Science", end="2022", gpa="",
+                  field="Security"),
+        Education(id="b", school="State U", degree="Master of Science", end="2024", gpa="3.8",
+                  field="Data Science")])
+    for label in ("School", "Major", "GPA"):
+        a = profile_answer(FormQuestion(id="x", label=label), p)
+        assert a is None or a.value in (None, ""), label  # two of the same level: ambiguous

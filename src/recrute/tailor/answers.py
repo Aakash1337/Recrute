@@ -411,7 +411,7 @@ _PHONE_IN_TEXT_RE = re.compile(
     r"\+\d{1,3}(?:[\s.-]?\(?\d{1,4}\)?){2,5}\d|"
     r"(?<![\w+])0\d{2,4}[\s.-]?\d{3,4}[\s.-]?\d{3,4}(?!\d)|"  # domestic: "020 7946 0958"
     r"\b(?:call|phone|tel|mobile|cell|whatsapp|text|reach|contact)\b(?:\W+\w+){0,3}?\W*"
-    r"[\d(+][\d\s().-]{5,}\d")
+    r"[\d(+][\d\s().-]{5,}\d", re.IGNORECASE)
 _URL_VALUE_RE = re.compile(r"https?://|www\.|linkedin\.com|github\.com", re.IGNORECASE)
 
 
@@ -800,7 +800,9 @@ def _match_status(kind: str, value: str, options: list[str], question: str,
            for o in options):
         return None  # options claiming something else (a category, a history): you answer
     facts = _status_facts(kind, value)
-    opts = " ".join(_strict(o) for o in options)
+    # (what is asked comes from the real answers: "Decline to disclose disability history"
+    # asks nothing about history)
+    opts = " ".join(_strict(o) for o in options if not _DECLINE_RE.search(o))
     if kind == "eeo_veteran":
         asked = "protected" if "protected" in f"{q} {opts}" else "veteran"
     else:  # the options say "or have had one in the past", or the question asks about ever

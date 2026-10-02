@@ -185,6 +185,23 @@ def _completed(ed) -> bool:
     return done is not None and done <= date.today()
 
 
+def _highest_entries(profile: Profile) -> list:
+    """The completed education entries of the highest level (several -> ambiguous); [] when a
+    completed entry's level is unknown (it may be the highest)."""
+    import re
+
+    ranked = []
+    for ed in profile.education:
+        if not ed.degree or not _completed(ed):
+            continue
+        rank = next((r for rx, r in _DEGREE_RANK if re.search(rx, ed.degree, re.I)), 0)
+        if rank == 0:
+            return []
+        ranked.append((rank, ed))
+    top = max((r for r, _ in ranked), default=0)
+    return [ed for r, ed in ranked if r == top and top]
+
+
 def highest_completed_degree(profile: Profile) -> str | None:
     """The highest degree actually earned; None when completion can't be established (you'll
     answer it at CP2 instead of the form claiming an unfinished degree)."""
@@ -253,18 +270,14 @@ def education_for(q: FormQuestion, profile: Profile, need: str = ""):
         hits = entries[:1]
     else:
         hits = entries
-        if len(hits) > 1 and need == "gpa":
-            # several degrees: a lone GPA counts only if it is the highest earned degree's
-            best = highest_completed_degree(profile)
-            with_gpa = [ed for ed in hits if (ed.gpa or "").strip()]
-            hits = with_gpa if len(with_gpa) == 1 and best and with_gpa[0].degree == best \
-                and _completed(with_gpa[0]) else []
-        elif len(hits) > 1 and need in ("school", "field", "end"):
-            # an unqualified "School"/"Major" means the highest degree actually earned
-            # (chosen BEFORE looking at the field: a blank one is never filled from another
-            # degree)
-            best = highest_completed_degree(profile)
-            hits = [ed for ed in hits if best and ed.degree == best and _completed(ed)][:1]
+        if len(hits) > 1 and need in ("gpa", "school", "field", "end"):
+            # an unqualified "School"/"Major"/"GPA" means THE highest degree actually earned:
+            # one entry (two of the same level are ambiguous), chosen before looking at the
+            # field, so a blank one is never filled from another entry
+            top = _highest_entries(profile)
+            hits = top if len(top) == 1 else []
+            if need == "gpa" and sum(bool((ed.gpa or "").strip()) for ed in entries) > 1:
+                hits = []  # several GPAs on file: "GPA" alone is ambiguous
     if len(hits) != 1:
         return None
     # that entry lacks the field: unanswered, never the field of ANOTHER degree
