@@ -408,7 +408,10 @@ _PHONE_VALUE_RE = re.compile(r"\+?[\d\s().-]{7,20}")  # the WHOLE value (not "20
 # international "+CC ..." one; a year range like "2019-2024" is neither
 _PHONE_IN_TEXT_RE = re.compile(
     r"(?<![\w+])(?:\+?1[\s.-]?)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)|"
-    r"\+\d{1,3}(?:[\s.-]?\(?\d{1,4}\)?){2,5}\d")
+    r"\+\d{1,3}(?:[\s.-]?\(?\d{1,4}\)?){2,5}\d|"
+    r"(?<![\w+])0\d{2,4}[\s.-]?\d{3,4}[\s.-]?\d{3,4}(?!\d)|"  # domestic: "020 7946 0958"
+    r"\b(?:call|phone|tel|mobile|cell|whatsapp|text|reach|contact)\b(?:\W+\w+){0,3}?\W*"
+    r"[\d(+][\d\s().-]{5,}\d")
 _URL_VALUE_RE = re.compile(r"https?://|www\.|linkedin\.com|github\.com", re.IGNORECASE)
 
 
@@ -738,19 +741,11 @@ def match_eeo_option(kind: str, value: str, options: list[str],
         hits = [o for o in options if _norm_eeo(o) in group]
     elif kind in _EEO_TOPIC:
         want = _polarity(kind, value)
-        if all(_norm_eeo(o) in _YES_NO_WORDS or _DECLINE_RE.search(o) for o in options):
-            # a bare Yes/No: the QUESTION carries the meaning, so it must be exactly what the
-            # saved answer establishes
-            asked = f"{question} {description}".lower()
-            if kind == "eeo_veteran" and _VETERAN_CATEGORY.search(question.lower()):
-                return None  # "disabled / recently separated ... veteran": a narrower category
-            if kind == "eeo_disability":
-                q_past, v_past = bool(_PAST_RE.search(asked)), bool(_PAST_RE.search(low))
-                # "have, or have had, one" doesn't say you have one NOW; "don't currently
-                # have one" says nothing about the past
-                if (want == "yes" and v_past and not q_past) or (
-                        want == "no" and not v_past and q_past):
-                    return None
+        if kind == "eeo_veteran" and _VETERAN_CATEGORY.search(
+                f"{question} {description} {' '.join(options)}".lower()):
+            # "disabled / recently separated ... veteran" anywhere in the question: a narrower
+            # category than any saved status establishes (an EXACT saved option still matched)
+            return None
         if kind == "eeo_disability":
             # an option that also speaks of the past ("... and have not had one in the past")
             # claims more than a saved answer that doesn't
@@ -769,6 +764,17 @@ def match_eeo_option(kind: str, value: str, options: list[str],
                     not v_prot and want == "yes" and maybe_prot):
                 return None
         hits = [o for o in options if want is not None and _polarity(kind, o) == want]
+        if kind == "eeo_disability" and len(hits) == 1:
+            # the time the question asks about (its label and the chosen option; explanatory
+            # help text never widens it) must be the time the saved answer covers: "have, or
+            # have had, one" doesn't say you have one NOW, "don't currently have one" says
+            # nothing about the past
+            asked = f"{question} {hits[0]}".lower()
+            q_past, v_past = bool(_PAST_RE.search(asked)), bool(_PAST_RE.search(low))
+            q_now = bool(re.search(r"\b(currently|now|at present|presently)\b", asked))
+            if (want == "yes" and v_past and (not q_past or q_now)) or (
+                    want == "no" and not v_past and q_past):
+                return None
     else:
         hits = []
     return hits[0] if len(hits) == 1 else None
@@ -796,9 +802,13 @@ def format_value(q: FormQuestion, value: bool | str | int | None) -> Any:
     if q.type == "multiselect":
         hit = match_option(text, q.options)
         return [hit] if hit else None
-    if q.type == "number" and not re.fullmatch(r"-?\d+(?:\.\d+)?",
-                                                text.replace(",", "").strip()):
-        return None  # "3.9/4.0" can't go into a number field faithfully: you answer
+    if q.type == "number":
+        num = text.strip()
+        if re.fullmatch(r"-?\d{1,3}(?:,\d{3})+(?:\.\d+)?", num):
+            num = num.replace(",", "")  # thousands grouping: "4,000" -> "4000"
+        if not re.fullmatch(r"-?\d+(?:\.\d+)?", num):
+            return None  # "3.9/4.0", "3,9": can't go into a number field faithfully: you answer
+        text = num
     if q.max_length and len(text) > q.max_length:
         return None  # a bank answer is never silently cut; let the user shorten it
     return text

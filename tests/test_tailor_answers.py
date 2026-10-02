@@ -1630,3 +1630,44 @@ def test_phone_number_inside_saved_prose_never_reaches_the_llm():
         questions=[question])
     verify(make_profile(), claims, router=router, saved=bank.common.items())
     assert router.calls and all("555-0177" not in call[1] for call in router.calls)
+
+
+def test_disability_time_checks_cover_descriptive_options_and_help_text():
+    from recrute.tailor.answers import match_eeo_option
+
+    past = "Yes, I have a disability, or have had one in the past"
+    assert match_eeo_option("eeo_disability", past,
+                            ["Yes, I have a disability", "No, I do not have a disability"],
+                            "Do you currently have a disability?") is None
+    # history mentioned only in explanatory help text doesn't widen a current question
+    assert match_eeo_option("eeo_disability", past, YES_NO,
+                            "Do you currently have a disability?",
+                            "Many people have had a disability in the past.") is None
+
+
+@pytest.mark.parametrize("options,label,desc", [
+    (["Yes", "No"], "Veteran status", "Are you a disabled veteran?"),
+    (["Yes, I am a disabled veteran", "No"], "Veteran status", ""),
+])
+def test_narrower_veteran_category_anywhere_is_left_for_you(options, label, desc):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option("eeo_veteran", "I am a protected veteran", options, label,
+                            desc) is None
+
+
+@pytest.mark.parametrize("value", ["Python services; call 020 7946 0958",
+                                   "Reach me on 07700 900123 for details"])
+def test_domestic_phone_numbers_in_prose_are_private(value):
+    from recrute.tailor.answers import is_private_fact
+
+    assert is_private_fact("describe_your_python_projects", value)
+    assert not is_private_fact("describe_x", "Built 3 APIs in 2019-2024, 35% faster")
+
+
+@pytest.mark.parametrize("value,expected", [("3,9", None), ("12,34", None),
+                                            ("4,000", "4000"), ("3.9", "3.9")])
+def test_number_fields_get_exactly_the_validated_number(value, expected):
+    from recrute.tailor.answers import format_value
+
+    assert format_value(FormQuestion(id="n", label="x", type="number"), value) == expected
