@@ -34,7 +34,7 @@ salary:
 
 eeo:  # voluntary self-identification; "decline" is always an allowed value
   gender: "decline"
-  race_ethnicity: "decline"
+  race_ethnicity: "decline"  # or the form's exact wording, e.g. "White (Not Hispanic or Latino)"
   veteran_status: "decline"
   disability_status: "decline"  # or the form's exact wording, e.g. "No, I do not have a
                                 # disability and have not had one in the past"

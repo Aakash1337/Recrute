@@ -311,8 +311,12 @@ def test_narrative_questions_are_not_answered_from_profile_or_bank():
     ("Gender", "Male", ["Female", "Non-binary"], None),  # never Female
     ("Gender", "Man", ["Woman", "Non-binary"], None),  # never Woman
     ("Gender", "Female", ["Non-binary", "Male"], None),
+    # the option's "(Not Hispanic or Latino)" is a claim the saved "White" doesn't make
     ("Race", "White", ["Hispanic or Latino", "White (Not Hispanic or Latino)",
-                       "Asian (Not Hispanic or Latino)"], "White (Not Hispanic or Latino)"),
+                       "Asian (Not Hispanic or Latino)"], None),
+    ("Race", "White (Not Hispanic or Latino)", ["Hispanic or Latino",
+                                                "White (Not Hispanic or Latino)"],
+     "White (Not Hispanic or Latino)"),
     ("Race", "Hispanic", ["Non-Hispanic", "Hispanic or Latino"], "Hispanic or Latino"),
     ("Race", "Hispanic", ["Non-Hispanic", "White"], None),
     ("Race", "Black", ["Black or African American", "White"], "Black or African American"),
@@ -1719,3 +1723,31 @@ def test_plain_standard_status_questions_are_still_answered(kind, value, label, 
     from recrute.tailor.answers import match_eeo_option
 
     assert match_eeo_option(kind, value, options, label) == expected
+
+
+@pytest.mark.parametrize("kind,value,label", [
+    ("eeo_veteran", "I am a non-protected veteran", "Are you a protected veteran?"),
+    ("eeo_disability", "No, I do not have a disability now, but have had one in the past",
+     "Do you have a disability or a history of one?"),
+    ("eeo_disability", "Unknown", "Do you have a disability?"),
+    ("eeo_disability", "No", "Are you without a disability?"),  # bare: depends on the question
+])
+def test_only_recognized_saved_statuses_establish_anything(kind, value, label):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option(kind, value, YES_NO, label) is None
+
+
+def test_contradicting_parenthetical_never_matches():
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option("eeo_race", "White (Hispanic or Latino)",
+                            ["White (Not Hispanic or Latino)", "Hispanic or Latino"],
+                            "Race") is None
+
+
+def test_qualification_in_help_text_is_not_pre_checked_as_consent():
+    question = q("I agree", "checkbox", id="c", description="I agree to the privacy policy and "
+                 "certify that I hold an active Security+ certification")
+    res = answer_questions([question], profile=make_profile(), bank=make_bank(), router=None)
+    assert res.answers[0].value is not True

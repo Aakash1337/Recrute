@@ -81,8 +81,8 @@ def _is_consent(q: FormQuestion) -> bool:
     text = f"{q.label} {q.description}"
     if not _CONSENT_RE.search(q.label):
         return False
-    if _QUALIFICATION_RE.search(q.label):  # "... and (that I) hold / meet ...": also a claim
-        return False
+    if _QUALIFICATION_RE.search(text) or _FACTUAL_ATTESTATION.search(text):
+        return False  # "... and (that I) hold / meet ...", label or help text: also a claim
     if _ACCURACY_RE.search(q.label):  # "... the information provided is accurate": about the
         return True  # application itself, the attestation every form asks for
     return bool(_POLICY_RE.search(text) and not _FACTUAL_ATTESTATION.search(q.label))
@@ -92,8 +92,9 @@ def _acknowledgement_option(q: FormQuestion) -> str | None:
     """The single 'I agree' option of a policy acknowledgement (no 'No' alternative)."""
     if not q.options or q.type not in ("select", "radio", "multiselect", "checkbox"):
         return None
-    if not _POLICY_RE.search(f"{q.label} {q.description}") or _FACTUAL_ATTESTATION.search(
-            q.label) or _QUALIFICATION_RE.search(q.label):
+    text = f"{q.label} {q.description}"
+    if not _POLICY_RE.search(text) or _FACTUAL_ATTESTATION.search(text) \
+            or _QUALIFICATION_RE.search(text):
         return None
     agree = [o for o in q.options if _AGREE_OPTION.match(o)]
     return agree[0] if len(agree) == 1 and len(q.options) == 1 else None

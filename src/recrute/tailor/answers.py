@@ -721,6 +721,10 @@ def _polarity(kind: str, text: str) -> str | None:
 _PAST_RE = re.compile(r"\b(past|history|have had|has had|ever had|previously|had one)\b")
 
 
+def _parens(text: str) -> set[str]:
+    return {_strict(m) for m in re.findall(r"\(([^)]*)\)", text)}
+
+
 def _strict(text: str) -> str:
     """Case and spacing only: every word (parentheses included) still counts."""
     return " ".join(text.lower().replace("\u2019", "'").split()).strip(" .?!:")
@@ -748,27 +752,47 @@ _STANDARD_STATUS_OPTIONS = {
 }
 
 
+# The saved statuses that establish something (anything else establishes nothing).
+_STATUS_FACTS: dict[str, dict[str, dict[str, bool | None]]] = {
+    "eeo_veteran": {
+        "i am a protected veteran": {"protected": True, "veteran": True},
+        "i identify as a protected veteran": {"protected": True, "veteran": True},
+        "i identify as one or more of the classifications of protected veteran":
+            {"protected": True, "veteran": True},
+        "i identify as one or more of the classifications of protected veteran listed above":
+            {"protected": True, "veteran": True},
+        "protected veteran": {"protected": True, "veteran": True},
+        "a protected veteran": {"protected": True, "veteran": True},
+        "i am not a protected veteran": {"protected": False, "veteran": None},
+        "not a protected veteran": {"protected": False, "veteran": None},
+        "i am not a veteran": {"protected": False, "veteran": False},
+        "not a veteran": {"protected": False, "veteran": False},
+        "i am a veteran": {"protected": None, "veteran": True},
+    },
+    "eeo_disability": {
+        "yes, i have a disability, or have had one in the past": {"now": None, "ever": True},
+        "no, i do not have a disability and have not had one in the past":
+            {"now": False, "ever": False},
+        "i have a disability": {"now": True, "ever": True},
+        "yes, i currently have a disability": {"now": True, "ever": True},
+        "i do not currently have a disability": {"now": False, "ever": None},
+        "no, i do not currently have a disability": {"now": False, "ever": None},
+    },
+}
+
+
 def _status_facts(kind: str, value: str) -> dict[str, bool | None]:
-    """What a saved status establishes. Veteran: {"veteran", "protected"}; disability:
-    {"now", "ever"} (has one now / now or in the past)."""
-    v = _strict(value)
-    neg = bool(re.search(r"\b(not|no|don't|do not|never)\b", v))
-    if kind == "eeo_veteran":
-        prot = "protected" in v
-        if prot:  # "a protected veteran" is a veteran; "not a protected one" says nothing more
-            return {"protected": not neg, "veteran": None if neg else True}
-        return {"veteran": not neg, "protected": False if neg else None}
-    past = bool(_PAST_RE.search(v))
-    if neg:  # "no ... and have not had one" / "don't (currently) have one"
-        return {"now": False, "ever": False if past else None}
-    return {"now": None if past else True, "ever": True}  # "or have had one" / "I have one"
+    """What a saved status establishes: only the recognized standard statements count
+    (veteran: {"veteran", "protected"}; disability: {"now", "ever"})."""
+    return dict(_STATUS_FACTS[kind].get(_strict(value), {}))
 
 
 def _match_status(kind: str, value: str, options: list[str], question: str,
                   description: str) -> str | None:
     exact = [o for o in options if _strict(o) == _strict(value)]
-    if len(exact) == 1:
-        return exact[0]
+    if len(exact) == 1 and len(_strict(value).split()) >= 3:
+        return exact[0]  # a self-contained statement (never a bare "Yes"/"No": its meaning
+        # depends on the question)
     q = _strict(question).replace(",", "")
     if description.strip() or not _STATUS_QUESTION[kind].fullmatch(q):
         return None  # not the plain standard question: you answer
@@ -801,6 +825,12 @@ def match_eeo_option(kind: str, value: str, options: list[str],
     if kind in ("eeo_veteran", "eeo_disability"):
         return _match_status(kind, value, options, question, description)
     low = _norm_eeo(value)
+    word_for_word = [o for o in options if _strict(o) == _strict(value)]
+    if len(word_for_word) == 1:
+        return word_for_word[0]
+    # an option's parenthetical ("White (Not Hispanic or Latino)") is a claim too: it must be
+    # in the saved answer, word for word
+    options = [o for o in options if _parens(o) <= _parens(value)]
     exact = [o for o in options if _norm_eeo(o) == low]
     if len(exact) == 1:
         return exact[0]
