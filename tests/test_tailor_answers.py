@@ -1318,7 +1318,8 @@ def test_employer_policy_text_does_not_change_the_sponsorship_question():
     question = q("Do you currently require visa sponsorship?", "select", YES_NO,
                  description="We cannot provide sponsorship in the future.")
     hit = match_question(question, bank)
-    assert hit is not None and hit.value == "No"  # asked about NOW only
+    # the help text speaks of the future, the question of now: left for you (never "Yes")
+    assert hit is None or hit.value in (None, "")
 
 
 @pytest.mark.parametrize("label", [
@@ -1354,7 +1355,7 @@ def test_employer_policy_with_you_never_sets_the_time_scope(label, desc):
     bank = AnswerBank(work_authorization=WorkAuthorization(
         requires_sponsorship_now=False, requires_sponsorship_future=True))
     hit = match_question(q(label, "select", YES_NO, description=desc), bank)
-    assert hit is not None and hit.value == "No"
+    assert hit is None or hit.value in (None, "")  # never a "Yes" from the policy text
 
 
 def test_postal_address_never_reaches_any_llm_prompt():
@@ -1395,9 +1396,13 @@ def test_missing_field_of_the_asked_degree_is_not_taken_from_another():
 
 
 @pytest.mark.parametrize("desc,expected", [
-    ("Please answer Yes if you need sponsorship now or in the future.", "Yes"),  # widens it
-    ("We cannot provide sponsorship for you in the future.", "No"),  # employer policy
-    ("Answer only about the future.", None),  # conflicts with "currently": which?
+    # help text naming another time than the question: which is asked? left for you
+    ("Please answer Yes if you need sponsorship now or in the future.", None),
+    ("We ask you to answer Yes if you need sponsorship now or in the future.", None),
+    ("We cannot provide sponsorship for you in the future.", None),
+    ("Answer only about the future.", None),
+    ("Please answer for your current situation.", "No"),  # the same time: agrees
+    ("We do not sponsor visas.", "No"),  # no time words: the question's own scope
 ])
 def test_sponsorship_instructions_in_help_text(desc, expected):
     """Audit: the help text's instructions were ignored once the label had a time word."""
@@ -1435,3 +1440,28 @@ def test_help_text_about_protected_veterans_does_not_change_the_question():
                  description="Not all veterans are protected veterans.")
     hit = match_question(question, bank)
     assert hit is None or hit.value in (None, "")
+
+
+@pytest.mark.parametrize("desc", ["Answer only about your current sponsorship needs.",
+                                  "Answer only about the future."])
+def test_exclusive_help_text_against_a_combined_question_is_left_for_you(desc):
+    from recrute.tailor.answers import WorkAuthorization
+
+    bank = AnswerBank(work_authorization=WorkAuthorization(
+        requires_sponsorship_now=False, requires_sponsorship_future=True))
+    hit = match_question(q("Will you require visa sponsorship now or in the future?", "select",
+                           YES_NO, description=desc), bank)
+    assert hit is None or hit.value in (None, "")
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("I am a veteran", None),  # a veteran, but protected? unknown
+    ("I am not a veteran", "No"),  # not a veteran: not a protected one either
+])
+def test_protected_question_in_help_text_with_a_generic_label(value, expected):
+    from recrute.tailor.answers import EEO
+
+    bank = AnswerBank(eeo=EEO(veteran_status=value))
+    hit = match_question(q("Veteran status", "select", YES_NO,
+                           description="Are you a protected veteran?"), bank)
+    assert (hit.value if hit else None) == expected

@@ -624,15 +624,14 @@ def sponsorship_answer(label: str, wa: WorkAuthorization, *, scope_from: str | N
     if scope_from is None:
         has_now, has_fut = bool(_NOW_RE.search(t)), bool(_FUTURE_RE.search(t))
     else:
-        own = scope_from.lower()
-        detail = " ".join(s for s in re.split(r"(?<=[.?!])\s+", scope_detail.lower())
-                          if not re.search(r"\b(we|our|the company|the employer)\b", s))
+        own, detail = scope_from.lower(), scope_detail.lower()
         l_now, l_fut = bool(_NOW_RE.search(own)), bool(_FUTURE_RE.search(own))
         d_now, d_fut = bool(_NOW_RE.search(detail)), bool(_FUTURE_RE.search(detail))
-        if (l_now != l_fut) and (d_now != d_fut) and (l_now != d_now):
-            return None  # the question says "now", its instructions "the future": which?
-        # the instructions may widen the question ("answer Yes if you need it now or in the
-        # future"); the employer's own policy statements were left out above
+        if (l_now or l_fut) and (d_now or d_fut) and (
+                (l_now, l_fut) != (d_now, d_fut) or re.search(r"\bonly\b", detail)):
+            # the help text speaks of another time than the question (an instruction that
+            # widens or narrows it, or the employer's policy): which one is asked? you answer
+            return None
         has_now, has_fut = l_now or d_now, l_fut or d_fut
     if has_now and has_fut:
         required = _either(now, fut)
@@ -755,7 +754,7 @@ def _polarity(kind: str, text: str) -> str | None:
 
 
 def match_eeo_option(kind: str, value: str, options: list[str],
-                     question: str = "") -> str | None:
+                     question: str = "", description: str = "") -> str | None:
     """EEO answers: decline options, exact matches and explicit aliases only. Never fuzzy
     ("Male" must not match "Female"); unmatched stays unanswered."""
     if not value or not options:
@@ -773,13 +772,15 @@ def match_eeo_option(kind: str, value: str, options: list[str],
         want = _polarity(kind, value)
         if kind == "eeo_veteran":
             v_prot = "protected" in low
-            # the question asked (label) and its answer categories, not explanatory help
-            # text ("Not all veterans are protected veterans.")
+            # PROTECTED status is asked when the question or its answer options say so; when
+            # only the help text mentions it, either may be meant
             q_prot = "protected" in f"{question} {' '.join(options)}".lower()
+            maybe_prot = q_prot or "protected" in description.lower()
             # "not a PROTECTED veteran" says nothing about being a veteran at all; being a
-            # veteran says nothing about being a PROTECTED one (the other directions hold)
-            if (v_prot and not q_prot and want == "no") or (
-                    q_prot and not v_prot and want == "yes"):
+            # veteran says nothing about being a PROTECTED one (the other directions hold
+            # whichever is asked: "not a veteran" -> No, "a protected veteran" -> Yes)
+            if (v_prot and want == "no" and not q_prot) or (
+                    not v_prot and want == "yes" and maybe_prot):
                 return None
         hits = [o for o in options if want is not None and _polarity(kind, o) == want]
     else:
@@ -973,7 +974,7 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
 
 def _eeo_value(kind: str, q: FormQuestion, raw: str) -> Any:
     if q.options:
-        hit = match_eeo_option(kind, raw, q.options, q.label)
+        hit = match_eeo_option(kind, raw, q.options, q.label, q.description)
         return [hit] if hit and q.type == "multiselect" else hit
     if q.type in ("text", "textarea"):
         return "Decline to self-identify" if raw.strip().lower() == "decline" else raw
