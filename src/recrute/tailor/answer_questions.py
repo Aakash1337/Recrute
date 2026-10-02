@@ -243,10 +243,17 @@ def education_for(q: FormQuestion, profile: Profile, need: str = ""):
     elif re.search(r"most recent|current|latest", text):
         hits = entries[:1]
     else:
-        # unqualified: among the entries that HAVE the field
-        hits = [ed for ed in entries if not need or (getattr(ed, need) or "").strip()]
-        if len(hits) > 1 and need in ("school", "field", "end"):
+        hits = entries
+        if len(hits) > 1 and need == "gpa":
+            # several degrees: a lone GPA counts only if it is the highest earned degree's
+            best = highest_completed_degree(profile)
+            with_gpa = [ed for ed in hits if (ed.gpa or "").strip()]
+            hits = with_gpa if len(with_gpa) == 1 and best and with_gpa[0].degree == best \
+                and _completed(with_gpa[0]) else []
+        elif len(hits) > 1 and need in ("school", "field", "end"):
             # an unqualified "School"/"Major" means the highest degree actually earned
+            # (chosen BEFORE looking at the field: a blank one is never filled from another
+            # degree)
             best = highest_completed_degree(profile)
             hits = [ed for ed in hits if best and ed.degree == best and _completed(ed)][:1]
     if len(hits) != 1:

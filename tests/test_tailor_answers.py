@@ -1392,3 +1392,46 @@ def test_missing_field_of_the_asked_degree_is_not_taken_from_another():
     a = profile_answer(FormQuestion(id="m", label="Major", description="Your current degree"),
                        p)
     assert a is None or a.value in (None, "")
+
+
+@pytest.mark.parametrize("desc,expected", [
+    ("Please answer Yes if you need sponsorship now or in the future.", "Yes"),  # widens it
+    ("We cannot provide sponsorship for you in the future.", "No"),  # employer policy
+    ("Answer only about the future.", None),  # conflicts with "currently": which?
+])
+def test_sponsorship_instructions_in_help_text(desc, expected):
+    """Audit: the help text's instructions were ignored once the label had a time word."""
+    from recrute.tailor.answers import WorkAuthorization
+
+    bank = AnswerBank(work_authorization=WorkAuthorization(
+        requires_sponsorship_now=False, requires_sponsorship_future=True))
+    hit = match_question(q("Do you currently require visa sponsorship?", "select", YES_NO,
+                           description=desc), bank)
+    assert (hit.value if hit else None) == expected
+
+
+def test_highest_degree_with_blank_major_is_left_for_you():
+    """Audit: a completed master's with no major got the bachelor's major."""
+    from recrute.schemas import Education, Profile
+    from recrute.tailor.answer_questions import profile_answer
+
+    p = Profile(name="Ada", education=[
+        Education(id="m", school="Tech U", degree="Master of Science", end="2025", field=""),
+        Education(id="b", school="State U", degree="Bachelor of Science", end="2021",
+                  field="Physics")])
+    a = profile_answer(FormQuestion(id="mj", label="Major",
+                                    description="Enter the major of your highest completed "
+                                                "degree"), p)
+    assert a is None or a.value in (None, "")
+
+
+def test_help_text_about_protected_veterans_does_not_change_the_question():
+    """Audit: 'Not all veterans are protected veterans.' made 'Are you a veteran?' look like
+    the protected question, so 'not a protected veteran' answered it."""
+    from recrute.tailor.answers import EEO
+
+    bank = AnswerBank(eeo=EEO(veteran_status="I am not a protected veteran"))
+    question = q("Are you a veteran?", "select", YES_NO,
+                 description="Not all veterans are protected veterans.")
+    hit = match_question(question, bank)
+    assert hit is None or hit.value in (None, "")

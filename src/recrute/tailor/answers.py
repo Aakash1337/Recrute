@@ -621,14 +621,19 @@ def sponsorship_answer(label: str, wa: WorkAuthorization, *, scope_from: str | N
     # time words from what is asked of YOU: the question itself (the label); its description
     # only when the label has none and the description asks you something. An employer's
     # policy ("we cannot provide sponsorship for you in the future") never sets the scope.
-    asked = t
-    if scope_from is not None:
+    if scope_from is None:
+        has_now, has_fut = bool(_NOW_RE.search(t)), bool(_FUTURE_RE.search(t))
+    else:
         own = scope_from.lower()
-        detail = scope_detail.lower()
-        asked = own if (_NOW_RE.search(own) or _FUTURE_RE.search(own)) else " ".join(
-            s for s in re.split(r"(?<=[.?!])\s+", detail)
-            if not re.search(r"\b(we|our|the company|the employer)\b", s)) or own
-    has_now, has_fut = bool(_NOW_RE.search(asked)), bool(_FUTURE_RE.search(asked))
+        detail = " ".join(s for s in re.split(r"(?<=[.?!])\s+", scope_detail.lower())
+                          if not re.search(r"\b(we|our|the company|the employer)\b", s))
+        l_now, l_fut = bool(_NOW_RE.search(own)), bool(_FUTURE_RE.search(own))
+        d_now, d_fut = bool(_NOW_RE.search(detail)), bool(_FUTURE_RE.search(detail))
+        if (l_now != l_fut) and (d_now != d_fut) and (l_now != d_now):
+            return None  # the question says "now", its instructions "the future": which?
+        # the instructions may widen the question ("answer Yes if you need it now or in the
+        # future"); the employer's own policy statements were left out above
+        has_now, has_fut = l_now or d_now, l_fut or d_fut
     if has_now and has_fut:
         required = _either(now, fut)
     elif has_fut:
@@ -768,6 +773,8 @@ def match_eeo_option(kind: str, value: str, options: list[str],
         want = _polarity(kind, value)
         if kind == "eeo_veteran":
             v_prot = "protected" in low
+            # the question asked (label) and its answer categories, not explanatory help
+            # text ("Not all veterans are protected veterans.")
             q_prot = "protected" in f"{question} {' '.join(options)}".lower()
             # "not a PROTECTED veteran" says nothing about being a veteran at all; being a
             # veteran says nothing about being a PROTECTED one (the other directions hold)
@@ -966,7 +973,7 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
 
 def _eeo_value(kind: str, q: FormQuestion, raw: str) -> Any:
     if q.options:
-        hit = match_eeo_option(kind, raw, q.options, _full_question(q))
+        hit = match_eeo_option(kind, raw, q.options, q.label)
         return [hit] if hit and q.type == "multiselect" else hit
     if q.type in ("text", "textarea"):
         return "Decline to self-identify" if raw.strip().lower() == "decline" else raw
