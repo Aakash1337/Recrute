@@ -402,6 +402,25 @@ def is_postal_address(key: str, value: str) -> bool:
     return bool(_ADDRESS_RE.search(key.replace("_", " ")) or _ADDRESS_VALUE_RE.search(value))
 
 
+_EMAIL_VALUE_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_PHONE_VALUE_RE = re.compile(r"\+?[\d\s().-]{7,20}")  # the WHOLE value (not "2019-2024")
+_URL_VALUE_RE = re.compile(r"https?://|www\.|linkedin\.com|github\.com", re.IGNORECASE)
+
+
+def is_private_fact(key: str, value: str) -> bool:
+    """A saved answer that is a personal contact detail (postal address, email, phone, profile
+    link) or answered a contact question: never sent to the LLM (it's answered locally)."""
+    if is_postal_address(key, value):
+        return True
+    digits = sum(ch.isdigit() for ch in value)
+    phone = bool(_PHONE_VALUE_RE.fullmatch(value.strip())) and 7 <= digits <= 15 \
+        and not re.fullmatch(r"\d{4}\s*-\s*\d{4}", value.strip())
+    if _EMAIL_VALUE_RE.search(value) or phone or _URL_VALUE_RE.search(value):
+        return True
+    topic = re.sub(r"_[0-9a-f]{8}$", "", key).replace("_", " ")
+    return classify_question(FormQuestion(id="k", label=topic)) in CONTACT_KINDS
+
+
 def subject_terms(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9+#]+", text.lower())
             if w not in _GENERIC_WORDS and len(w) > 1}
@@ -413,8 +432,8 @@ def saved_relevance(key: str, value: str, questions: list[str]) -> float:
     Shared filler ("what is your ...") doesn't count, and a postal address is never shared."""
     topic = re.sub(r"_[0-9a-f]{8}$", "", key).replace("_", " ")
     t_terms = subject_terms(topic)
-    if is_postal_address(topic, str(value)):
-        return 0.0  # a postal address never goes to the LLM: answered locally or by you
+    if is_private_fact(key, str(value)):
+        return 0.0  # contact details never go to the LLM: answered locally or by you
     best = 0.0
     for question in questions:
         q_terms = subject_terms(question)
@@ -627,12 +646,21 @@ def sponsorship_answer(label: str, wa: WorkAuthorization, *, scope_from: str | N
         own, detail = scope_from.lower(), scope_detail.lower()
         l_now, l_fut = bool(_NOW_RE.search(own)), bool(_FUTURE_RE.search(own))
         d_now, d_fut = bool(_NOW_RE.search(detail)), bool(_FUTURE_RE.search(detail))
-        if (l_now or l_fut) and (d_now or d_fut) and (
-                (l_now, l_fut) != (d_now, d_fut) or re.search(r"\bonly\b", detail)):
-            # the help text speaks of another time than the question (an instruction that
-            # widens or narrows it, or the employer's policy): which one is asked? you answer
-            return None
-        has_now, has_fut = l_now or d_now, l_fut or d_fut
+        if l_now or l_fut:
+            if (d_now or d_fut) and ((l_now, l_fut) != (d_now, d_fut)
+                                     or re.search(r"\bonly\b", detail)):
+                # the help text speaks of another time than the question (an instruction
+                # that widens or narrows it, or the employer's policy): you answer
+                return None
+            has_now, has_fut = l_now, l_fut
+        else:
+            # no time in the question: only help text that isn't the employer talking about
+            # its own policy ("We cannot provide sponsorship in the future") may give one
+            scope = " ".join(s for s in re.split(r"(?<=[.?!])\s+", detail)
+                             if not re.search(r"\b(we|our|us|the company|the employer|"
+                                              r"cannot|can't|unable|do not|does not|will not|"
+                                              r"won't|not able)\b", s))
+            has_now, has_fut = bool(_NOW_RE.search(scope)), bool(_FUTURE_RE.search(scope))
     if has_now and has_fut:
         required = _either(now, fut)
     elif has_fut:

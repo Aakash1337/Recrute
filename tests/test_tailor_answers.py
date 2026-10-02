@@ -1465,3 +1465,38 @@ def test_protected_question_in_help_text_with_a_generic_label(value, expected):
     hit = match_question(q("Veteran status", "select", YES_NO,
                            description="Are you a protected veteran?"), bank)
     assert (hit.value if hit else None) == expected
+
+
+@pytest.mark.parametrize("desc", ["We cannot provide sponsorship in the future.",
+                                  "We are unable to sponsor visas at this time.",
+                                  "We ask you to answer Yes if you need it now or later."])
+def test_employer_text_never_gives_an_unscoped_question_a_time(desc):
+    """Audit (high): 'Will you require visa sponsorship?' (no time; the bank's now/future
+    differ) was answered from the employer's policy text."""
+    from recrute.tailor.answers import WorkAuthorization
+
+    bank = AnswerBank(work_authorization=WorkAuthorization(
+        requires_sponsorship_now=False, requires_sponsorship_future=True))
+    question = q("Will you require visa sponsorship?", "select", YES_NO, description=desc)
+    hit = match_question(question, bank)
+    assert hit is None or hit.value in (None, "")
+    # a scope phrase that is not the employer talking still counts
+    scoped = q("Will you require visa sponsorship?", "select", YES_NO,
+               description="Now or at any time in the future.")
+    assert match_question(scoped, bank).value == "Yes"
+
+
+@pytest.mark.parametrize("label", ["How would you implement email authentication?",
+                                   "How would you verify phone ownership?",
+                                   "Describe how you would secure a LinkedIn integration."])
+def test_saved_contact_details_never_reach_the_llm(label):
+    """Audit: saved email/phone were sent to the LLM for technical questions."""
+    bank = make_bank()
+    bank.common["what_is_your_email"] = "candidate.canary@example.test"
+    bank.common["what_is_your_phone_number"] = "+1 415 555 0177"
+    bank.common["linkedin_profile"] = "https://linkedin.com/in/canary"
+    router = FakeRouter({"answers": {"answers": [{"id": "t", "answer": "", "cited_ids": []}]}})
+    answer_questions([q(label, "textarea", id="t")], profile=make_profile(), bank=bank,
+                     router=router)
+    for _, prompt, *_ in router.calls:
+        assert "canary" not in prompt and "555 0177" not in prompt
