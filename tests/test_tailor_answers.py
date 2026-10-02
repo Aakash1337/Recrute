@@ -1583,3 +1583,50 @@ def test_scaled_gpa_is_not_put_into_a_number_field():
     assert a is None or a.value in (None, "")
     a = profile_answer(FormQuestion(id="g", label="GPA", type="text"), p)
     assert a is not None and a.value == "3.9/4.0"
+
+
+@pytest.mark.parametrize("value,label,expected", [
+    # "have, or have had, one" doesn't say you have one NOW
+    ("Yes, I have a disability, or have had one in the past",
+     "Do you currently have a disability?", None),
+    ("Yes, I have a disability, or have had one in the past",
+     "Do you have a disability or a history of one?", "Yes"),
+    # "don't currently have one" says nothing about the past
+    ("No, I do not currently have a disability",
+     "Do you have, or have you ever had, a disability?", None),
+    ("No, I do not have a disability and have not had one in the past",
+     "Do you have a disability?", "No"),
+])
+def test_yes_no_disability_question_must_match_the_saved_time(value, label, expected):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option("eeo_disability", value, YES_NO, label) == expected
+
+
+@pytest.mark.parametrize("label", ["Are you a disabled veteran?",
+                                   "Are you a recently separated veteran?"])
+def test_protected_veteran_does_not_establish_a_narrower_category(label):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option("eeo_veteran", "I am a protected veteran", YES_NO, label) is None
+    assert match_eeo_option("eeo_veteran", "I am a protected veteran", YES_NO,
+                            "Are you a protected veteran?") == "Yes"
+
+
+def test_phone_number_inside_saved_prose_never_reaches_the_llm():
+    """Audit: a phone number inside a saved free-text answer was sent in both prompts."""
+    from recrute.schemas import FormAnswer
+    from recrute.tailor.verify import collect_claims, verify
+
+    bank = make_bank()
+    bank.common["describe_your_python_projects"] = \
+        "I wrote Python scripts; contact me at +1 (415) 555-0177."
+    router = FakeRouter({"answers": {"answers": [{"id": "py", "answer": "", "cited_ids": []}]},
+                         "verify": {"flags": []}})
+    question = q("Tell us about your Python projects", "textarea", id="py")
+    answer_questions([question], profile=make_profile(), bank=bank, router=router)
+    claims = collect_claims(make_profile(), answers=[FormAnswer(
+        question_id="py", value="I wrote Python scripts", source="llm_new")],
+        questions=[question])
+    verify(make_profile(), claims, router=router, saved=bank.common.items())
+    assert router.calls and all("555-0177" not in call[1] for call in router.calls)

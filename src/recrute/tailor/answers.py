@@ -404,6 +404,11 @@ def is_postal_address(key: str, value: str) -> bool:
 
 _EMAIL_VALUE_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _PHONE_VALUE_RE = re.compile(r"\+?[\d\s().-]{7,20}")  # the WHOLE value (not "2019-2024")
+# a phone number INSIDE prose: a NANP number ("(415) 555-0177", "415.555.0177") or an
+# international "+CC ..." one; a year range like "2019-2024" is neither
+_PHONE_IN_TEXT_RE = re.compile(
+    r"(?<![\w+])(?:\+?1[\s.-]?)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)|"
+    r"\+\d{1,3}(?:[\s.-]?\(?\d{1,4}\)?){2,5}\d")
 _URL_VALUE_RE = re.compile(r"https?://|www\.|linkedin\.com|github\.com", re.IGNORECASE)
 
 
@@ -415,7 +420,8 @@ def is_private_fact(key: str, value: str) -> bool:
     digits = sum(ch.isdigit() for ch in value)
     phone = bool(_PHONE_VALUE_RE.fullmatch(value.strip())) and 7 <= digits <= 15 \
         and not re.fullmatch(r"\d{4}\s*-\s*\d{4}", value.strip())
-    if _EMAIL_VALUE_RE.search(value) or phone or _URL_VALUE_RE.search(value):
+    if _EMAIL_VALUE_RE.search(value) or phone or _PHONE_IN_TEXT_RE.search(value) \
+            or _URL_VALUE_RE.search(value):
         return True
     topic = re.sub(r"_[0-9a-f]{8}$", "", key).replace("_", " ")
     return classify_question(FormQuestion(id="k", label=topic)) in CONTACT_KINDS
@@ -709,6 +715,12 @@ def _polarity(kind: str, text: str) -> str | None:
     return None
 
 
+_YES_NO_WORDS = {"yes", "no"}
+_PAST_RE = re.compile(r"\b(past|history|have had|has had|ever had|previously|had one)\b")
+_VETERAN_CATEGORY = re.compile(r"disabled|recently separated|service medal|campaign badge|"
+                               r"wartime|active duty|special|national guard|reserv|combat")
+
+
 def match_eeo_option(kind: str, value: str, options: list[str],
                      question: str = "", description: str = "") -> str | None:
     """EEO answers: decline options, exact matches and explicit aliases only. Never fuzzy
@@ -726,11 +738,24 @@ def match_eeo_option(kind: str, value: str, options: list[str],
         hits = [o for o in options if _norm_eeo(o) in group]
     elif kind in _EEO_TOPIC:
         want = _polarity(kind, value)
+        if all(_norm_eeo(o) in _YES_NO_WORDS or _DECLINE_RE.search(o) for o in options):
+            # a bare Yes/No: the QUESTION carries the meaning, so it must be exactly what the
+            # saved answer establishes
+            asked = f"{question} {description}".lower()
+            if kind == "eeo_veteran" and _VETERAN_CATEGORY.search(question.lower()):
+                return None  # "disabled / recently separated ... veteran": a narrower category
+            if kind == "eeo_disability":
+                q_past, v_past = bool(_PAST_RE.search(asked)), bool(_PAST_RE.search(low))
+                # "have, or have had, one" doesn't say you have one NOW; "don't currently
+                # have one" says nothing about the past
+                if (want == "yes" and v_past and not q_past) or (
+                        want == "no" and not v_past and q_past):
+                    return None
         if kind == "eeo_disability":
             # an option that also speaks of the past ("... and have not had one in the past")
             # claims more than a saved answer that doesn't
-            past = re.compile(r"\b(past|history|have had|has had|ever had|previously)\b")
-            options = [o for o in options if not past.search(o.lower()) or past.search(low)]
+            options = [o for o in options if not _PAST_RE.search(o.lower())
+                       or _PAST_RE.search(low)]
         if kind == "eeo_veteran":
             v_prot = "protected" in low
             # PROTECTED status is asked when the question or its answer options say so; when
