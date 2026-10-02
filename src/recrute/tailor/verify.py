@@ -248,7 +248,7 @@ def _saved_evidence(claims: list[Claim], saved: Iterable[tuple[str, str]],
     """Your earlier approved answers relevant to the drafted ones, each with the question it
     answered: those a draft repeats (an address typed for one form, drafted for another) and
     those saved for a question on the same topic (the same facts, reworded)."""
-    from recrute.tailor.answers import is_postal_address, is_sensitive_text, saved_relevance
+    from recrute.tailor.answers import is_private_fact, is_sensitive_text, saved_relevance
 
     answers = [c for c in claims if c.kind == "answer"]
     texts = [" ".join(c.text.split()).casefold() for c in answers]
@@ -257,8 +257,8 @@ def _saved_evidence(claims: list[Claim], saved: Iterable[tuple[str, str]],
     for key, value in saved:
         v = " ".join(str(value).split()).casefold()
         if len(v) < 4 or is_sensitive_text(key) or is_sensitive_text(str(value)) \
-                or is_postal_address(key, str(value)):
-            continue  # (a postal address is never sent to the LLM)
+                or is_private_fact(key, str(value)):
+            continue  # (contact details are never sent to the LLM)
         topic = re.sub(r"_[0-9a-f]{8}$", "", key).replace("_", " ")
         related = saved_relevance(key, str(value), labels)
         if any(v in t for t in texts):

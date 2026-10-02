@@ -81,8 +81,8 @@ def _is_consent(q: FormQuestion) -> bool:
     text = f"{q.label} {q.description}"
     if not _CONSENT_RE.search(q.label):
         return False
-    if _QUALIFICATION_RE.search(q.label):  # "... and (that I) hold / meet ...": also a claim
-        return False
+    if _QUALIFICATION_RE.search(text) or _FACTUAL_ATTESTATION.search(text):
+        return False  # "... and (that I) hold / meet ...", label or help text: also a claim
     if _ACCURACY_RE.search(q.label):  # "... the information provided is accurate": about the
         return True  # application itself, the attestation every form asks for
     return bool(_POLICY_RE.search(text) and not _FACTUAL_ATTESTATION.search(q.label))
@@ -92,8 +92,9 @@ def _acknowledgement_option(q: FormQuestion) -> str | None:
     """The single 'I agree' option of a policy acknowledgement (no 'No' alternative)."""
     if not q.options or q.type not in ("select", "radio", "multiselect", "checkbox"):
         return None
-    if not _POLICY_RE.search(f"{q.label} {q.description}") or _FACTUAL_ATTESTATION.search(
-            q.label) or _QUALIFICATION_RE.search(q.label):
+    text = f"{q.label} {q.description}"
+    if not _POLICY_RE.search(text) or _FACTUAL_ATTESTATION.search(text) \
+            or _QUALIFICATION_RE.search(text):
         return None
     agree = [o for o in q.options if _AGREE_OPTION.match(o)]
     return agree[0] if len(agree) == 1 and len(q.options) == 1 else None
@@ -125,9 +126,15 @@ _PROFILE_RULES: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
-_DEGREE_RANK = [(r"ph\.?\s?d|doctor", 5), (r"master|m\.?s\b|m\.?sc|mba|m\.?eng", 4),
-                (r"bachelor|b\.?s\b|b\.?sc|b\.?a\b|b\.?eng|b\.?tech", 3),
-                (r"associate", 2), (r"high school|diploma|ged", 1)]
+# degree levels; abbreviations only as whole words ("Systems" is not an M.S.)
+_DEGREE_RANK = [
+    (r"\bph\.?\s?d\b|doctor|\bd\.?phil\b|\bed\.?d\b|\bd\.?sc\b|\bj\.?d\b|\bm\.?d\b", 5),
+    (r"master|\bm\.?s\.?(?:c\.?)?\b|\bm\.?a\.?\b|\bm\.?b\.?a\b|\bm\.?eng\b|\bm\.?ed\b|"
+     r"\bm\.?f\.?a\b|\bm\.?p\.?h\b|\bm\.?p\.?p\b|\bm\.?arch\b|\bll\.?m\b|\bm\.?phil\b", 4),
+    (r"bachelor|\bb\.?s\.?(?:c\.?)?\b|\bb\.?a\.?\b|\ba\.?b\.?\b|\bb\.?eng\b|\bb\.?tech\b|"
+     r"\bb\.?b\.?a\b|\bb\.?f\.?a\b|\bb\.?com\b|\bb\.?e\.?\b|\bb\.?arch\b|\bll\.?b\b", 3),
+    (r"associate|\ba\.?a\.?s?\.?\b|\ba\.?s\.?\b", 2),
+    (r"high school|diploma|\bged\b", 1)]
 
 
 _MONTHS = {m: i for i, m in enumerate(
@@ -188,6 +195,8 @@ def highest_completed_degree(profile: Profile) -> str | None:
         if not ed.degree or not _completed(ed):
             continue
         rank = next((r for rx, r in _DEGREE_RANK if re.search(rx, ed.degree, re.I)), 0)
+        if rank == 0:
+            return None  # a completed degree of unknown level: it may be the highest
         if rank > best_rank:
             best, best_rank = ed.degree, rank
     return best
@@ -243,10 +252,17 @@ def education_for(q: FormQuestion, profile: Profile, need: str = ""):
     elif re.search(r"most recent|current|latest", text):
         hits = entries[:1]
     else:
-        # unqualified: among the entries that HAVE the field
-        hits = [ed for ed in entries if not need or (getattr(ed, need) or "").strip()]
-        if len(hits) > 1 and need in ("school", "field", "end"):
+        hits = entries
+        if len(hits) > 1 and need == "gpa":
+            # several degrees: a lone GPA counts only if it is the highest earned degree's
+            best = highest_completed_degree(profile)
+            with_gpa = [ed for ed in hits if (ed.gpa or "").strip()]
+            hits = with_gpa if len(with_gpa) == 1 and best and with_gpa[0].degree == best \
+                and _completed(with_gpa[0]) else []
+        elif len(hits) > 1 and need in ("school", "field", "end"):
             # an unqualified "School"/"Major" means the highest degree actually earned
+            # (chosen BEFORE looking at the field: a blank one is never filled from another
+            # degree)
             best = highest_completed_degree(profile)
             hits = [ed for ed in hits if best and ed.degree == best and _completed(ed)][:1]
     if len(hits) != 1:

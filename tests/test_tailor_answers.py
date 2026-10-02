@@ -55,7 +55,6 @@ def test_example_bank_template_loads(paths):
     # Inverse phrasings.
     ("Are you able to work in the US without sponsorship now or in the future?", YES_NO, "No"),
     ("Can you work for us without requiring visa sponsorship at any time?", YES_NO, "No"),
-    ("Do you not require sponsorship at this time?", YES_NO, "Yes"),
     ("Will you ever need an employer to sponsor you (e.g. H-1B)?", YES_NO, "Yes"),
 ])
 def test_sponsorship_and_authorization_come_from_bank_verbatim(label, options, expected):
@@ -77,6 +76,7 @@ def test_sponsorship_text_field_and_checkbox():
     ("Are you able to work without sponsorship?", "select"),
     ("Please describe your visa sponsorship needs.", "textarea"),  # not a yes/no question
     ("What type of sponsorship would you need?", "text"),
+    ("Do you not require sponsorship at this time?", "select"),  # not a standard phrasing
 ])
 def test_ambiguous_sponsorship_wording_is_left_for_review(label, type_):
     bank = make_bank()  # now=False, future=True
@@ -311,8 +311,12 @@ def test_narrative_questions_are_not_answered_from_profile_or_bank():
     ("Gender", "Male", ["Female", "Non-binary"], None),  # never Female
     ("Gender", "Man", ["Woman", "Non-binary"], None),  # never Woman
     ("Gender", "Female", ["Non-binary", "Male"], None),
+    # the option's "(Not Hispanic or Latino)" is a claim the saved "White" doesn't make
     ("Race", "White", ["Hispanic or Latino", "White (Not Hispanic or Latino)",
-                       "Asian (Not Hispanic or Latino)"], "White (Not Hispanic or Latino)"),
+                       "Asian (Not Hispanic or Latino)"], None),
+    ("Race", "White (Not Hispanic or Latino)", ["Hispanic or Latino",
+                                                "White (Not Hispanic or Latino)"],
+     "White (Not Hispanic or Latino)"),
     ("Race", "Hispanic", ["Non-Hispanic", "Hispanic or Latino"], "Hispanic or Latino"),
     ("Race", "Hispanic", ["Non-Hispanic", "White"], None),
     ("Race", "Black", ["Black or African American", "White"], "Black or African American"),
@@ -333,7 +337,7 @@ def test_narrative_questions_are_not_answered_from_profile_or_bank():
      ["Yes, I have a disability, or have had one in the past",
       "No, I do not have a disability and have not had one in the past",
       "I do not want to answer"],
-     "No, I do not have a disability and have not had one in the past"),
+     None),  # a bare "No" says nothing of the past: use the form's exact wording instead
     ("Disability status", "decline", ["Yes", "No", "I do not want to answer"],
      "I do not want to answer"),
     ("Gender", "decline", ["Male", "Female"], None),  # no decline option -> unanswered
@@ -930,8 +934,8 @@ def _real_bank():
     ("Are you legally authorized to work in the country in which this role is located?", "Yes"),
     ("Do you have the legal right to work in the country where you are applying to work?",
      "Yes"),
-    ("Do you require visa sponsorship or additional right to work support for the country "
-     "where you are applying to work?", "No"),
+    ("Do you require visa sponsorship to work in the country where you are applying to work?",
+     "No"),
 ])
 def test_role_country_questions_for_us_only_jobs(label, expected):
     bank = _real_bank()
@@ -1023,7 +1027,7 @@ def test_us_only_means_only_the_us(locations, expected):
 
 @pytest.mark.parametrize("label,expected", [
     ("Are you able to work without requiring visa support?", True),
-    ("Do you not require visa support to work in the United States?", True),
+    ("Do you not require visa support to work in the United States?", None),  # unusual
     ("Do you not require visa support?", None),  # support for what?
     ("Do you require visa support for employment in the Netherlands?", None),
     ("Do you require visa support to travel internationally?", None),
@@ -1318,7 +1322,8 @@ def test_employer_policy_text_does_not_change_the_sponsorship_question():
     question = q("Do you currently require visa sponsorship?", "select", YES_NO,
                  description="We cannot provide sponsorship in the future.")
     hit = match_question(question, bank)
-    assert hit is not None and hit.value == "No"  # asked about NOW only
+    # the help text speaks of the future, the question of now: left for you (never "Yes")
+    assert hit is None or hit.value in (None, "")
 
 
 @pytest.mark.parametrize("label", [
@@ -1354,7 +1359,7 @@ def test_employer_policy_with_you_never_sets_the_time_scope(label, desc):
     bank = AnswerBank(work_authorization=WorkAuthorization(
         requires_sponsorship_now=False, requires_sponsorship_future=True))
     hit = match_question(q(label, "select", YES_NO, description=desc), bank)
-    assert hit is not None and hit.value == "No"
+    assert hit is None or hit.value in (None, "")  # never a "Yes" from the policy text
 
 
 def test_postal_address_never_reaches_any_llm_prompt():
@@ -1392,3 +1397,357 @@ def test_missing_field_of_the_asked_degree_is_not_taken_from_another():
     a = profile_answer(FormQuestion(id="m", label="Major", description="Your current degree"),
                        p)
     assert a is None or a.value in (None, "")
+
+
+@pytest.mark.parametrize("desc,expected", [
+    # help text naming another time than the question: which is asked? left for you
+    ("Please answer Yes if you need sponsorship now or in the future.", None),
+    ("We ask you to answer Yes if you need sponsorship now or in the future.", None),
+    ("We cannot provide sponsorship for you in the future.", None),
+    ("Answer only about the future.", None),
+    # help text that is more than a time phrase: never trusted (it can even invert the
+    # question: "If you do not require sponsorship, select No.")
+    ("Please answer for your current situation.", None),
+    ("We do not sponsor visas.", None),
+    ("If you do not require sponsorship, select No.", None),
+    ("Currently.", "No"),  # a bare time phrase that agrees with the question
+])
+def test_sponsorship_instructions_in_help_text(desc, expected):
+    """Audit: the help text's instructions were ignored once the label had a time word."""
+    from recrute.tailor.answers import WorkAuthorization
+
+    bank = AnswerBank(work_authorization=WorkAuthorization(
+        requires_sponsorship_now=False, requires_sponsorship_future=True))
+    hit = match_question(q("Do you currently require visa sponsorship?", "select", YES_NO,
+                           description=desc), bank)
+    assert (hit.value if hit else None) == expected
+
+
+def test_highest_degree_with_blank_major_is_left_for_you():
+    """Audit: a completed master's with no major got the bachelor's major."""
+    from recrute.schemas import Education, Profile
+    from recrute.tailor.answer_questions import profile_answer
+
+    p = Profile(name="Ada", education=[
+        Education(id="m", school="Tech U", degree="Master of Science", end="2025", field=""),
+        Education(id="b", school="State U", degree="Bachelor of Science", end="2021",
+                  field="Physics")])
+    a = profile_answer(FormQuestion(id="mj", label="Major",
+                                    description="Enter the major of your highest completed "
+                                                "degree"), p)
+    assert a is None or a.value in (None, "")
+
+
+def test_help_text_about_protected_veterans_does_not_change_the_question():
+    """Audit: 'Not all veterans are protected veterans.' made 'Are you a veteran?' look like
+    the protected question, so 'not a protected veteran' answered it."""
+    from recrute.tailor.answers import EEO
+
+    bank = AnswerBank(eeo=EEO(veteran_status="I am not a protected veteran"))
+    question = q("Are you a veteran?", "select", YES_NO,
+                 description="Not all veterans are protected veterans.")
+    hit = match_question(question, bank)
+    assert hit is None or hit.value in (None, "")
+
+
+@pytest.mark.parametrize("desc", ["Answer only about your current sponsorship needs.",
+                                  "Answer only about the future."])
+def test_exclusive_help_text_against_a_combined_question_is_left_for_you(desc):
+    from recrute.tailor.answers import WorkAuthorization
+
+    bank = AnswerBank(work_authorization=WorkAuthorization(
+        requires_sponsorship_now=False, requires_sponsorship_future=True))
+    hit = match_question(q("Will you require visa sponsorship now or in the future?", "select",
+                           YES_NO, description=desc), bank)
+    assert hit is None or hit.value in (None, "")
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("I am a veteran", None),
+    ("I am not a veteran", None),  # the question is in the help text: you answer
+])
+def test_protected_question_in_help_text_with_a_generic_label(value, expected):
+    from recrute.tailor.answers import EEO
+
+    bank = AnswerBank(eeo=EEO(veteran_status=value))
+    hit = match_question(q("Veteran status", "select", YES_NO,
+                           description="Are you a protected veteran?"), bank)
+    assert (hit.value if hit else None) == expected
+
+
+@pytest.mark.parametrize("desc", ["We cannot provide sponsorship in the future.",
+                                  "We are unable to sponsor visas at this time.",
+                                  "We ask you to answer Yes if you need it now or later."])
+def test_employer_text_never_gives_an_unscoped_question_a_time(desc):
+    """Audit (high): 'Will you require visa sponsorship?' (no time; the bank's now/future
+    differ) was answered from the employer's policy text."""
+    from recrute.tailor.answers import WorkAuthorization
+
+    bank = AnswerBank(work_authorization=WorkAuthorization(
+        requires_sponsorship_now=False, requires_sponsorship_future=True))
+    question = q("Will you require visa sponsorship?", "select", YES_NO, description=desc)
+    hit = match_question(question, bank)
+    assert hit is None or hit.value in (None, "")
+    # a scope phrase that is not the employer talking still counts
+    scoped = q("Will you require visa sponsorship?", "select", YES_NO,
+               description="Now or at any time in the future.")
+    assert match_question(scoped, bank).value == "Yes"
+
+
+@pytest.mark.parametrize("label", ["How would you implement email authentication?",
+                                   "How would you verify phone ownership?",
+                                   "Describe how you would secure a LinkedIn integration."])
+def test_saved_contact_details_never_reach_the_llm(label):
+    """Audit: saved email/phone were sent to the LLM for technical questions."""
+    bank = make_bank()
+    bank.common["what_is_your_email"] = "candidate.canary@example.test"
+    bank.common["what_is_your_phone_number"] = "+1 415 555 0177"
+    bank.common["linkedin_profile"] = "https://linkedin.com/in/canary"
+    router = FakeRouter({"answers": {"answers": [{"id": "t", "answer": "", "cited_ids": []}]}})
+    answer_questions([q(label, "textarea", id="t")], profile=make_profile(), bank=bank,
+                     router=router)
+    for _, prompt, *_ in router.calls:
+        assert "canary" not in prompt and "555 0177" not in prompt
+
+
+@pytest.mark.parametrize("label,desc", [
+    ("Will you require sponsorship after your current OPT expires?", ""),
+    ("If working in Canada, will you now or in the future require sponsorship?", ""),
+    ("Will you require sponsorship?", "Sponsorship is unavailable at this time."),
+    ("Do you currently require visa sponsorship?",
+     "If you do not require sponsorship, select No."),
+])
+def test_non_standard_sponsorship_wording_is_left_for_you(label, desc):
+    """Audit (high x3): conditions, policy text and instructions kept slipping through the
+    free-form parser; only the standard phrasings are answered now."""
+    from recrute.tailor.answers import WorkAuthorization
+
+    bank = AnswerBank(work_authorization=WorkAuthorization(
+        authorized_to_work_in_us=True, requires_sponsorship_now=False,
+        requires_sponsorship_future=True))
+    hit = match_question(q(label, "select", YES_NO, description=desc), bank)
+    assert hit is None or hit.value in (None, "")
+
+
+@pytest.mark.parametrize("label", [
+    "Will you now or in the future require sponsorship for employment visa status "
+    "(e.g., H-1B visa status)?",  # Greenhouse's standard question (seen on real forms)
+    "Will you now or in the future require visa sponsorship?",
+    "Will you require sponsorship now (or in the future)?",
+    # xAI's (seen on the real form)
+    "If working in the US, will you now, or in the future, require sponsorship for employment "
+    "visa status (e.g., H-1B visa) to legally work in the US?",
+])
+def test_standard_sponsorship_phrasings_are_still_answered(label):
+    from recrute.tailor.answers import WorkAuthorization
+
+    bank = AnswerBank(work_authorization=WorkAuthorization(
+        requires_sponsorship_now=False, requires_sponsorship_future=True))
+    hit = match_question(q(label, "select", YES_NO), bank)
+    assert hit is not None and hit.value == "Yes" and not hit.needs_review
+
+
+def test_current_only_disability_answer_does_not_claim_history():
+    """Audit: 'No, I do not currently have a disability' was mapped onto '... and have not
+    had one in the past'."""
+    from recrute.tailor.answers import match_eeo_option
+
+    opts = ["Yes, I have a disability, or have had one in the past",
+            "No, I do not have a disability and have not had one in the past",
+            "I do not want to answer"]
+    assert match_eeo_option("eeo_disability", "No, I do not currently have a disability",
+                            opts) is None
+
+
+@pytest.mark.parametrize("higher", ["M.A.", "MBA", "M.Sc.", "Ph.D."])
+def test_degree_abbreviations_rank_correctly(higher):
+    """Audit: a completed 'M.A.' ranked below an older 'Bachelor of Arts'."""
+    from recrute.schemas import Education, Profile
+    from recrute.tailor.answer_questions import highest_completed_degree
+
+    p = Profile(name="Ada", education=[
+        Education(id="h", school="Tech U", degree=higher, end="2024"),
+        Education(id="b", school="State U", degree="Bachelor of Arts", end="2020")])
+    assert highest_completed_degree(p) == higher
+    # "Systems" is not an M.S.; an unrecognized completed degree leaves it for you
+    p.education[0].degree = "Diploma in Information Systems"
+    assert highest_completed_degree(p) == "Bachelor of Arts"
+    p.education[0].degree = "Certificate of Advanced Study"
+    assert highest_completed_degree(p) is None
+
+
+def test_scaled_gpa_is_not_put_into_a_number_field():
+    """Audit: '3.9/4.0' was approved for a numeric GPA input."""
+    from recrute.schemas import Education, Profile
+    from recrute.tailor.answer_questions import profile_answer
+
+    p = Profile(name="Ada", education=[Education(id="e", school="U", degree="B.S.",
+                                                 end="2020", gpa="3.9/4.0")])
+    a = profile_answer(FormQuestion(id="g", label="GPA", type="number"), p)
+    assert a is None or a.value in (None, "")
+    a = profile_answer(FormQuestion(id="g", label="GPA", type="text"), p)
+    assert a is not None and a.value == "3.9/4.0"
+
+
+@pytest.mark.parametrize("value,label,expected", [
+    # "have, or have had, one" doesn't say you have one NOW
+    ("Yes, I have a disability, or have had one in the past",
+     "Do you currently have a disability?", None),
+    ("Yes, I have a disability, or have had one in the past",
+     "Do you have a disability or a history of one?", "Yes"),
+    # "don't currently have one" says nothing about the past
+    ("No, I do not currently have a disability",
+     "Do you have, or have you ever had, a disability?", None),
+    ("No, I do not have a disability and have not had one in the past",
+     "Do you have a disability?", "No"),
+])
+def test_yes_no_disability_question_must_match_the_saved_time(value, label, expected):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option("eeo_disability", value, YES_NO, label) == expected
+
+
+@pytest.mark.parametrize("label", ["Are you a disabled veteran?",
+                                   "Are you a recently separated veteran?"])
+def test_protected_veteran_does_not_establish_a_narrower_category(label):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option("eeo_veteran", "I am a protected veteran", YES_NO, label) is None
+    assert match_eeo_option("eeo_veteran", "I am a protected veteran", YES_NO,
+                            "Are you a protected veteran?") == "Yes"
+
+
+def test_phone_number_inside_saved_prose_never_reaches_the_llm():
+    """Audit: a phone number inside a saved free-text answer was sent in both prompts."""
+    from recrute.schemas import FormAnswer
+    from recrute.tailor.verify import collect_claims, verify
+
+    bank = make_bank()
+    bank.common["describe_your_python_projects"] = \
+        "I wrote Python scripts; contact me at +1 (415) 555-0177."
+    router = FakeRouter({"answers": {"answers": [{"id": "py", "answer": "", "cited_ids": []}]},
+                         "verify": {"flags": []}})
+    question = q("Tell us about your Python projects", "textarea", id="py")
+    answer_questions([question], profile=make_profile(), bank=bank, router=router)
+    claims = collect_claims(make_profile(), answers=[FormAnswer(
+        question_id="py", value="I wrote Python scripts", source="llm_new")],
+        questions=[question])
+    verify(make_profile(), claims, router=router, saved=bank.common.items())
+    assert router.calls and all("555-0177" not in call[1] for call in router.calls)
+
+
+def test_disability_time_checks_cover_descriptive_options_and_help_text():
+    from recrute.tailor.answers import match_eeo_option
+
+    past = "Yes, I have a disability, or have had one in the past"
+    assert match_eeo_option("eeo_disability", past,
+                            ["Yes, I have a disability", "No, I do not have a disability"],
+                            "Do you currently have a disability?") is None
+    # history mentioned only in explanatory help text doesn't widen a current question
+    assert match_eeo_option("eeo_disability", past, YES_NO,
+                            "Do you currently have a disability?",
+                            "Many people have had a disability in the past.") is None
+
+
+@pytest.mark.parametrize("options,label,desc", [
+    (["Yes", "No"], "Veteran status", "Are you a disabled veteran?"),
+    (["Yes, I am a disabled veteran", "No"], "Veteran status", ""),
+])
+def test_narrower_veteran_category_anywhere_is_left_for_you(options, label, desc):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option("eeo_veteran", "I am a protected veteran", options, label,
+                            desc) is None
+
+
+@pytest.mark.parametrize("value", ["Python services; call 020 7946 0958",
+                                   "Reach me on 07700 900123 for details"])
+def test_domestic_phone_numbers_in_prose_are_private(value):
+    from recrute.tailor.answers import is_private_fact
+
+    assert is_private_fact("describe_your_python_projects", value)
+    assert not is_private_fact("describe_x", "Built 3 APIs in 2019-2024, 35% faster")
+
+
+@pytest.mark.parametrize("value,expected", [("3,9", None), ("12,34", None),
+                                            ("4,000", "4000"), ("3.9", "3.9")])
+def test_number_fields_get_exactly_the_validated_number(value, expected):
+    from recrute.tailor.answers import format_value
+
+    assert format_value(FormQuestion(id="n", label="x", type="number"), value) == expected
+
+
+def test_parenthetical_claims_in_options_are_not_dropped():
+    """Audit: 'No, I do not have a disability' matched '... (and have not had one in the
+    past)' because parentheses were ignored."""
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option(
+        "eeo_disability", "No, I do not have a disability",
+        ["Yes, I have a disability", "No, I do not have a disability (and have not had one in "
+         "the past)"], "Disability status") is None
+
+
+def test_status_question_in_the_help_text_is_left_for_you():
+    """Audit: a generic 'Disability status' label with the real (history) question in its
+    description was answered from a current-only status."""
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option("eeo_disability", "No, I do not currently have a disability",
+                            YES_NO, "Disability status",
+                            "Do you have, or have you ever had, a disability?") is None
+
+
+@pytest.mark.parametrize("kind,value,label", [
+    ("eeo_veteran", "I am a protected veteran", "Are you a non-protected veteran?"),
+    ("eeo_disability", "No, I do not have a disability and have not had one in the past",
+     "Are you without a disability?"),
+])
+def test_negated_status_questions_are_left_for_you(kind, value, label):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option(kind, value, YES_NO, label) is None
+
+
+@pytest.mark.parametrize("kind,value,label,options,expected", [
+    ("eeo_veteran", "I am not a veteran", "Are you a protected veteran?", YES_NO, "No"),
+    ("eeo_veteran", "I am a protected veteran", "Veteran status",
+     ["I identify as one or more of the classifications of protected veteran listed above",
+      "I am not a protected veteran"],
+     "I identify as one or more of the classifications of protected veteran listed above"),
+    ("eeo_disability", "No, I do not have a disability and have not had one in the past",
+     "Do you have a disability?", YES_NO, "No"),
+])
+def test_plain_standard_status_questions_are_still_answered(kind, value, label, options,
+                                                            expected):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option(kind, value, options, label) == expected
+
+
+@pytest.mark.parametrize("kind,value,label", [
+    ("eeo_veteran", "I am a non-protected veteran", "Are you a protected veteran?"),
+    ("eeo_disability", "No, I do not have a disability now, but have had one in the past",
+     "Do you have a disability or a history of one?"),
+    ("eeo_disability", "Unknown", "Do you have a disability?"),
+    ("eeo_disability", "No", "Are you without a disability?"),  # bare: depends on the question
+])
+def test_only_recognized_saved_statuses_establish_anything(kind, value, label):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option(kind, value, YES_NO, label) is None
+
+
+def test_contradicting_parenthetical_never_matches():
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option("eeo_race", "White (Hispanic or Latino)",
+                            ["White (Not Hispanic or Latino)", "Hispanic or Latino"],
+                            "Race") is None
+
+
+def test_qualification_in_help_text_is_not_pre_checked_as_consent():
+    question = q("I agree", "checkbox", id="c", description="I agree to the privacy policy and "
+                 "certify that I hold an active Security+ certification")
+    res = answer_questions([question], profile=make_profile(), bank=make_bank(), router=None)
+    assert res.answers[0].value is not True

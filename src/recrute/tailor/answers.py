@@ -402,6 +402,34 @@ def is_postal_address(key: str, value: str) -> bool:
     return bool(_ADDRESS_RE.search(key.replace("_", " ")) or _ADDRESS_VALUE_RE.search(value))
 
 
+_EMAIL_VALUE_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_PHONE_VALUE_RE = re.compile(r"\+?[\d\s().-]{7,20}")  # the WHOLE value (not "2019-2024")
+# a phone number INSIDE prose: a NANP number ("(415) 555-0177", "415.555.0177") or an
+# international "+CC ..." one; a year range like "2019-2024" is neither
+_PHONE_IN_TEXT_RE = re.compile(
+    r"(?<![\w+])(?:\+?1[\s.-]?)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)|"
+    r"\+\d{1,3}(?:[\s.-]?\(?\d{1,4}\)?){2,5}\d|"
+    r"(?<![\w+])0\d{2,4}[\s.-]?\d{3,4}[\s.-]?\d{3,4}(?!\d)|"  # domestic: "020 7946 0958"
+    r"\b(?:call|phone|tel|mobile|cell|whatsapp|text|reach|contact)\b(?:\W+\w+){0,3}?\W*"
+    r"[\d(+][\d\s().-]{5,}\d")
+_URL_VALUE_RE = re.compile(r"https?://|www\.|linkedin\.com|github\.com", re.IGNORECASE)
+
+
+def is_private_fact(key: str, value: str) -> bool:
+    """A saved answer that is a personal contact detail (postal address, email, phone, profile
+    link) or answered a contact question: never sent to the LLM (it's answered locally)."""
+    if is_postal_address(key, value):
+        return True
+    digits = sum(ch.isdigit() for ch in value)
+    phone = bool(_PHONE_VALUE_RE.fullmatch(value.strip())) and 7 <= digits <= 15 \
+        and not re.fullmatch(r"\d{4}\s*-\s*\d{4}", value.strip())
+    if _EMAIL_VALUE_RE.search(value) or phone or _PHONE_IN_TEXT_RE.search(value) \
+            or _URL_VALUE_RE.search(value):
+        return True
+    topic = re.sub(r"_[0-9a-f]{8}$", "", key).replace("_", " ")
+    return classify_question(FormQuestion(id="k", label=topic)) in CONTACT_KINDS
+
+
 def subject_terms(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9+#]+", text.lower())
             if w not in _GENERIC_WORDS and len(w) > 1}
@@ -413,8 +441,8 @@ def saved_relevance(key: str, value: str, questions: list[str]) -> float:
     Shared filler ("what is your ...") doesn't count, and a postal address is never shared."""
     topic = re.sub(r"_[0-9a-f]{8}$", "", key).replace("_", " ")
     t_terms = subject_terms(topic)
-    if is_postal_address(topic, str(value)):
-        return 0.0  # a postal address never goes to the LLM: answered locally or by you
+    if is_private_fact(key, str(value)):
+        return 0.0  # contact details never go to the LLM: answered locally or by you
     best = 0.0
     for question in questions:
         q_terms = subject_terms(question)
@@ -476,18 +504,6 @@ def classify_question(q: FormQuestion) -> str | None:
 
 # --------------------------------------------------------------------------- sponsorship
 
-_NOW_RE = re.compile(r"\bnow\b|\bcurrently\b|\bcurrent\b|at this time|\bpresently\b|\btoday\b|"
-                     r"\bimmediately\b")
-_FUTURE_RE = re.compile(r"\bfuture\b|at any (point|time)|\bany ?time\b|\bever\b|\blater\b|"
-                        r"during (your|the|my) employment|going forward|down the (road|line)|"
-                        r"\beventually\b")
-_NEGATED_SPONSOR_RE = re.compile(
-    r"\bwithout\b[^?]{0,80}sponsor|\bnot\b[^?]{0,30}\b(need|requir)\w*[^?]{0,40}sponsor|"
-    r"sponsor\w*[^?]{0,30}\bnot\b[^?]{0,15}\b(needed|required)")
-_AUTH_WORDS_RE = re.compile(r"authori[sz]ed|eligible|legally|permitted|right to work|"
-                            r"able to work|can you work|could you work|allowed to work|"
-                            r"able to (start|begin) work|work in the (us|u\.s|united states)")
-
 
 def _either(a: bool | None, b: bool | None) -> bool | None:
     if a is True or b is True:
@@ -495,140 +511,95 @@ def _either(a: bool | None, b: bool | None) -> bool | None:
     return False if (a is False and b is False) else None
 
 
-# "... to work in X" / "employment in X" / "sponsorship within X": the place the question is about
-_SCOPE_RE = re.compile(r"\b(?:(?:work\w*|employ\w*|jobs?|positions?|roles?|sponsor\w*|visas?|"
-                       r"support|authori[sz]\w*|permits?|live|living|reside)\s+(?:in|within)|"
-                       r"(?:visas?|permits?|sponsor\w*|authori[sz]ation)\s+(?:for|to)|"
-                       r"(?:relocat\w*|move|moving)\s+to)\s+"
-                       r"((?:the\s+)?[a-z][\w.'-]*(?:\s+[a-z][\w.'-]*){0,3})")
-# a country the question doesn't name ("your country of employment", "the host country")
-_UNRESOLVED_COUNTRY = re.compile(r"\b(?:your|the|that|another|other|home|host|which|any|a|"
-                                 r"this)\s+(?:\w+\s+)?(?:country|countries|nation|"
-                                 r"jurisdiction)\b|\bcountry of\b")
-_US_SCOPE = re.compile(r"(the\s+)?(united states( of america)?|u\.s\.a\.?|u\.s\.?|usa|us|"
-                       r"america)(?!\w)")  # (the whole "U.S.": the period is part of it)
-_NOT_A_PLACE = re.compile(r"(the\s+)?(future|order|this|that|these|those|any|all|our|your|my|"
-                          r"which|a|an|connection|regards?|addition|case|person|office|"
-                          r"employment|work|working|you|me|them|him|her|it|"
-                          r"accordance|the next|the coming|the following|the role|the position|"
-                          r"the job|the company|the past|the meantime)\b")
+# The ONLY sponsorship questions answered from the bank: the standard US phrasings, matched as
+# a whole (any other wording, place, condition, history or duration is yours to answer).
+_S_NOW = r"(?:now|currently|at this time|presently|today)"
+_S_FUT = (r"(?:in the future|at any time in the future|at any (?:time|point)|ever|later|"
+          r"going forward|during (?:your|the) employment|at any (?:time|point) during "
+          r"(?:your|the) employment)")
+_S_BOTH = (rf"(?:{_S_NOW},? (?:or|and) (?:{_S_FUT}|at any time during (?:your|the) employment)|"
+           rf"{_S_FUT},? (?:or|and) {_S_NOW})")
+_SCOPE = rf"(?P<scope>{_S_BOTH}|{_S_NOW}|{_S_FUT})"
+_US = r"(?:the )?(?:united states(?: of america)?|u\.?s\.?(?:a\.?)?|usa|us)"
+_WHAT = (r"(?:(?:employer|company|visa|immigration|work visa|employment visa|h-?1b(?: visa)?) )?"
+         r"sponsorship|visa support|an? (?:employer|company) to sponsor (?:you|your visa)")
+_PURPOSE = (rf"(?:for (?:an? )?(?:employment |work )?visa(?: status)?|for employment(?: visa"
+            rf"(?: status)?)?|for (?:an? )?h-?1b(?: visa)?|to (?:legally |lawfully )?work"
+            rf"(?: in {_US}| for us| here)?)")
+_US_CONDITION = rf"(?:(?:if|when) (?:you are )?(?:working|employed|hired|located) in {_US} )?"
+_SPONSOR_NEED_RE = re.compile(
+    rf"{_US_CONDITION}(?:will|do|would) you (?:{_SCOPE.replace('scope', 's1')} )?(?:ever )?"
+    rf"(?:require|need) (?:{_WHAT})(?: {_PURPOSE}){{0,2}}(?:,? {_SCOPE.replace('scope', 's2')})?")
+_SPONSOR_WITHOUT_RE = re.compile(
+    rf"(?:are you|can you|will you be able to|are you able to|are you (?:legally )?"
+    rf"authori[sz]ed to|could you) (?:legally )?work(?: for us)?(?: in {_US})? without "
+    rf"(?:requiring |needing |the need for |any )?(?:{_WHAT})(?:,? {_SCOPE})?")
+# an example list after the question: only visa type names
+_EXAMPLE_RE = re.compile(r"\((?:e\.?g\.?|i\.?e\.?|such as|for example|like),? "
+                         r"(?P<ex>[^)]*)\)")
+_VISA_NAMES = re.compile(r"(?:(?:an? )?(?:h-?1b|h-?1|o-?1|l-?1|e-?3|tn|f-?1|opt|stem opt|j-?1)"
+                         r"(?: visa)?(?: status)?(?: (?:or|and) | / | )?)+")
 
 
-# what kind of visa: the words between "a"/"an" and "visa"/"permit" ("a Panama work visa", "an
-# H-1B visa", "a Costa Rica permit"), in any capitalization
-_VISA_MODIFIER = re.compile(r"\b(?:a|an)\s+((?:[a-z0-9][\w.'-]*\s+){1,3}?)(?:visas?|permits?)\b",
-                            re.IGNORECASE)
-_US_VISA_WORDS = frozenset("""us u.s u.s. usa u.s.a u.s.a. american united states work employment
-employer employer-sponsored sponsored sponsorship h-1b h1b h-1 h1 o-1 o1 l-1 l1 e-3 e3 tn f-1 f1
-opt stem j-1 j1 valid new current nonimmigrant non-immigrant immigrant temporary""".split())
+def _scope_of(phrase: str | None) -> tuple[bool, bool]:
+    if not phrase:
+        return False, False
+    if re.fullmatch(_S_BOTH, phrase):
+        return True, True
+    return bool(re.fullmatch(_S_NOW, phrase)), bool(re.fullmatch(_S_FUT, phrase))
 
 
-def _foreign_visa(label: str) -> bool:
-    """A visa of a kind the bank's US facts don't cover ("a Panama work visa")."""
-    for m in _VISA_MODIFIER.finditer(label):
-        words = [w.strip("()") for w in m.group(1).lower().split()
-                 if w not in ("a", "an", "the", "for", "any", "your", "of")]
-        if any(w not in _US_VISA_WORDS for w in words):
-            return True
-    return False
-
-
-def _non_us_scope(t: str) -> bool:
-    """The question names a place to work/live in that isn't the US ("visa support for
-    employment in Costa Rica"): the bank's US facts don't answer it."""
-    if re.search(r"\b(outside|overseas|abroad|internationally|foreign|other than)\b", t):
-        return True  # anywhere but (or besides) the US
-    if _UNRESOLVED_COUNTRY.search(t):
-        return True  # which country? (role-country questions of US-only jobs were already
-        # rewritten to "the United States" before this point)
-    pos = 0
-    while m := _SCOPE_RE.search(t, pos):  # overlapping: "sponsorship for a work visa for X"
-        pos = m.start() + 1
-        place = m.group(1)
-        if _NOT_A_PLACE.match(place):
-            continue
-        us = _US_SCOPE.match(t, m.start(1))
-        if not us:
-            return True
-        # "the US or Uruguay" / "the United States and Panama": another place too
-        if re.match(r"\s*(,|/|&|\bor\b|\band\b|\bplus\b)\s*(?!(now|currently|in the future|"
-                    r"at any|for|in order|without|do|will|are|have|if|please)\b)\w", t[us.end():]):
-            return True
-    return False
+def _norm_question(text: str) -> str:
+    t = " ".join(text.lower().replace("*", " ").replace("\u2019", "'").replace(",", " ")
+                 .split())
+    t = t.replace("[", "").replace("]", "")
+    t = re.sub(r"\(((?:or|and) [^()]*)\)", r"\1", t)  # "now (or in the future)"
+    return " ".join(t.split()).strip(" ?.:!")
 
 
 def sponsorship_answer(label: str, wa: WorkAuthorization, *, scope_from: str | None = None,
                        scope_detail: str = "") -> bool | None:
     """Yes/No for a sponsorship question, strictly from the bank; None when unsure.
 
+    Only the standard US phrasings are answered, matched as a WHOLE question:
+      "Will/Do you [now or in the future] require/need [visa/employer] sponsorship [for an
+      employment visa / to work in the US] [now or in the future]?" and the inverse "Are you
+      able/authorized to work [in the US] without sponsorship [...]?". An optional "(e.g.
+      H-1B)" may follow; help text must be empty or only a time phrase. Anything else (other
+      places, conditions, history, durations, instructions, policy text) is yours to answer.
     - scope: "now" -> requires_now; "future"/"at any time"/"ever" -> requires_future; both ->
-      now OR future; no scope words -> only answered when now and future agree.
-    - polarity: "able/authorized to work WITHOUT sponsorship" asks the inverse question.
+      now OR future; none -> only answered when now and future agree.
     """
-    # the FULL label: parenthetical clauses like "now (or in the future)" carry the scope
-    t = " ".join(label.lower().replace("*", " ").replace("’", "'").split())
-    # only genuine employer-sponsorship questions; visa STATUS questions ("are you on an H-1B?")
-    # and other countries' sponsorship are facts the bank doesn't have
-    if not re.search(r"sponsor|work permit|visa[^?]{0,40}support", t) or re.search(
-            r"\b(currently (on|hold)|do you (hold|have) an?|what is your|type of visa|"
-            r"your visa (type|status))\b|canada|kingdom|\buk\b|europe|\beu\b|india|mexico|"
-            r"australia|germany", t):
+    question = scope_from if scope_from is not None else label
+    t = _norm_question(question)
+    m_ex = _EXAMPLE_RE.search(t)
+    if m_ex:
+        if not _VISA_NAMES.fullmatch(m_ex.group("ex").strip(" .")):
+            return None
+        t = (t[:m_ex.start()] + t[m_ex.end():]).strip(" ?.:!")
+        t = " ".join(t.split())
+    need = _SPONSOR_NEED_RE.fullmatch(t)
+    without = None if need else _SPONSOR_WITHOUT_RE.fullmatch(t)
+    if not (need or without):
         return None
-    # only questions about NEEDING sponsorship (or working without it): "are you currently
-    # receiving / being sponsored", "is your employer sponsoring you" ask about a status the
-    # bank doesn't hold
-    from recrute.location import _FOREIGN
-
-    if _FOREIGN.search(t) or re.search(r"\btravel", t) or _non_us_scope(t) \
-            or _foreign_visa(label):
-        return None  # another country's sponsorship / a travel visa: not the bank's US facts
-    if "sponsor" not in t and not re.search(r"\b(work\w*|employ\w*|jobs?|roles?|positions?|"
-                                             r"hir\w*)\b", t):
-        return None  # "visa support" for what?
-    if "work permit" in t:
-        # a permit (e.g. an EAD) can be required without employer sponsorship: the bank's
-        # sponsorship flags don't say
-        return None
-    # "visa support" is sponsorship in other words: the same polarity rules apply to it
-    negated = bool(_NEGATED_SPONSOR_RE.search(re.sub(r"visa[^?]{0,40}?support", "sponsorship",
-                                                     t)))
-    if not (re.search(r"\b(?:requir\w*|need\w*|necessitat\w*)\b", t) or negated):
-        return None
-    if re.search(r"\b(?:receiv\w*|being sponsored|sponsored by|currently sponsored|"
-                 r"on (?:a |an )?(?:employer )?sponsor\w*|sponsoring you)\b", t):
-        return None
-    # "the country where this role is located / you are applying": unless the job is US-only
-    # (then localize_question already wrote "the United States"), an unknown country
-    if _ROLE_COUNTRY.search(t):
-        return None
-    # authorization qualifiers the bank doesn't establish: permanent / indefinite /
-    # unrestricted status, any employer
-    if re.search(r"permanent|indefinite|unrestricted|any employer|without (any )?restrictions?",
-                 t):
-        return None
-    # history ("have you ever required", "in the past") and durations ("for at least five
-    # years", "for the next 3 years") are facts the bank's now/future flags don't establish
-    if re.search(r"\b(have|has|had)\s+(you\s+)?(ever\s+)?(been\s+)?(requir|need|sponsor|us|"
-                 r"receiv|obtain|held)\w*|\bdid you\b|\bin the past\b|\bpreviously\b|"
-                 r"\bprior\b|\bhistor\w*|\bformer\w*|\bbefore\b", t):
-        return None
-    if re.search(r"\bfor (at least |a minimum of |the next |the following |up to |more than )?"
-                 r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten|several|a few)\s+"
-                 r"(years?|months?)\b|\b(years?|months?) from now\b|\bthrough(out)? \d{4}\b|"
-                 r"\buntil\b|\bduration\b|\bentire\b|\bfull term\b|\blong[- ]term\b", t):
-        return None
+    if need:
+        n1, f1 = _scope_of(need.group("s1"))
+        n2, f2 = _scope_of(need.group("s2"))
+        if (n1 or f1) and (n2 or f2):
+            return None  # two time phrases: unusual wording, you answer
+        has_now, has_fut = n1 or n2, f1 or f2
+    else:
+        has_now, has_fut = _scope_of(without.group("scope"))
+    detail = scope_detail.strip()
+    if detail:
+        d = _norm_question(detail)
+        if not re.fullmatch(_SCOPE, d):
+            return None  # help text beyond a time phrase (instructions, policy): you answer
+        d_now, d_fut = _scope_of(d)
+        if (has_now or has_fut) and (d_now, d_fut) != (has_now, has_fut):
+            return None
+        has_now, has_fut = d_now, d_fut
     now, fut = wa.requires_sponsorship_now, wa.requires_sponsorship_future
-    # time words from what is asked of YOU: the question itself (the label); its description
-    # only when the label has none and the description asks you something. An employer's
-    # policy ("we cannot provide sponsorship for you in the future") never sets the scope.
-    asked = t
-    if scope_from is not None:
-        own = scope_from.lower()
-        detail = scope_detail.lower()
-        asked = own if (_NOW_RE.search(own) or _FUTURE_RE.search(own)) else " ".join(
-            s for s in re.split(r"(?<=[.?!])\s+", detail)
-            if not re.search(r"\b(we|our|the company|the employer)\b", s)) or own
-    has_now, has_fut = bool(_NOW_RE.search(asked)), bool(_FUTURE_RE.search(asked))
     if has_now and has_fut:
         required = _either(now, fut)
     elif has_fut:
@@ -639,12 +610,10 @@ def sponsorship_answer(label: str, wa: WorkAuthorization, *, scope_from: str | N
         required = now if now is not None and now == fut else None
     if required is None:
         return None
-    if not negated:
+    if need:
         return required
-    if _AUTH_WORDS_RE.search(t):  # "authorized to work without sponsorship"
-        auth = wa.authorized_to_work_in_us
-        return None if auth is None else (auth and not required)
-    return not required
+    auth = wa.authorized_to_work_in_us  # "able/authorized to work without sponsorship"
+    return None if auth is None else (auth and not required)
 
 
 # --------------------------------------------------------------------------- option matching
@@ -749,31 +718,127 @@ def _polarity(kind: str, text: str) -> str | None:
     return None
 
 
+_PAST_RE = re.compile(r"\b(past|history|have had|has had|ever had|previously|had one)\b")
+
+
+def _parens(text: str) -> set[str]:
+    return {_strict(m) for m in re.findall(r"\(([^)]*)\)", text)}
+
+
+def _strict(text: str) -> str:
+    """Case and spacing only: every word (parentheses included) still counts."""
+    return " ".join(text.lower().replace("\u2019", "'").split()).strip(" .?!:")
+
+
+# Veteran / disability status: the plain standard questions and answer options are the ONLY
+# ones answered by inference from your saved status; anything else must match a saved answer
+# exactly (or is yours to answer).
+_STATUS_QUESTION = {
+    "eeo_veteran": re.compile(r"(?:protected )?veteran(?: status)?|are you a (?:protected )?"
+                              r"veteran|do you identify as a (?:protected )?veteran"),
+    "eeo_disability": re.compile(
+        r"disability(?: status)?|do you (?:currently )?have a disability|do you have a "
+        r"disability or (?:a )?history of (?:one|a disability)|do you have or have you ever had "
+        r"a disability|have you ever had a disability"),
+}
+_STANDARD_STATUS_OPTIONS = {
+    "eeo_veteran": {"yes", "no",
+                    "i identify as one or more of the classifications of protected veteran",
+                    "i identify as one or more of the classifications of protected veteran "
+                    "listed above", "i identify as a protected veteran",
+                    "i am a protected veteran", "i am not a protected veteran"},
+    "eeo_disability": {"yes", "no", "yes, i have a disability, or have had one in the past",
+                       "no, i do not have a disability and have not had one in the past"},
+}
+
+
+# The saved statuses that establish something (anything else establishes nothing).
+_STATUS_FACTS: dict[str, dict[str, dict[str, bool | None]]] = {
+    "eeo_veteran": {
+        "i am a protected veteran": {"protected": True, "veteran": True},
+        "i identify as a protected veteran": {"protected": True, "veteran": True},
+        "i identify as one or more of the classifications of protected veteran":
+            {"protected": True, "veteran": True},
+        "i identify as one or more of the classifications of protected veteran listed above":
+            {"protected": True, "veteran": True},
+        "protected veteran": {"protected": True, "veteran": True},
+        "a protected veteran": {"protected": True, "veteran": True},
+        "i am not a protected veteran": {"protected": False, "veteran": None},
+        "not a protected veteran": {"protected": False, "veteran": None},
+        "i am not a veteran": {"protected": False, "veteran": False},
+        "not a veteran": {"protected": False, "veteran": False},
+        "i am a veteran": {"protected": None, "veteran": True},
+    },
+    "eeo_disability": {
+        "yes, i have a disability, or have had one in the past": {"now": None, "ever": True},
+        "no, i do not have a disability and have not had one in the past":
+            {"now": False, "ever": False},
+        "i have a disability": {"now": True, "ever": True},
+        "yes, i currently have a disability": {"now": True, "ever": True},
+        "i do not currently have a disability": {"now": False, "ever": None},
+        "no, i do not currently have a disability": {"now": False, "ever": None},
+    },
+}
+
+
+def _status_facts(kind: str, value: str) -> dict[str, bool | None]:
+    """What a saved status establishes: only the recognized standard statements count
+    (veteran: {"veteran", "protected"}; disability: {"now", "ever"})."""
+    return dict(_STATUS_FACTS[kind].get(_strict(value), {}))
+
+
+def _match_status(kind: str, value: str, options: list[str], question: str,
+                  description: str) -> str | None:
+    exact = [o for o in options if _strict(o) == _strict(value)]
+    if len(exact) == 1 and len(_strict(value).split()) >= 3:
+        return exact[0]  # a self-contained statement (never a bare "Yes"/"No": its meaning
+        # depends on the question)
+    q = _strict(question).replace(",", "")
+    if description.strip() or not _STATUS_QUESTION[kind].fullmatch(q):
+        return None  # not the plain standard question: you answer
+    if any(_strict(o) not in _STANDARD_STATUS_OPTIONS[kind] and not _DECLINE_RE.search(o)
+           for o in options):
+        return None  # options claiming something else (a category, a history): you answer
+    facts = _status_facts(kind, value)
+    opts = " ".join(_strict(o) for o in options)
+    if kind == "eeo_veteran":
+        asked = "protected" if "protected" in f"{q} {opts}" else "veteran"
+    else:  # the options say "or have had one in the past", or the question asks about ever
+        asked = "ever" if (_PAST_RE.search(opts) or re.search(r"\bever\b|history", q)) \
+            else "now"
+    fact = facts.get(asked)
+    if fact is None:
+        return None  # the saved status doesn't establish what is asked
+    want = "yes" if fact else "no"
+    hits = [o for o in options if not _DECLINE_RE.search(o) and _polarity(kind, o) == want]
+    return hits[0] if len(hits) == 1 else None
+
+
 def match_eeo_option(kind: str, value: str, options: list[str],
-                     question: str = "") -> str | None:
+                     question: str = "", description: str = "") -> str | None:
     """EEO answers: decline options, exact matches and explicit aliases only. Never fuzzy
     ("Male" must not match "Female"); unmatched stays unanswered."""
     if not value or not options:
         return None
     if value.strip().lower() == "decline" or _DECLINE_RE.search(value):
         return _decline_option(options)
+    if kind in ("eeo_veteran", "eeo_disability"):
+        return _match_status(kind, value, options, question, description)
     low = _norm_eeo(value)
+    word_for_word = [o for o in options if _strict(o) == _strict(value)]
+    if len(word_for_word) == 1:
+        return word_for_word[0]
+    # an option's parenthetical ("White (Not Hispanic or Latino)") is a claim too: it must be
+    # in the saved answer, word for word
+    options = [o for o in options if _parens(o) <= _parens(value)]
     exact = [o for o in options if _norm_eeo(o) == low]
     if len(exact) == 1:
         return exact[0]
     if kind in _EEO_ALIASES:
         group = next((g for g in _EEO_ALIASES[kind] if low in g), {low})
         hits = [o for o in options if _norm_eeo(o) in group]
-    elif kind in _EEO_TOPIC:
+    elif kind in _EEO_TOPIC:  # (Hispanic/Latino: veteran and disability are matched above)
         want = _polarity(kind, value)
-        if kind == "eeo_veteran":
-            v_prot = "protected" in low
-            q_prot = "protected" in f"{question} {' '.join(options)}".lower()
-            # "not a PROTECTED veteran" says nothing about being a veteran at all; being a
-            # veteran says nothing about being a PROTECTED one (the other directions hold)
-            if (v_prot and not q_prot and want == "no") or (
-                    q_prot and not v_prot and want == "yes"):
-                return None
         hits = [o for o in options if want is not None and _polarity(kind, o) == want]
     else:
         hits = []
@@ -802,6 +867,13 @@ def format_value(q: FormQuestion, value: bool | str | int | None) -> Any:
     if q.type == "multiselect":
         hit = match_option(text, q.options)
         return [hit] if hit else None
+    if q.type == "number":
+        num = text.strip()
+        if re.fullmatch(r"-?\d{1,3}(?:,\d{3})+(?:\.\d+)?", num):
+            num = num.replace(",", "")  # thousands grouping: "4,000" -> "4000"
+        if not re.fullmatch(r"-?\d+(?:\.\d+)?", num):
+            return None  # "3.9/4.0", "3,9": can't go into a number field faithfully: you answer
+        text = num
     if q.max_length and len(text) > q.max_length:
         return None  # a bank answer is never silently cut; let the user shorten it
     return text
@@ -966,7 +1038,7 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
 
 def _eeo_value(kind: str, q: FormQuestion, raw: str) -> Any:
     if q.options:
-        hit = match_eeo_option(kind, raw, q.options, _full_question(q))
+        hit = match_eeo_option(kind, raw, q.options, q.label, q.description)
         return [hit] if hit and q.type == "multiselect" else hit
     if q.type in ("text", "textarea"):
         return "Decline to self-identify" if raw.strip().lower() == "decline" else raw
