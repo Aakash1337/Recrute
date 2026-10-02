@@ -718,10 +718,76 @@ def _polarity(kind: str, text: str) -> str | None:
     return None
 
 
-_YES_NO_WORDS = {"yes", "no"}
 _PAST_RE = re.compile(r"\b(past|history|have had|has had|ever had|previously|had one)\b")
-_VETERAN_CATEGORY = re.compile(r"disabled|recently separated|service medal|campaign badge|"
-                               r"wartime|active duty|special|national guard|reserv|combat")
+
+
+def _strict(text: str) -> str:
+    """Case and spacing only: every word (parentheses included) still counts."""
+    return " ".join(text.lower().replace("\u2019", "'").split()).strip(" .?!:")
+
+
+# Veteran / disability status: the plain standard questions and answer options are the ONLY
+# ones answered by inference from your saved status; anything else must match a saved answer
+# exactly (or is yours to answer).
+_STATUS_QUESTION = {
+    "eeo_veteran": re.compile(r"(?:protected )?veteran(?: status)?|are you a (?:protected )?"
+                              r"veteran|do you identify as a (?:protected )?veteran"),
+    "eeo_disability": re.compile(
+        r"disability(?: status)?|do you (?:currently )?have a disability|do you have a "
+        r"disability or (?:a )?history of (?:one|a disability)|do you have or have you ever had "
+        r"a disability|have you ever had a disability"),
+}
+_STANDARD_STATUS_OPTIONS = {
+    "eeo_veteran": {"yes", "no",
+                    "i identify as one or more of the classifications of protected veteran",
+                    "i identify as one or more of the classifications of protected veteran "
+                    "listed above", "i identify as a protected veteran",
+                    "i am a protected veteran", "i am not a protected veteran"},
+    "eeo_disability": {"yes", "no", "yes, i have a disability, or have had one in the past",
+                       "no, i do not have a disability and have not had one in the past"},
+}
+
+
+def _status_facts(kind: str, value: str) -> dict[str, bool | None]:
+    """What a saved status establishes. Veteran: {"veteran", "protected"}; disability:
+    {"now", "ever"} (has one now / now or in the past)."""
+    v = _strict(value)
+    neg = bool(re.search(r"\b(not|no|don't|do not|never)\b", v))
+    if kind == "eeo_veteran":
+        prot = "protected" in v
+        if prot:  # "a protected veteran" is a veteran; "not a protected one" says nothing more
+            return {"protected": not neg, "veteran": None if neg else True}
+        return {"veteran": not neg, "protected": False if neg else None}
+    past = bool(_PAST_RE.search(v))
+    if neg:  # "no ... and have not had one" / "don't (currently) have one"
+        return {"now": False, "ever": False if past else None}
+    return {"now": None if past else True, "ever": True}  # "or have had one" / "I have one"
+
+
+def _match_status(kind: str, value: str, options: list[str], question: str,
+                  description: str) -> str | None:
+    exact = [o for o in options if _strict(o) == _strict(value)]
+    if len(exact) == 1:
+        return exact[0]
+    q = _strict(question).replace(",", "")
+    if description.strip() or not _STATUS_QUESTION[kind].fullmatch(q):
+        return None  # not the plain standard question: you answer
+    if any(_strict(o) not in _STANDARD_STATUS_OPTIONS[kind] and not _DECLINE_RE.search(o)
+           for o in options):
+        return None  # options claiming something else (a category, a history): you answer
+    facts = _status_facts(kind, value)
+    opts = " ".join(_strict(o) for o in options)
+    if kind == "eeo_veteran":
+        asked = "protected" if "protected" in f"{q} {opts}" else "veteran"
+    else:  # the options say "or have had one in the past", or the question asks about ever
+        asked = "ever" if (_PAST_RE.search(opts) or re.search(r"\bever\b|history", q)) \
+            else "now"
+    fact = facts.get(asked)
+    if fact is None:
+        return None  # the saved status doesn't establish what is asked
+    want = "yes" if fact else "no"
+    hits = [o for o in options if not _DECLINE_RE.search(o) and _polarity(kind, o) == want]
+    return hits[0] if len(hits) == 1 else None
 
 
 def match_eeo_option(kind: str, value: str, options: list[str],
@@ -732,6 +798,8 @@ def match_eeo_option(kind: str, value: str, options: list[str],
         return None
     if value.strip().lower() == "decline" or _DECLINE_RE.search(value):
         return _decline_option(options)
+    if kind in ("eeo_veteran", "eeo_disability"):
+        return _match_status(kind, value, options, question, description)
     low = _norm_eeo(value)
     exact = [o for o in options if _norm_eeo(o) == low]
     if len(exact) == 1:
@@ -739,42 +807,9 @@ def match_eeo_option(kind: str, value: str, options: list[str],
     if kind in _EEO_ALIASES:
         group = next((g for g in _EEO_ALIASES[kind] if low in g), {low})
         hits = [o for o in options if _norm_eeo(o) in group]
-    elif kind in _EEO_TOPIC:
+    elif kind in _EEO_TOPIC:  # (Hispanic/Latino: veteran and disability are matched above)
         want = _polarity(kind, value)
-        if kind == "eeo_veteran" and _VETERAN_CATEGORY.search(
-                f"{question} {description} {' '.join(options)}".lower()):
-            # "disabled / recently separated ... veteran" anywhere in the question: a narrower
-            # category than any saved status establishes (an EXACT saved option still matched)
-            return None
-        if kind == "eeo_disability":
-            # an option that also speaks of the past ("... and have not had one in the past")
-            # claims more than a saved answer that doesn't
-            options = [o for o in options if not _PAST_RE.search(o.lower())
-                       or _PAST_RE.search(low)]
-        if kind == "eeo_veteran":
-            v_prot = "protected" in low
-            # PROTECTED status is asked when the question or its answer options say so; when
-            # only the help text mentions it, either may be meant
-            q_prot = "protected" in f"{question} {' '.join(options)}".lower()
-            maybe_prot = q_prot or "protected" in description.lower()
-            # "not a PROTECTED veteran" says nothing about being a veteran at all; being a
-            # veteran says nothing about being a PROTECTED one (the other directions hold
-            # whichever is asked: "not a veteran" -> No, "a protected veteran" -> Yes)
-            if (v_prot and want == "no" and not q_prot) or (
-                    not v_prot and want == "yes" and maybe_prot):
-                return None
         hits = [o for o in options if want is not None and _polarity(kind, o) == want]
-        if kind == "eeo_disability" and len(hits) == 1:
-            # the time the question asks about (its label and the chosen option; explanatory
-            # help text never widens it) must be the time the saved answer covers: "have, or
-            # have had, one" doesn't say you have one NOW, "don't currently have one" says
-            # nothing about the past
-            asked = f"{question} {hits[0]}".lower()
-            q_past, v_past = bool(_PAST_RE.search(asked)), bool(_PAST_RE.search(low))
-            q_now = bool(re.search(r"\b(currently|now|at present|presently)\b", asked))
-            if (want == "yes" and v_past and (not q_past or q_now)) or (
-                    want == "no" and not v_past and q_past):
-                return None
     else:
         hits = []
     return hits[0] if len(hits) == 1 else None

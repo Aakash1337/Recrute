@@ -1459,8 +1459,8 @@ def test_exclusive_help_text_against_a_combined_question_is_left_for_you(desc):
 
 
 @pytest.mark.parametrize("value,expected", [
-    ("I am a veteran", None),  # a veteran, but protected? unknown
-    ("I am not a veteran", "No"),  # not a veteran: not a protected one either
+    ("I am a veteran", None),
+    ("I am not a veteran", None),  # the question is in the help text: you answer
 ])
 def test_protected_question_in_help_text_with_a_generic_label(value, expected):
     from recrute.tailor.answers import EEO
@@ -1671,3 +1671,51 @@ def test_number_fields_get_exactly_the_validated_number(value, expected):
     from recrute.tailor.answers import format_value
 
     assert format_value(FormQuestion(id="n", label="x", type="number"), value) == expected
+
+
+def test_parenthetical_claims_in_options_are_not_dropped():
+    """Audit: 'No, I do not have a disability' matched '... (and have not had one in the
+    past)' because parentheses were ignored."""
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option(
+        "eeo_disability", "No, I do not have a disability",
+        ["Yes, I have a disability", "No, I do not have a disability (and have not had one in "
+         "the past)"], "Disability status") is None
+
+
+def test_status_question_in_the_help_text_is_left_for_you():
+    """Audit: a generic 'Disability status' label with the real (history) question in its
+    description was answered from a current-only status."""
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option("eeo_disability", "No, I do not currently have a disability",
+                            YES_NO, "Disability status",
+                            "Do you have, or have you ever had, a disability?") is None
+
+
+@pytest.mark.parametrize("kind,value,label", [
+    ("eeo_veteran", "I am a protected veteran", "Are you a non-protected veteran?"),
+    ("eeo_disability", "No, I do not have a disability and have not had one in the past",
+     "Are you without a disability?"),
+])
+def test_negated_status_questions_are_left_for_you(kind, value, label):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option(kind, value, YES_NO, label) is None
+
+
+@pytest.mark.parametrize("kind,value,label,options,expected", [
+    ("eeo_veteran", "I am not a veteran", "Are you a protected veteran?", YES_NO, "No"),
+    ("eeo_veteran", "I am a protected veteran", "Veteran status",
+     ["I identify as one or more of the classifications of protected veteran listed above",
+      "I am not a protected veteran"],
+     "I identify as one or more of the classifications of protected veteran listed above"),
+    ("eeo_disability", "No, I do not have a disability and have not had one in the past",
+     "Do you have a disability?", YES_NO, "No"),
+])
+def test_plain_standard_status_questions_are_still_answered(kind, value, label, options,
+                                                            expected):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option(kind, value, options, label) == expected
