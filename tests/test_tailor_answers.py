@@ -55,7 +55,6 @@ def test_example_bank_template_loads(paths):
     # Inverse phrasings.
     ("Are you able to work in the US without sponsorship now or in the future?", YES_NO, "No"),
     ("Can you work for us without requiring visa sponsorship at any time?", YES_NO, "No"),
-    ("Do you not require sponsorship at this time?", YES_NO, "Yes"),
     ("Will you ever need an employer to sponsor you (e.g. H-1B)?", YES_NO, "Yes"),
 ])
 def test_sponsorship_and_authorization_come_from_bank_verbatim(label, options, expected):
@@ -77,6 +76,7 @@ def test_sponsorship_text_field_and_checkbox():
     ("Are you able to work without sponsorship?", "select"),
     ("Please describe your visa sponsorship needs.", "textarea"),  # not a yes/no question
     ("What type of sponsorship would you need?", "text"),
+    ("Do you not require sponsorship at this time?", "select"),  # not a standard phrasing
 ])
 def test_ambiguous_sponsorship_wording_is_left_for_review(label, type_):
     bank = make_bank()  # now=False, future=True
@@ -333,7 +333,7 @@ def test_narrative_questions_are_not_answered_from_profile_or_bank():
      ["Yes, I have a disability, or have had one in the past",
       "No, I do not have a disability and have not had one in the past",
       "I do not want to answer"],
-     "No, I do not have a disability and have not had one in the past"),
+     None),  # a bare "No" says nothing of the past: use the form's exact wording instead
     ("Disability status", "decline", ["Yes", "No", "I do not want to answer"],
      "I do not want to answer"),
     ("Gender", "decline", ["Male", "Female"], None),  # no decline option -> unanswered
@@ -930,8 +930,8 @@ def _real_bank():
     ("Are you legally authorized to work in the country in which this role is located?", "Yes"),
     ("Do you have the legal right to work in the country where you are applying to work?",
      "Yes"),
-    ("Do you require visa sponsorship or additional right to work support for the country "
-     "where you are applying to work?", "No"),
+    ("Do you require visa sponsorship to work in the country where you are applying to work?",
+     "No"),
 ])
 def test_role_country_questions_for_us_only_jobs(label, expected):
     bank = _real_bank()
@@ -1023,7 +1023,7 @@ def test_us_only_means_only_the_us(locations, expected):
 
 @pytest.mark.parametrize("label,expected", [
     ("Are you able to work without requiring visa support?", True),
-    ("Do you not require visa support to work in the United States?", True),
+    ("Do you not require visa support to work in the United States?", None),  # unusual
     ("Do you not require visa support?", None),  # support for what?
     ("Do you require visa support for employment in the Netherlands?", None),
     ("Do you require visa support to travel internationally?", None),
@@ -1401,8 +1401,12 @@ def test_missing_field_of_the_asked_degree_is_not_taken_from_another():
     ("We ask you to answer Yes if you need sponsorship now or in the future.", None),
     ("We cannot provide sponsorship for you in the future.", None),
     ("Answer only about the future.", None),
-    ("Please answer for your current situation.", "No"),  # the same time: agrees
-    ("We do not sponsor visas.", "No"),  # no time words: the question's own scope
+    # help text that is more than a time phrase: never trusted (it can even invert the
+    # question: "If you do not require sponsorship, select No.")
+    ("Please answer for your current situation.", None),
+    ("We do not sponsor visas.", None),
+    ("If you do not require sponsorship, select No.", None),
+    ("Currently.", "No"),  # a bare time phrase that agrees with the question
 ])
 def test_sponsorship_instructions_in_help_text(desc, expected):
     """Audit: the help text's instructions were ignored once the label had a time word."""
@@ -1500,3 +1504,82 @@ def test_saved_contact_details_never_reach_the_llm(label):
                      router=router)
     for _, prompt, *_ in router.calls:
         assert "canary" not in prompt and "555 0177" not in prompt
+
+
+@pytest.mark.parametrize("label,desc", [
+    ("Will you require sponsorship after your current OPT expires?", ""),
+    ("If working in Canada, will you now or in the future require sponsorship?", ""),
+    ("Will you require sponsorship?", "Sponsorship is unavailable at this time."),
+    ("Do you currently require visa sponsorship?",
+     "If you do not require sponsorship, select No."),
+])
+def test_non_standard_sponsorship_wording_is_left_for_you(label, desc):
+    """Audit (high x3): conditions, policy text and instructions kept slipping through the
+    free-form parser; only the standard phrasings are answered now."""
+    from recrute.tailor.answers import WorkAuthorization
+
+    bank = AnswerBank(work_authorization=WorkAuthorization(
+        authorized_to_work_in_us=True, requires_sponsorship_now=False,
+        requires_sponsorship_future=True))
+    hit = match_question(q(label, "select", YES_NO, description=desc), bank)
+    assert hit is None or hit.value in (None, "")
+
+
+@pytest.mark.parametrize("label", [
+    "Will you now or in the future require sponsorship for employment visa status "
+    "(e.g., H-1B visa status)?",  # Greenhouse's standard question (seen on real forms)
+    "Will you now or in the future require visa sponsorship?",
+    "Will you require sponsorship now (or in the future)?",
+    # xAI's (seen on the real form)
+    "If working in the US, will you now, or in the future, require sponsorship for employment "
+    "visa status (e.g., H-1B visa) to legally work in the US?",
+])
+def test_standard_sponsorship_phrasings_are_still_answered(label):
+    from recrute.tailor.answers import WorkAuthorization
+
+    bank = AnswerBank(work_authorization=WorkAuthorization(
+        requires_sponsorship_now=False, requires_sponsorship_future=True))
+    hit = match_question(q(label, "select", YES_NO), bank)
+    assert hit is not None and hit.value == "Yes" and not hit.needs_review
+
+
+def test_current_only_disability_answer_does_not_claim_history():
+    """Audit: 'No, I do not currently have a disability' was mapped onto '... and have not
+    had one in the past'."""
+    from recrute.tailor.answers import match_eeo_option
+
+    opts = ["Yes, I have a disability, or have had one in the past",
+            "No, I do not have a disability and have not had one in the past",
+            "I do not want to answer"]
+    assert match_eeo_option("eeo_disability", "No, I do not currently have a disability",
+                            opts) is None
+
+
+@pytest.mark.parametrize("higher", ["M.A.", "MBA", "M.Sc.", "Ph.D."])
+def test_degree_abbreviations_rank_correctly(higher):
+    """Audit: a completed 'M.A.' ranked below an older 'Bachelor of Arts'."""
+    from recrute.schemas import Education, Profile
+    from recrute.tailor.answer_questions import highest_completed_degree
+
+    p = Profile(name="Ada", education=[
+        Education(id="h", school="Tech U", degree=higher, end="2024"),
+        Education(id="b", school="State U", degree="Bachelor of Arts", end="2020")])
+    assert highest_completed_degree(p) == higher
+    # "Systems" is not an M.S.; an unrecognized completed degree leaves it for you
+    p.education[0].degree = "Diploma in Information Systems"
+    assert highest_completed_degree(p) == "Bachelor of Arts"
+    p.education[0].degree = "Certificate of Advanced Study"
+    assert highest_completed_degree(p) is None
+
+
+def test_scaled_gpa_is_not_put_into_a_number_field():
+    """Audit: '3.9/4.0' was approved for a numeric GPA input."""
+    from recrute.schemas import Education, Profile
+    from recrute.tailor.answer_questions import profile_answer
+
+    p = Profile(name="Ada", education=[Education(id="e", school="U", degree="B.S.",
+                                                 end="2020", gpa="3.9/4.0")])
+    a = profile_answer(FormQuestion(id="g", label="GPA", type="number"), p)
+    assert a is None or a.value in (None, "")
+    a = profile_answer(FormQuestion(id="g", label="GPA", type="text"), p)
+    assert a is not None and a.value == "3.9/4.0"

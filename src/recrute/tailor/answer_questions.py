@@ -125,9 +125,15 @@ _PROFILE_RULES: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
-_DEGREE_RANK = [(r"ph\.?\s?d|doctor", 5), (r"master|m\.?s\b|m\.?sc|mba|m\.?eng", 4),
-                (r"bachelor|b\.?s\b|b\.?sc|b\.?a\b|b\.?eng|b\.?tech", 3),
-                (r"associate", 2), (r"high school|diploma|ged", 1)]
+# degree levels; abbreviations only as whole words ("Systems" is not an M.S.)
+_DEGREE_RANK = [
+    (r"\bph\.?\s?d\b|doctor|\bd\.?phil\b|\bed\.?d\b|\bd\.?sc\b|\bj\.?d\b|\bm\.?d\b", 5),
+    (r"master|\bm\.?s\.?(?:c\.?)?\b|\bm\.?a\.?\b|\bm\.?b\.?a\b|\bm\.?eng\b|\bm\.?ed\b|"
+     r"\bm\.?f\.?a\b|\bm\.?p\.?h\b|\bm\.?p\.?p\b|\bm\.?arch\b|\bll\.?m\b|\bm\.?phil\b", 4),
+    (r"bachelor|\bb\.?s\.?(?:c\.?)?\b|\bb\.?a\.?\b|\ba\.?b\.?\b|\bb\.?eng\b|\bb\.?tech\b|"
+     r"\bb\.?b\.?a\b|\bb\.?f\.?a\b|\bb\.?com\b|\bb\.?e\.?\b|\bb\.?arch\b|\bll\.?b\b", 3),
+    (r"associate|\ba\.?a\.?s?\.?\b|\ba\.?s\.?\b", 2),
+    (r"high school|diploma|\bged\b", 1)]
 
 
 _MONTHS = {m: i for i, m in enumerate(
@@ -188,6 +194,8 @@ def highest_completed_degree(profile: Profile) -> str | None:
         if not ed.degree or not _completed(ed):
             continue
         rank = next((r for rx, r in _DEGREE_RANK if re.search(rx, ed.degree, re.I)), 0)
+        if rank == 0:
+            return None  # a completed degree of unknown level: it may be the highest
         if rank > best_rank:
             best, best_rank = ed.degree, rank
     return best

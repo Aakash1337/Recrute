@@ -36,7 +36,8 @@ eeo:  # voluntary self-identification; "decline" is always an allowed value
   gender: "decline"
   race_ethnicity: "decline"
   veteran_status: "decline"
-  disability_status: "decline"
+  disability_status: "decline"  # or the form's exact wording, e.g. "No, I do not have a
+                                # disability and have not had one in the past"
 
 # Reusable free-text answers. Keys are free-form; new approved answers are added here.
 common:
