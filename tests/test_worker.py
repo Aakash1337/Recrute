@@ -201,3 +201,51 @@ def test_daily_digest_uses_dst_aware_zone(engine, monkeypatch):
     assert tz.utcoffset(datetime(2026, 11, 1, 0, 30)) != tz.utcoffset(datetime(2026, 11, 1, 12))
     start_local, start, _ = digest._day_bounds(datetime(2026, 11, 1, 12, tzinfo=ny), tz)
     assert start.hour == 4  # 00:00 EDT == 04:00 UTC
+
+
+def test_digest_window_starts_at_the_last_delivered_digest(engine, monkeypatch):
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from dateutil import tz as dtz
+
+    from recrute import tasks
+    from recrute.notify import digest
+    from recrute.settings import get_state, set_setting, set_state
+
+    monkeypatch.setattr(digest, "tzlocal", lambda: dtz.gettz("America/New_York"))
+    seen = {}
+    real = digest.collect_stats
+
+    def spy(session, **kw):
+        seen["since"] = kw["since"]
+        return real(session, **kw)
+
+    monkeypatch.setattr(digest, "collect_stats", spy)
+    ctx = SimpleNamespace(session=lambda: Session(engine))
+    with Session(engine) as s:
+        set_setting(s, "notify", {"backend": "ui", "digest_hour": 0})
+    tasks.daily_digest(ctx)  # the first one: the last 24 hours
+    first = seen["since"]
+    assert timedelta(hours=23) < datetime.now(first.tzinfo) - first < timedelta(hours=25)
+    with Session(engine) as s:
+        delivered = get_state(s, "last_digest_at")
+        assert delivered
+        set_state(s, "last_digest", "yesterday")
+    tasks.daily_digest(ctx)  # the next one picks up where the delivered one ended
+    assert seen["since"] == datetime.fromisoformat(delivered)
+
+
+def test_failed_digest_delivery_keeps_the_window(engine, monkeypatch):
+    from types import SimpleNamespace
+
+    from recrute import tasks
+    from recrute.settings import get_state, set_setting
+
+    monkeypatch.setattr(tasks, "notify", lambda *a, **kw: [SimpleNamespace(ok=False,
+                                                                          backend="ntfy")])
+    with Session(engine) as s:
+        set_setting(s, "notify", {"backend": "ntfy", "digest_hour": 0})
+    tasks.daily_digest(SimpleNamespace(session=lambda: Session(engine)))
+    with Session(engine) as s:
+        assert get_state(s, "last_digest_at") is None and get_state(s, "last_digest") is None

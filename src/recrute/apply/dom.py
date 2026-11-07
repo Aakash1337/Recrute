@@ -242,6 +242,7 @@ def extract_fields(root: Page | Frame, *, scope: str | None = None,
                                      "containerKeyAttr": container_key_attr,
                                      "formIndex": form_index, "transport": list(transport),
                                      "ignore": ignore})
+    page_text = root.evaluate("document.body ? document.body.textContent : ''") or ""
     fields: list[LiveField] = []
     seen: dict[str, int] = {}
     for i, r in enumerate(raw):
@@ -266,7 +267,7 @@ def extract_fields(root: Page | Frame, *, scope: str | None = None,
             widget=r.get("widget") or "text", option_selectors=r.get("option_selectors") or [],
             trigger=r.get("trigger") or "", current=r.get("current"),
             visible=bool(r.get("visible")), hint=r.get("hint") or "",
-            description=r.get("description") or "",
+            description=r.get("description") or "", page_text=page_text,
         ))
     return fields
 

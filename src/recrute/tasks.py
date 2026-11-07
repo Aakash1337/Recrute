@@ -387,16 +387,22 @@ def daily_digest(ctx) -> dict:
         today = now.date().isoformat()
         if now.hour < int(cfg["digest_hour"]) or get_state(s, "last_digest") == today:
             return {"skipped": "not due"}
-        stats = digest.collect_stats(s, tz=zone)
+        # everything since the digest you last got (a fixed calendar day would lose whatever
+        # happens after the morning digest)
+        last = get_state(s, "last_digest_at")
+        since = datetime.fromisoformat(last) if last else now - timedelta(hours=24)
+        stats = digest.collect_stats(s, now=now, tz=zone, since=since)
         build_digest = digest.build_digest
         title, body = build_digest(stats, base_url=cfg["ui_base_url"] or None)
         set_state(s, "last_digest_text", {"date": today, "title": title, "body": body})
         if cfg["backend"] == "ui":
             set_state(s, "last_digest", today)
+            set_state(s, "last_digest_at", now.isoformat())
             return {"sent": ["ui"]}
         results = notify(s, title, body)
         if any(r.ok for r in results):
             set_state(s, "last_digest", today)  # otherwise retried on the next tick today
+            set_state(s, "last_digest_at", now.isoformat())
         return {"sent": [r.backend for r in results if r.ok],
                 "failed": [r.backend for r in results if not r.ok]}
 

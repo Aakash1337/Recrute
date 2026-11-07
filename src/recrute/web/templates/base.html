@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Recrute{% endblock %}</title>
+  {# 409/422 carry an explanation for you ("this packet changed"): htmx drops 4xx bodies by default #}
+  <meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"^(409|422)$","swap":true,"error":false},{"code":"[45]..","swap":false,"error":true}]}'>
   <script src="/static/htmx.min.js"></script>
   <style>
     :root { color-scheme: light dark; --muted: #888; --ok: #2e9e5b; --bad: #d64545; --warn: #d69a2d;

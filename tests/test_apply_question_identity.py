@@ -2,7 +2,7 @@
 
 import pytest
 
-from recrute.apply.base import resolve_answer, same_question
+from recrute.apply.base import LiveField, coverage_check, resolve_answer, same_question
 from recrute.schemas import FormAnswer, FormQuestion, Packet
 
 
@@ -377,3 +377,66 @@ def test_changed_contact_question_is_not_accepted_as_prefill(answered):
     same = live.model_copy(update={"description": ""})
     assert coverage_check([same], packet, accept_prefilled=True) == ([] if answered
                                                                       else ["email"])
+
+
+HELP = "Answer about your current sponsorship needs only."
+QUALIFIED = FormQuestion(id="s", label="Do you require sponsorship?", type="select",
+                         options=["Yes", "No"], description=HELP)
+
+
+def _live_without_help(page_text: str, **kw) -> LiveField:
+    return LiveField(id="s", label="Do you require sponsorship?", type="select",
+                     options=["Yes", "No"], page_text=page_text, **kw)
+
+
+def test_help_text_removed_from_the_page_is_a_changed_question():
+    """Audit (critical): an approved question's qualifier disappearing still reused the answer."""
+    from recrute.apply.base import resolve_answer
+
+    packet = Packet(job_id=1, questions=[QUALIFIED],
+                    answers=[FormAnswer(question_id="s", value="No")])
+    gone = _live_without_help("Apply now. Do you require sponsorship? Yes No")
+    assert not same_question(QUALIFIED, gone)
+    assert resolve_answer(gone, packet) is None
+    assert coverage_check([gone], packet) == ["s"]
+
+
+def test_help_text_shown_away_from_its_field_is_still_the_same_question():
+    live = _live_without_help("Do you require sponsorship?\n\n ANSWER about your current "
+                              "sponsorship   needs only. \n Yes No")
+    assert same_question(QUALIFIED, live)
+
+
+def test_short_help_text_found_elsewhere_on_the_page_proves_nothing():
+    """'Currently' is likely in the job description whether or not the qualifier is still there."""
+    approved = QUALIFIED.model_copy(update={"description": "Currently"})
+    live = _live_without_help("We are currently hiring. Do you require sponsorship? Yes No")
+    assert not same_question(approved, live)
+
+
+def test_our_own_explanatory_note_is_never_expected_on_the_page():
+    from recrute.apply.base import PHONE_COUNTRY_NOTE
+
+    approved = FormQuestion(id="country", label="Country", type="select",
+                            description=PHONE_COUNTRY_NOTE)
+    assert same_question(approved, LiveField(id="country", label="Country", type="select"))
+
+
+def test_page_text_is_never_saved_with_a_live_field():
+    assert "page_text" not in _live_without_help("the whole page").model_dump()
+
+
+def test_optional_question_that_changed_keeps_its_approved_answer_from_being_dropped():
+    """Submitting without an answer you approved isn't what you approved: CP3."""
+    approved = FormQuestion(id="o", label="Years of Python", type="text")
+    live = LiveField(id="o", label="Years of Python and Java", type="text")
+    answered = Packet(job_id=1, questions=[approved],
+                      answers=[FormAnswer(question_id="o", value="4")])
+    assert coverage_check([live], answered) == ["o"]
+    # nothing to lose: no answer, an unticked box, or the same question
+    assert coverage_check([live], Packet(job_id=1, questions=[approved])) == []
+    unticked = Packet(job_id=1, questions=[approved],
+                      answers=[FormAnswer(question_id="o", value=False)])
+    assert coverage_check([live], unticked) == []
+    same = LiveField(id="o", label="Years of Python", type="text")
+    assert coverage_check([same], answered) == []
