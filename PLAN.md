@@ -348,15 +348,17 @@ strongest ecosystem.
 
 ### Independent auditor
 - `tools/audit.py` runs **Codex on `gpt-6.1-sol`** (on your subscription, in a read-only sandbox)
-  as a second pair of eyes on everything Claude builds.
+  as a second pair of eyes on everything Claude builds. A whole-repo audit also runs
+  **Claude Code on `claude-opus-5-5`** (subscription, read-only tools) as a separate session.
 - It reviews against this plan for:
   - Correctness
   - Account and data safety
   - Plan conformance (checkpoints, no fabrication, visa rules, caps)
   - Windows compatibility
   - Robustness and test gaps
-- Findings are written to `data/audits/` as JSON and markdown. Claude fixes them and re-audits.
-  The audit runs after every milestone, or on `--changed` files during work.
+- Findings are written to `data/audits/` as JSON and markdown, per auditor (`latest-sol.md`,
+  `latest-opus.md`) and together (`latest.md`). Claude fixes them and re-audits. The audit runs
+  after every milestone, or on `--changed` files during work.
 - The auditor is told not to read `resources/` or `data/` (your personal data). The prompt is in
   `tools/audit_prompt.md`.
 

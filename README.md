@@ -109,5 +109,6 @@ Every state-changing request is CSRF-protected.
 ```sh
 uv run pytest                  # unit + browser tests (live network tests: RECRUTE_LIVE=1)
 uv run ruff check .
-uv run python tools/audit.py --changed   # independent audit by Codex gpt-6.1-sol
+uv run python tools/audit.py --changed   # independent audit by GPT 6.1 Sol (Codex CLI)
+uv run python tools/audit.py             # whole repo: GPT 6.1 Sol and Opus 5.5 (Claude CLI)
 ```
