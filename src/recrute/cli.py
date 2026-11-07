@@ -51,9 +51,16 @@ def init() -> None:
         if example.exists():
             shutil.copy(example, paths.config_file)
             typer.echo(f"created {paths.config_file}")
+    for name in ("answers", "criteria"):  # (never overwrites your own)
+        example = PROJECT_ROOT / "resources" / f"{name}.example.yaml"
+        target = paths.resources / f"{name}.yaml"
+        if example.exists() and not target.exists():
+            shutil.copy(example, target)
+            typer.echo(f"created {target}: review and fill it in")
     init_db()
     typer.echo(f"database ready at {paths.db_file}")
-    typer.echo("next: `recrute doctor`, then `recrute browser login`")
+    typer.echo("next: add your resume to resources/resume/, fill in resources/answers.yaml, "
+               "then `recrute doctor`")
 
 
 @app.command()
@@ -74,6 +81,17 @@ def _setup_logging() -> None:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
+def _tls_options(cfg, home: Path) -> dict[str, str]:
+    """uvicorn's TLS options. One file without the other is a mistake, not plain HTTP (the live
+    view carries passwords); relative paths are from the project, wherever this was started."""
+    if bool(cfg.ssl_certfile) != bool(cfg.ssl_keyfile):
+        raise ValueError("[server] needs both ssl_certfile and ssl_keyfile, or neither")
+    if not cfg.ssl_certfile:
+        return {}
+    return {"ssl_certfile": str(home / cfg.ssl_certfile),
+            "ssl_keyfile": str(home / cfg.ssl_keyfile)}
+
+
 @app.command()
 def serve(host: str | None = None, port: int | None = None,
           worker: Annotated[bool, typer.Option(help="also run the background worker")] = False
@@ -83,12 +101,25 @@ def serve(host: str | None = None, port: int | None = None,
 
     _setup_logging()
     init_db()
+    cfg = get_config().server
+    try:
+        tls = _tls_options(cfg, get_paths().home)
+    except ValueError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from e
+    running = None
     if worker:
         from recrute import worker as w
 
-        w.start()
-    cfg = get_config().server
-    uvicorn.run("recrute.web.app:app", host=host or cfg.host, port=port or cfg.port)
+        running = w.start()
+    try:
+        uvicorn.run("recrute.web.app:app", host=host or cfg.host, port=port or cfg.port, **tls)
+    finally:
+        if running is not None:  # let an attempt in progress finish instead of killing it
+            ctx, threads = running
+            ctx.stop.set()
+            for thread in threads:
+                thread.join(timeout=30)
 
 
 @app.command("worker")
@@ -157,6 +188,13 @@ def set_cmd(key: str, value: str) -> None:
             typer.echo(f"error: {e}", err=True)
             raise typer.Exit(1) from e
     typer.echo(f"{key} = {json.dumps(parsed)}")
+    if key == "site_caps" and isinstance(parsed, dict):
+        from recrute.settings import PROTECTED_CAPS
+
+        for site, cap in PROTECTED_CAPS.items():
+            if int(parsed.get(site, cap)) > cap:
+                typer.echo(f"warning: {site} above {cap}/day raises the risk to that account",
+                           err=True)
 
 
 @browser_app.command("login")
@@ -224,7 +262,11 @@ def profile_ingest() -> None:
     from recrute.tailor import ingest_resume
 
     init_db()
-    result = ingest_resume(get_paths(), _router(), apply=False)
+    try:
+        result = ingest_resume(get_paths(), _router(), apply=False)
+    except FileNotFoundError as e:
+        typer.echo(f"{e}: add your resume there first", err=True)
+        raise typer.Exit(1) from e
     typer.echo(f"proposal written from {len(result.sources)} file(s)")
     for f in result.flags:
         typer.echo(f"  [{f.severity}] {f.where}: {f.text} ({f.reason})")
@@ -245,6 +287,9 @@ def profile_accept(force: bool = typer.Option(False, help="accept despite blocki
         for f in e.flags:
             typer.echo(f"  [{f.severity}] {f.where}: {f.text} ({f.reason})", err=True)
         typer.echo("blocking flags: fix the proposal or pass --force", err=True)
+        raise typer.Exit(1) from e
+    except FileNotFoundError as e:
+        typer.echo(f"{e}: run `recrute profile ingest` first", err=True)
         raise typer.Exit(1) from e
     typer.echo("profile updated")
 

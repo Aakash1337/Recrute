@@ -32,7 +32,8 @@ class TopJob:
 @dataclass
 class DigestStats:
     day: datetime  # local start of day
-    new_matches: int = 0  # discovered today and not filtered out
+    since: datetime | None = None  # counts cover this moment until now (None: the calendar day)
+    new_matches: int = 0  # discovered in the period and not filtered out
     above_threshold: dict[str, int] = field(default_factory=dict)  # priority -> count
     awaiting_approval: int = 0  # packets ready for CP2
     needs_human: int = 0  # CP3 items
@@ -57,13 +58,17 @@ def _day_bounds(now: datetime, tz: tzinfo | None) -> tuple[datetime, datetime, d
 
 
 def collect_stats(session: Session, *, now: datetime | None = None, tz: tzinfo | None = None,
-                  min_score: dict[Priority, int] | None = None, top_n: int = 5) -> DigestStats:
+                  min_score: dict[Priority, int] | None = None, top_n: int = 5,
+                  since: datetime | None = None) -> DigestStats:
+    """Activity on `now`'s calendar day, or from `since` until `now` when given."""
     now = now or datetime.now(UTC)
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
     start_local, start, end = _day_bounds(now, tz)
+    if since is not None:
+        start, end = since.astimezone(UTC), now.astimezone(UTC)
     thresholds = min_score or DEFAULT_MIN_SCORE
-    stats = DigestStats(day=start_local)
+    stats = DigestStats(day=start_local, since=since)
 
     new_today = (col(Job.first_seen) >= start) & (col(Job.first_seen) < end) & \
         col(Job.status).not_in(_NOT_MATCHES)
@@ -115,8 +120,9 @@ def build_digest(stats: DigestStats, *, base_url: str | None = None) -> tuple[st
         head.append(f"{stats.awaiting_approval} awaiting approval")
     title = "Recrute: " + ", ".join(head)
 
+    period = "since the last digest" if stats.since else "today"
     lines = [f"Digest for {stats.day.date().isoformat()}", ""]
-    lines.append(f"New matches today: {stats.new_matches}")
+    lines.append(f"New matches {period}: {stats.new_matches}")
     if stats.above_threshold:
         per = ", ".join(f"{p}: {n}" for p, n in sorted(stats.above_threshold.items()))
         lines.append(f"Above threshold: {stats.above_total} ({per})")
@@ -124,12 +130,12 @@ def build_digest(stats: DigestStats, *, base_url: str | None = None) -> tuple[st
         lines.append("Above threshold: 0")
     lines.append(f"Packets awaiting your approval: {stats.awaiting_approval}")
     lines.append(f"Needs you (CP3): {stats.needs_human}")
-    lines.append(f"Applied today: {stats.applied_today}")
+    lines.append(f"Applied {period}: {stats.applied_today}")
     if stats.responses:
         resp = ", ".join(f"{k}: {n}" for k, n in sorted(stats.responses.items()))
-        lines.append(f"Responses today: {sum(stats.responses.values())} ({resp})")
+        lines.append(f"Responses {period}: {sum(stats.responses.values())} ({resp})")
     else:
-        lines.append("Responses today: 0")
+        lines.append(f"Responses {period}: 0")
     if stats.unconfirmed_emails:
         lines.append(f"Emails to confirm: {stats.unconfirmed_emails}")
     if stats.top:

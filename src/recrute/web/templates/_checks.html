@@ -1,0 +1,9 @@
+<table>
+  {% for c in checks %}
+  <tr>
+    <td class="{{ 'ok' if c.ok else ('bad' if c.required else 'warn') }}">{{ '✔' if c.ok else ('✖' if c.required else '!') }}</td>
+    <td>{{ c.name }}</td>
+    <td class="muted">{{ c.detail }}</td>
+  </tr>
+  {% endfor %}
+</table>

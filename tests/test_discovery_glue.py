@@ -467,3 +467,27 @@ def test_guest_detail_cache_survives_between_runs(engine, monkeypatch):
         set_state(s, "source:linkedin_guest", st)
     discovery.discover_search(_ctx(engine))
     assert fetched[:2] == ["1", "2"] and "3" in fetched[2:]  # the second run reached #3
+
+
+def test_search_source_block_honors_a_longer_wait_than_the_default(engine, monkeypatch):
+    """Audit: LinkedIn asking for more than 6 hours still only got 6."""
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.http import HttpError
+    from recrute.settings import get_state, set_setting
+    from recrute.sources import linkedin_guest as lg
+
+    with Session(engine) as s:
+        set_setting(s, "sources_enabled", {k: False for k in discovery.SEARCH_SOURCES}
+                    | {"linkedin_guest": True})
+    blocked = HttpError("https://www.linkedin.com/x", 429, retry_after=86400.0)
+    fake = FakeHttp({"linkedin.com": blocked})
+    monkeypatch.setattr(discovery, "Http", lambda **kw: fake)
+    monkeypatch.setattr(lg, "Http", lambda **kw: fake, raising=False)
+    ctx = _ctx(engine)
+    ctx.criteria = Criteria()
+    discovery.discover_search(ctx)
+    with Session(engine) as s:
+        until = datetime.fromisoformat(get_state(s, "source:linkedin_guest")["backoff_until"])
+    until = until if until.tzinfo else until.replace(tzinfo=UTC)
+    assert until - datetime.now(UTC) > timedelta(hours=23)

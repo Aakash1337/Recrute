@@ -901,3 +901,89 @@ def test_retarget_after_handoff_revokes_approval_and_blocks_assist(engine):
             packets.request_assist(s, job.id)  # no assisted fill of the old packet
         packets.rebuild(s, job.id)  # recovery: a fresh packet for the new form
         assert s.get(Job, job.id).status == JobStatus.SHORTLISTED
+
+
+# --- full audit, Nov 2026 -------------------------------------------------------------------
+
+
+def test_jobs_at_a_company_in_cooldown_wait_without_using_the_llm(engine):
+    """PLAN 3.4: 'already applied to this company in the last N days' is a hard filter, before
+    any LLM call. They wait rather than being dropped: the cooldown ends."""
+    from recrute.criteria import Criteria
+    from recrute.models import Company, Job, JobStatus
+    from recrute.pipeline.stages import filter_new
+
+    session = Session(engine)
+    waiting, other = Company(name="Waiting"), Company(name="Other")
+    session.add_all([waiting, other])
+    session.flush()
+    for name, cid in (("a", waiting.id), ("b", other.id), ("c", None)):
+        session.add(Job(title="Security Analyst", apply_url=name, canonical_url=name,
+                        company_id=cid, description_md="x"))
+    session.commit()
+    filter_new(session, Criteria(), waiting_companies={waiting.id})
+    jobs = {j.canonical_url: j for j in session.exec(select(Job)).all()}
+    assert jobs["a"].priority is None and jobs["a"].status == JobStatus.DISCOVERED
+    assert jobs["b"].priority is not None and jobs["c"].priority is not None
+    filter_new(session, Criteria())  # the cooldown ended
+    session.refresh(jobs["a"])
+    assert jobs["a"].priority is not None
+
+
+def test_a_link_that_is_not_a_web_address_is_never_ingested(engine):
+    """Audit: scraped data decides where the logged-in browser goes."""
+    from recrute.models import Job
+    from recrute.pipeline.ingest import ingest
+    from recrute.schemas import RawJob
+
+    session = Session(engine)
+    for i, url in enumerate(("file:///etc/passwd", "javascript:alert(1)")):
+        ingest(session, [RawJob(source="x", source_job_id=str(i), title="Analyst", company="Acme",
+                                url=url)])
+    ingest(session, [RawJob(source="x", source_job_id="ok", title="Analyst", company="Acme",
+                            url="https://acme.example/jobs/1")])
+    assert [j.apply_url for j in session.exec(select(Job)).all()] == [
+        "https://acme.example/jobs/1"]
+
+
+@pytest.mark.parametrize("url", [
+    "http://localhost:8765/settings", "http://127.0.0.1/x", "http://[::1]/x", "http://10.0.0.5/",
+    "http://192.168.1.1/admin", "http://169.254.169.254/latest", "http://printer.local/",
+    "http://127.1:8765/settings", "http://2130706433:8765/settings",
+    "http://0x7f000001:8765/settings", "http://0x7f.0.0.1/", "http://[::ffff:127.0.0.1]/",
+])
+def test_a_link_into_your_own_network_is_never_ingested(engine, url):
+    """Re-audit: this server trusts local requests, and the browser is logged in."""
+    from recrute.models import Job
+    from recrute.pipeline.ingest import ingest
+    from recrute.schemas import RawJob
+
+    with Session(engine) as session:
+        ingest(session, [RawJob(source="x", source_job_id="1", title="Analyst", company="Acme",
+                                url=url)])
+        assert session.exec(select(Job)).all() == []
+
+
+def test_a_posting_retries_when_another_connection_commits_mid_write(engine, monkeypatch):
+    """Re-audit: SQLite refuses a read-then-write at once then, whatever the busy timeout."""
+    from sqlalchemy.exc import OperationalError
+
+    from recrute.models import Job
+    from recrute.pipeline import ingest as ingest_module
+    from recrute.schemas import RawJob
+
+    real, calls = ingest_module._ingest_one, []
+
+    def busy_once(session, raw, stats, now):
+        calls.append(raw.title)
+        if len(calls) == 1:
+            raise OperationalError("INSERT", {}, Exception("database is locked"))
+        return real(session, raw, stats, now)
+
+    monkeypatch.setattr(ingest_module, "_ingest_one", busy_once)
+    monkeypatch.setattr(ingest_module.time, "sleep", lambda s: None)
+    with Session(engine) as session:
+        stats = ingest_module.ingest(session, [RawJob(
+            source="x", source_job_id="1", title="Analyst", company="Acme",
+            url="https://acme.example/jobs/1")])
+        assert len(calls) == 2 and stats.new == 1 and len(session.exec(select(Job)).all()) == 1

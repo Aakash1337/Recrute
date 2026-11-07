@@ -23,11 +23,14 @@ discover → dedup → rules → LLM triage → 🧑 CP1 review → packet (resu
 
 ```sh
 uv sync
-uv run recrute init            # creates recrute.toml, data/, resources/, database
-uv run recrute doctor          # checks CLIs (and subscription auth), browser, resources
+uv run recrute init            # creates recrute.toml, data/, resources/ (answers + criteria), database
+uv run recrute doctor          # checks CLIs (and subscription auth), browser, your files
 uv run recrute llm test        # round-trips a prompt through claude and codex
 uv run recrute browser login   # log into LinkedIn/Google/etc. once in the dedicated profile
 uv run recrute browser probe   # shows what bot-detection scripts can see
+# add your resume and answers (below), then:
+uv run recrute profile ingest  # your resume -> data/profile.proposed.yaml, for you to review
+uv run recrute profile accept  # (or use the Profile page)
 uv run recrute serve --worker  # web UI at http://127.0.0.1:8765 + background worker
 ```
 
@@ -36,8 +39,8 @@ uv run recrute serve --worker  # web UI at http://127.0.0.1:8765 + background wo
 | File | Purpose |
 |---|---|
 | `resources/resume/*` | Your **mega resume**: everything you've done (md/docx/pdf/txt). `recrute profile ingest` structures it into `data/profile.yaml` for you to review. |
-| `resources/answers.yaml` | Answer bank for application forms (copy `answers.example.yaml`). |
-| `resources/criteria.yaml` | Tracks, filters, and thresholds (copy `criteria.example.yaml`). |
+| `resources/answers.yaml` | Answer bank for application forms (`recrute init` creates it from `answers.example.yaml`). Blank answers are asked at review. |
+| `resources/criteria.yaml` | Tracks, filters, and thresholds (`recrute init` creates it from `criteria.example.yaml`). |
 | `resources/cover_letters/`, `resources/writing/` | Voice/style samples. |
 
 The system never invents facts. Every claim it writes comes from these files, and a verifier
@@ -84,7 +87,8 @@ you're viewing into Recrute (read-only; no automation on the site).
   or a login wall hands the form to you (CP3), with a notification.
 - **The first 5 submissions per site are fill-and-pause** (trial period). Daily, per-site and
   per-company caps apply, and submissions only happen during your active hours.
-- **Any security check on LinkedIn pauses both browsing and Easy Apply** until you resume them.
+- **Any security check on LinkedIn pauses both browsing and Easy Apply** for days. You can
+  resume sooner on the Applications page, once you've checked the account.
 
 ## Running on a LAN server (e.g. an old Windows laptop)
 
@@ -101,10 +105,16 @@ you're viewing into Recrute (read-only; no automation on the site).
 Access control: requests from the machine itself need no login. LAN clients need the token.
 Every state-changing request is CSRF-protected.
 
+**Use HTTPS on a LAN.** Plain HTTP sends the token, and anything you type in the Live browser
+page, passwords included, unencrypted across your network. Make a certificate on the laptop
+(`mkcert` or `openssl`), then set `ssl_certfile` and `ssl_keyfile` under `[server]` in
+`recrute.toml`. Until you do, that page warns you.
+
 ## Development
 
 ```sh
 uv run pytest                  # unit + browser tests (live network tests: RECRUTE_LIVE=1)
 uv run ruff check .
-uv run python tools/audit.py --changed   # independent audit by Codex gpt-6.1-sol
+uv run python tools/audit.py --changed   # independent audit by GPT 6.1 Sol (Codex CLI)
+uv run python tools/audit.py             # whole repo: GPT 6.1 Sol and Opus 5.5 (Claude CLI)
 ```

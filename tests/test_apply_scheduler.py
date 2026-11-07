@@ -238,8 +238,11 @@ class FakeRunner:
 
     def __call__(self, job, packet, **kw):
         self.calls.append({"job_id": job.id, "mode": kw["mode"], "packet": packet, **kw})
+        # (like the real runner: a filled form left open for you holds its slot)
+        open_ = self.status == "needs_human" and kw["mode"] == "fill_and_pause"
         details = {"mode": kw["mode"], "effective_mode": kw["mode"],
-                   "attempted_at": kw["now"].isoformat()}
+                   "attempted_at": kw["now"].isoformat(), "page_left_open": open_,
+                   "handoff_reservation": open_}
         return ApplyOutcome(status=self.status, reason=self.reason, details=details,
                             receipt_dir="/tmp/r")
 
@@ -272,7 +275,10 @@ def graduate(s, channel="greenhouse", n=5):
     """n trial applications the human already saw through -> adapter out of trial."""
     for i in range(n):
         base = 900 if channel == "greenhouse" else 950
-        add_app(s, base + i, channel=channel, status=JobStatus.APPLIED, trial=True)
+        app, _ = add_app(s, base + i, channel=channel, status=JobStatus.APPLIED, trial=True)
+        app.outcome = {"status": "needs_human", "details": {"page_left_open": True}}
+        s.add(app)
+        s.commit()
 
 
 def test_run_due_never_runs_unapproved(session, paths):
@@ -964,3 +970,268 @@ def test_late_finalize_keeps_a_newer_request_and_submission_evidence(session):
     assert app.outcome["assist_requested"] == "tok9"  # the newer request survives
     assert app.outcome["details"]["submit_attempted"] is True  # never downgraded
     assert app.outcome["late_attempts"][-1]["reason"] == "error after submit was clicked"
+
+
+# --------------------------------------------------------------------------- full audit, Nov 2026
+
+
+def test_form_left_open_after_an_error_is_never_retried(session, paths):
+    """Audit: back in the drip queue, you could finish it by hand and it could still be sent."""
+    graduate(session, n=4)
+    app, job = add_app(session, 1)
+
+    class ErrorWithFormOpen(FakeRunner):
+        def __call__(self, job_, packet, **kw):
+            out = super().__call__(job_, packet, **kw)
+            out.details.update(page_left_open=True, handoff_reservation=True)
+            return out
+
+    res = due(session, paths, ErrorWithFormOpen(status="failed", reason="error before submit: x"))
+    assert res.mode == "fill_and_pause"
+    session.refresh(job)
+    assert job.status == JobStatus.NEEDS_HUMAN
+
+
+def _no_browser(job_, packet, **kw):
+    from recrute.errors import BrowserUnavailableError
+
+    raise BrowserUnavailableError("profile is locked")
+
+
+def test_browser_outage_uses_up_nothing(session, paths):
+    """Audit: it was recorded as 'may have been sent': a cap slot, a company cooldown, an attempt
+    and the job's place, for each job in the queue in turn."""
+    from recrute.apply.state import suspension
+
+    graduate(session)
+    app, job = add_app(session, 1)
+    res = due(session, paths, _no_browser)
+    assert res.outcome.status == "failed" and res.outcome.details["browser_unavailable"]
+    session.refresh(app)
+    session.refresh(job)
+    assert job.status == JobStatus.APPROVED and app.attempts == 0
+    assert app.submitted_at is None and not (app.outcome or {})["details"]["submit_attempted"]
+    assert day_counts(session, at(12, 30)).by_channel == {}
+    # the channel waits, rather than failing the next job the same way
+    assert suspension(session, "greenhouse", at(12, 30)) is not None
+    assert suspension(session, "greenhouse", at(14)) is None
+
+
+def test_early_exit_in_trial_mode_has_no_open_form_and_holds_no_slot(session, paths):
+    """Audit: 'the form is open for 30 minutes' with nothing open, holding a cap slot and a
+    company cooldown for an application that was never filled."""
+    from recrute.applying import left_open
+
+    out = ApplyOutcome(status="needs_human", reason="approved files changed",
+                       details={"effective_mode": "fill_and_pause", "page_left_open": False,
+                                "handoff_reservation": False})
+    assert not left_open(out)
+    graduate(session, n=4)
+    app, job = add_app(session, 1)
+
+    class EarlyExit(FakeRunner):
+        def __call__(self, job_, packet, **kw):
+            base = super().__call__(job_, packet, **kw)
+            base.details.update(page_left_open=False, handoff_reservation=False)
+            return base
+
+    due(session, paths, EarlyExit(status="needs_human", reason="approved files changed"))
+    assert day_counts(session, at(12, 30)).by_channel == {}
+
+
+def test_security_block_suspends_even_if_recording_the_attempt_fails(session, paths, monkeypatch):
+    """Audit: the kill switch ran after finalize, so a database error skipped it."""
+    from sqlalchemy.exc import OperationalError
+
+    from recrute.apply import scheduler
+    from recrute.apply.state import suspension
+
+    graduate(session)
+    add_app(session, 1)
+
+    class Checkpoint(FakeRunner):
+        def __call__(self, job_, packet, **kw):
+            out = super().__call__(job_, packet, **kw)
+            out.details["account_security"] = True
+            return out
+
+    def locked(*a, **kw):
+        raise OperationalError("UPDATE", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(scheduler, "finalize", locked)
+    monkeypatch.setattr(scheduler.time_mod, "sleep", lambda s: None)
+    with pytest.raises(OperationalError):
+        due(session, paths, Checkpoint(status="needs_human", reason="blocker: checkpoint"))
+    session.rollback()
+    assert suspension(session, "greenhouse", at(12, 30)) is not None
+
+
+def test_lock_stamp_survives_the_database_with_its_timezone(engine):
+    """Both auditors expected a naive value back, which would make every lease look lost; it's
+    SQLModel's UTCDateTime column that keeps this working, so an upgrade must not change it."""
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.apply.state import LOCK_KEY, acquire_lock
+    from recrute.models import Setting
+
+    with Session(engine) as s:
+        stamp = acquire_lock(s, "me", datetime.now(UTC), timedelta(minutes=5))
+    with Session(engine) as s:
+        assert s.get(Setting, LOCK_KEY).updated_at == stamp
+
+
+def test_finalize_holding_the_write_lock_does_not_wait_for_a_renewal(engine):
+    """Found by raising the busy timeout: finalize held the write lock and asked held(), which
+    wanted the mutex; the heartbeat held the mutex, waiting for the write lock."""
+    import threading
+    import time as _time
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import update
+
+    from recrute.apply.state import Lease
+    from recrute.models import Setting
+
+    lease = Lease(engine, "me", timedelta(minutes=5), lambda: datetime.now(UTC))
+    assert lease.acquire()
+    result = {}
+    with Session(engine) as writer:  # (what finalize does before it asks)
+        writer.execute(update(Setting).values(key=Setting.key)
+                       .execution_options(synchronize_session=False))
+        thread = threading.Thread(target=lambda: result.update(renewed=lease.renew()))
+        thread.start()
+        _time.sleep(0.2)  # the renewal is now waiting for the write lock
+        started = _time.monotonic()
+        assert lease.held() is True
+        assert _time.monotonic() - started < 2
+        writer.commit()
+    thread.join(10)
+    assert result["renewed"] is True and lease.held() is True
+
+
+def test_a_renewal_that_lost_the_lock_leaves_the_lease_lost(engine):
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import delete
+
+    from recrute.apply.state import LOCK_KEY, Lease
+    from recrute.models import Setting
+
+    lease = Lease(engine, "me", timedelta(minutes=5), lambda: datetime.now(UTC))
+    assert lease.acquire()
+    with Session(engine) as s:
+        s.execute(delete(Setting).where(Setting.key == LOCK_KEY))
+        s.commit()
+    assert lease.renew() is False and lease.stamp is None and lease.held() is False
+
+
+def test_browser_outage_on_the_last_retry_keeps_the_job_queued(session, paths):
+    """Re-audit: the limit was checked before the attempt was refunded."""
+    graduate(session)
+    app, job = add_app(session, 1)
+    app.attempts = 2  # two real failures: the claim makes this 3 of 3
+    session.add(app)
+    session.commit()
+    due(session, paths, _no_browser, max_attempts=3)
+    session.refresh(app)
+    session.refresh(job)
+    assert job.status == JobStatus.APPROVED and app.attempts == 2
+
+
+def test_suspended_while_waiting_for_the_browser_goes_nowhere(session, paths):
+    """Re-audit (high): an attempt passed the check, waited for the browser while discovery hit
+    a LinkedIn checkpoint, then filled the form anyway: only submitting re-checked it."""
+    from recrute.apply.state import suspend
+
+    graduate(session, n=4)  # still in trial: fill-and-pause never reaches the submit gate
+    app, job = add_app(session, 1)
+    seen = {}
+
+    def runner(job_, packet, **kw):
+        with Session(session.get_bind()) as other:  # discovery, holding the browser
+            suspend(other, "greenhouse", at(12), "LinkedIn browsing: checkpoint")
+        seen["why"] = kw["pre_start_check"]()
+        return ApplyOutcome(status="failed", reason=seen["why"],
+                            details={"mode": kw["mode"], "effective_mode": kw["mode"],
+                                     "not_started": True, "page_left_open": False,
+                                     "handoff_reservation": False, "submit_attempted": False})
+
+    res = due(session, paths, runner)
+    assert res.mode == "fill_and_pause" and "suspended" in seen["why"]
+    session.refresh(app)
+    session.refresh(job)
+    # it never touched a form: back in the queue, with its attempt and cap slot returned
+    assert job.status == JobStatus.APPROVED and app.attempts == 0
+    assert day_counts(session, at(12, 30)).by_channel == {}
+
+
+def test_renewal_finishing_during_held_is_not_a_lost_lease(engine, monkeypatch):
+    """Re-audit: held() read the row after a renewal it had not seen, and said lost."""
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.apply import state
+    from recrute.apply.state import Lease
+
+    lease = Lease(engine, "me", timedelta(minutes=5), lambda: datetime.now(UTC))
+    assert lease.acquire()
+    real_session, fired = state.Session, []
+
+    class RenewsDuringTheRead(real_session):
+        def get(self, *a, **kw):
+            if not fired:
+                fired.append(1)
+                lease.renew()
+            return super().get(*a, **kw)
+
+    monkeypatch.setattr(state, "Session", RenewsDuringTheRead)
+    assert lease.held() is True and lease.renewals == 1
+
+
+def test_job_whose_approval_was_revoked_mid_attempt_does_not_sit_queued_forever(session, paths):
+    """Re-audit: approved_at empty but 'queued': it could never run, or be rebuilt."""
+    graduate(session)
+    app, job = add_app(session, 1)
+
+    def runner(job_, packet, **kw):
+        with Session(session.get_bind()) as other:  # the posting moved meanwhile
+            a = other.get(Application, app.id)
+            a.approved_at = None
+            other.add(a)
+            other.commit()
+        return ApplyOutcome(status="failed", reason="CP2 approval was revoked",
+                            details={"mode": kw["mode"], "effective_mode": kw["mode"],
+                                     "not_started": True, "submit_attempted": False})
+
+    due(session, paths, runner)
+    session.refresh(job)
+    assert job.status == JobStatus.NEEDS_HUMAN
+
+
+def test_a_browser_hiccup_cannot_shorten_a_security_pause(session):
+    """Re-audit: 1 hour overwrote 3 days on an account that just hit a checkpoint."""
+    from recrute.apply.state import suspend, suspension
+
+    suspend(session, "linkedin_easy_apply", at(12), "checkpoint", timedelta(days=3))
+    suspend(session, "linkedin_easy_apply", at(12), "browser down", timedelta(hours=1))
+    active = suspension(session, "linkedin_easy_apply", at(14))
+    assert active is not None and active["reason"] == "checkpoint"
+    # a longer one still extends it
+    suspend(session, "linkedin_easy_apply", at(12), "again", timedelta(days=9))
+    assert suspension(session, "linkedin_easy_apply", at(12) + timedelta(days=5))["reason"] == \
+        "again"
+
+
+def test_trial_counts_only_clean_fills(session):
+    """Re-audit: forms you finished by hand after a CAPTCHA graduated the adapter."""
+    from recrute.apply.scheduler import supervised_success_count
+
+    for i, details in enumerate(({"page_left_open": True},
+                                 {"page_left_open": True, "blocker": "captcha"},
+                                 {"page_left_open": False, "error": "no form"},
+                                 {"page_left_open": True, "fill_failed": {"q": "x"}},
+                                 {"page_left_open": True, "verify_problems": {"q": "x"}})):
+        app, _ = add_app(session, 800 + i, status=JobStatus.APPLIED, trial=True)
+        app.outcome = {"status": "needs_human", "details": details}
+        session.add(app)
+    session.commit()
+    assert supervised_success_count(session, "greenhouse") == 1

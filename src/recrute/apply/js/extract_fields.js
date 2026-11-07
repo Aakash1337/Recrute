@@ -168,7 +168,7 @@
         if (h && !h.contains(el) && h !== c.label && !c.label.contains(h)) t = txt(h);
       }
     }
-    return clean(t).slice(0, 500);
+    return clean(t).slice(0, 20000);  // (HELP_TEXT_LIMIT in base.py)
   };
   const push = f => { if (f.description === undefined) f.description = descOf(f); out.push(f); };
 
@@ -297,7 +297,7 @@
       if (!names.length) {
         const c = container(el);
         const box = c ? c.box : el.parentElement;
-        const ms = box ? [...(box.innerText || '').matchAll(/([\w\-. ()]+\.(?:pdf|docx?|txt|rtf|odt))\b/gi)] : [];
+        const ms = box ? [...(box.innerText || '').matchAll(/([\w\-()][\w\-. ()]*\.(?:pdf|docx?|txt|rtf|odt))\b/gi)] : [];
         names = [...new Set(ms.map(m => m[1].trim()))];
       }
       const attached = names.length > 1 ? names : (names[0] || null);

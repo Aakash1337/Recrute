@@ -193,7 +193,8 @@ def discover_search(ctx) -> dict:
                         ingested_ok = True  # (with nothing found there is nothing to lose)
                         msg = " ".join(sctx.errors.values())
                         limited = any(code in msg for code in ("429", "999", "403"))
-                        wait = 6 * 3600 if limited else 1800
+                        # (a longer wait the site asked for wins: never come back sooner)
+                        wait = max(6 * 3600 if limited else 1800, sctx.retry_after or 0)
                         state["backoff_until"] = (now + timedelta(seconds=wait)).isoformat()
                         out.setdefault(name, "failed: backing off")
                     else:
@@ -379,6 +380,13 @@ def discover_linkedin(ctx) -> dict:
         found = []
         result: dict = {}
         crashed: Exception | None = None
+        # held until a security check is on record: a form-fill waiting for the browser must not
+        # get it first and find no suspension
+        from recrute.browser.runtime import BROWSER_LOCK
+
+        # (a hand-off can hold it for 30 minutes, and everything else on this thread would wait)
+        if not BROWSER_LOCK.acquire(timeout=30):
+            return {"skipped": "browser busy"}
         try:
             for raw in src.fetch(sctx):
                 found.append(raw)
@@ -386,11 +394,11 @@ def discover_linkedin(ctx) -> dict:
             result["stopped"] = str(e)  # quiet stop: someone else already raised the alarm
         except SourceBlocked as e:
             until, why = now + e.backoff, e.reason
+            # first: a security signal while BROWSING stops automated Easy Apply too
+            suspend(s, LINKEDIN_CHANNEL, now, f"LinkedIn browsing: {e.reason}", e.backoff)
             update_state(bind, "linkedin_session", lambda cur: (
                 {**cur, "blocked_until": until.isoformat(), "block_reason": why}, None))
             result["blocked"] = e.reason
-            # ...and a security signal while BROWSING stops automated Easy Apply too.
-            suspend(s, LINKEDIN_CHANNEL, now, f"LinkedIn browsing: {e.reason}", e.backoff)
             from recrute.tasks import notify
 
             notify(s, "LinkedIn browsing paused",
@@ -398,6 +406,8 @@ def discover_linkedin(ctx) -> dict:
                    f"{until:%Y-%m-%d}. Log in manually and check your account.", "high")
         except Exception as e:  # e.g. a navigation timeout: keep what was already collected
             crashed = e
+        finally:
+            BROWSER_LOCK.release()
         # (the budget was reserved in the DB slot by slot, before each page: nothing to save)
         if found:
             result.update(ingest(s, found).as_dict())

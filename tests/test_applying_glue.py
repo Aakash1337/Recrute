@@ -16,7 +16,9 @@ def test_channel_for_known_and_unknown():
     assert channel_for(other) == "generic"
 
 
-def test_fetch_questions_failure_is_empty(paths, monkeypatch):
+def test_failed_question_fetch_says_so(paths, monkeypatch):
+    """Audit: it looked like a form with no questions, and could even be auto-approved."""
+    from recrute.applying import QuestionsUnavailableError
     from recrute.http import HttpError
 
     def boom(self, url, **kw):
@@ -26,7 +28,8 @@ def test_fetch_questions_failure_is_empty(paths, monkeypatch):
     monkeypatch.setattr("recrute.http.Http.get_text", boom)
     job = Job(title="t", apply_url="https://job-boards.greenhouse.io/acme/jobs/1",
               canonical_url="c", ats="greenhouse")
-    assert fetch_questions(job, paths) == []
+    with pytest.raises(QuestionsUnavailableError):
+        fetch_questions(job, paths)
 
 
 def test_run_due_task_does_not_open_browser_when_idle(engine, paths):
@@ -249,3 +252,357 @@ def test_finishing_an_assist_keeps_a_newer_request(engine):
                                             details={"submit_attempted": False}))
     with Session(engine) as s:
         assert s.exec(select(Application)).one().outcome["assist_requested"] == "tok2"
+
+
+def test_closing_the_form_tab_ends_the_handoff_despite_the_blank_tab(tmp_path, monkeypatch):
+    """Audit: a persistent context's initial blank tab kept the apply thread waiting 30 minutes."""
+    import threading
+    from types import SimpleNamespace
+
+    from recrute import applying, live
+
+    class Tab:
+        url = "about:blank"
+
+        def is_closed(self):
+            return False
+
+    monkeypatch.setattr(live, "start_session", lambda p: None)
+    monkeypatch.setattr(live, "clear", lambda p: None)
+    browser = applying.LazyBrowser(SimpleNamespace(paths=tmp_path, stop=threading.Event()))
+    browser.context = SimpleNamespace(pages=[Tab()])
+    done = threading.Event()
+
+    def wait():
+        browser.wait_for_human(timeout=30)
+        done.set()
+
+    threading.Thread(target=wait, daemon=True).start()
+    assert done.wait(3)
+
+
+def _assist_row(engine, **outcome):
+    from datetime import UTC, datetime
+
+    from recrute.models import Application, JobStatus
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://job-boards.greenhouse.io/acme/jobs/1",
+                  canonical_url="c", ats="greenhouse", status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.flush()
+        app = Application(job_id=job.id, channel="greenhouse", approved_at=datetime.now(UTC),
+                          packet={"job_id": job.id}, outcome={"assist_requested": "tok", **outcome})
+        s.add(app)
+        s.commit()
+        return app.id
+
+
+def _assist_ctx(engine, paths):
+    return SimpleNamespace(session=lambda: Session(engine), paths=paths, router=None)
+
+
+def test_assist_that_never_got_a_browser_holds_no_slot(engine, paths, monkeypatch):
+    """Both re-audits: its own provisional reservation was taken for an earlier attempt's."""
+    from recrute import applying
+    from recrute.apply.scheduler import may_have_been_sent
+    from recrute.errors import BrowserUnavailableError
+    from recrute.models import Application, JobStatus
+
+    def no_browser(*a, **kw):
+        raise BrowserUnavailableError("profile is locked")
+
+    notified = []
+    monkeypatch.setattr("recrute.apply.runner.apply_job", no_browser)
+    monkeypatch.setattr(applying, "notify_browser_down", lambda ctx, why: notified.append(why))
+    monkeypatch.setattr(applying, "left_open", lambda o: False)
+    app_id = _assist_row(engine, details={"handoff_reservation": False})
+    with Session(engine) as s:
+        assert applying._run_assist_request(_assist_ctx(engine, paths), s, object())
+    with Session(engine) as s:
+        app = s.get(Application, app_id)
+        assert not app.outcome["details"]["handoff_reservation"]
+        assert not may_have_been_sent(app, JobStatus.NEEDS_HUMAN)
+    assert notified
+
+
+def test_assist_failure_keeps_an_earlier_attempts_slot(engine, paths, monkeypatch):
+    from recrute import applying
+    from recrute.errors import BrowserUnavailableError
+    from recrute.models import Application
+
+    def no_browser(*a, **kw):
+        raise BrowserUnavailableError("profile is locked")
+
+    monkeypatch.setattr("recrute.apply.runner.apply_job", no_browser)
+    monkeypatch.setattr(applying, "notify_browser_down", lambda ctx, why: None)
+    app_id = _assist_row(engine, details={"handoff_reservation": True})
+    with Session(engine) as s:
+        applying._run_assist_request(_assist_ctx(engine, paths), s, object())
+    with Session(engine) as s:
+        assert s.get(Application, app_id).outcome["details"]["handoff_reservation"] is True
+
+
+def test_old_assist_request_expires_instead_of_running_unattended(engine, paths, monkeypatch):
+    """Re-audit: a kept request fired whenever a suspension ended or a cap reset, at any hour."""
+    from datetime import UTC, datetime, timedelta
+
+    from recrute import applying
+    from recrute.models import Application
+
+    def forbidden(*a, **kw):
+        raise AssertionError("filled a form nobody asked for just now")
+
+    monkeypatch.setattr("recrute.apply.runner.apply_job", forbidden)
+    old = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+    app_id = _assist_row(engine, assist_requested_at=old)
+    with Session(engine) as s:
+        assert applying._run_assist_request(_assist_ctx(engine, paths), s, object()) is None
+    with Session(engine) as s:
+        outcome = s.get(Application, app_id).outcome
+    assert "assist_requested" not in outcome and "press it again" in outcome["assist_expired"]
+
+
+def test_browser_failure_on_a_live_open_request_is_reported(paths, monkeypatch):
+    from recrute import applying, live
+
+    live.request_open(paths, "https://www.linkedin.com/login")
+    notified = []
+    monkeypatch.setattr(applying, "notify_browser_down", lambda ctx, why: notified.append(why))
+
+    class Broken(applying.LazyBrowser):
+        def __call__(self):
+            raise RuntimeError("profile is locked")
+
+    monkeypatch.setattr(applying, "LazyBrowser", Broken)
+    ctx = SimpleNamespace(paths=paths, stop=threading.Event())
+    assert applying.run_due_task(ctx) == {"live_session_failed": "https://www.linkedin.com/login"}
+    assert notified
+
+
+def test_assist_crash_shows_why_and_keeps_its_slot(engine, paths, monkeypatch):
+    """Re-audit: it vanished with no reason on the Applications page."""
+    from recrute import applying
+    from recrute.models import Application
+
+    def crash(*a, **kw):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("recrute.apply.runner.apply_job", crash)
+    app_id = _assist_row(engine, details={"handoff_reservation": False})
+    with Session(engine) as s:
+        assert applying._run_assist_request(_assist_ctx(engine, paths), s, object())
+    with Session(engine) as s:
+        outcome = s.get(Application, app_id).outcome
+    assert "the pre-fill crashed" in outcome["reason"]
+    assert outcome["details"]["handoff_reservation"] is True
+
+
+def test_what_comes_back_to_you_with_no_form_open_is_notified(engine, paths, monkeypatch):
+    """Re-audit: failed 3x and interrupted attempts only showed up in the next digest."""
+    from recrute import applying, tasks
+    from recrute.apply.scheduler import RunResult
+    from recrute.models import JobStatus
+    from recrute.schemas import ApplyOutcome
+
+    with Session(engine) as s:
+        job = Job(title="Analyst", apply_url="https://x", canonical_url="c",
+                  status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.commit()
+        job_id = job.id
+    sent = []
+    monkeypatch.setattr(tasks, "notify", lambda s, title, body, priority="default": sent.append(
+        (title, body, priority)))
+
+    def result(**kw):
+        return RunResult(**kw)
+
+    outcome = ApplyOutcome(status="failed", reason="failed 3x: timeout",
+                           details={"page_left_open": False})
+    monkeypatch.setattr("recrute.apply.scheduler.run_due", lambda s, **kw: result(
+        ran=True, reason="failed 3x", outcome=outcome, job_id=job_id, recovered=[job_id]))
+    monkeypatch.setattr(applying, "_run_assist_request", lambda ctx, s, b: None)
+    ctx = SimpleNamespace(session=lambda: Session(engine), paths=paths, router=None,
+                          stop=threading.Event())
+    applying.run_due_task(ctx)
+    bodies = [b for _, b, _ in sent]
+    assert any("may have been sent" in b for b in bodies)
+    assert any("failed 3x" in b and "open in the automation" not in b for b in bodies)
+    assert {p for _, _, p in sent} == {"high"}
+
+
+def _allowed(engine, app_id, job_id, **over):
+    from recrute.applying import _assist_block_reason
+
+    args = dict(app_id=app_id, job_id=job_id, channel="greenhouse", rev=None,
+                target=("https://job-boards.greenhouse.io/acme/jobs/1", "greenhouse", None),
+                asked=None, adapter_name="greenhouse") | over
+    return _assist_block_reason(SimpleNamespace(session=lambda: Session(engine)), **args)
+
+
+def test_assisted_fill_asks_again_once_the_browser_is_ours(engine, paths):
+    """Both re-audits: you could give up, or the posting could move, while it waited."""
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.apply.state import suspend
+    from recrute.models import Application, JobStatus
+
+    app_id = _assist_row(engine)
+    with Session(engine) as s:
+        app = s.get(Application, app_id)
+        job_id, rev = app.job_id, app.packet_rev
+    assert _allowed(engine, app_id, job_id, rev=rev) is None
+    old = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    assert "waited too long" in _allowed(engine, app_id, job_id, rev=rev, asked=old)
+    assert "target changed" in _allowed(engine, app_id, job_id, rev=rev,
+                                        target=("https://new", None, None))
+    assert "packet changed" in _allowed(engine, app_id, job_id, rev="other")
+    with Session(engine) as s:
+        suspend(s, "greenhouse", datetime.now(UTC), "checkpoint")
+    assert "suspended" in _allowed(engine, app_id, job_id, rev=rev)
+    with Session(engine) as s:
+        job = s.get(Job, job_id)
+        job.status = JobStatus.REJECTED
+        s.add(job)
+        s.commit()
+    assert "the job is now" in _allowed(engine, app_id, job_id, rev=rev)
+
+
+def test_expiry_cleanup_leaves_a_newer_request_alone(engine, paths, monkeypatch):
+    """Re-audit: it wrote back what it read earlier, over the request you'd just made."""
+    from datetime import UTC, datetime, timedelta
+
+    from recrute import applying
+    from recrute.models import Application
+
+    old = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+    app_id = _assist_row(engine, assist_requested_at=old)
+    real = applying._assist_expired
+
+    def pressed_again_meanwhile(outcome, now):
+        expired = real(outcome, now)
+        with Session(engine) as other:
+            a = other.get(Application, app_id)
+            a.outcome = {"assist_requested": "new", "assist_requested_at": now.isoformat()}
+            other.add(a)
+            other.commit()
+        monkeypatch.setattr(applying, "_assist_expired", real)
+        return expired
+
+    monkeypatch.setattr(applying, "_assist_expired", pressed_again_meanwhile)
+    with Session(engine) as s:
+        applying._run_assist_request(_assist_ctx(engine, paths), s, object())
+    with Session(engine) as s:
+        assert s.get(Application, app_id).outcome["assist_requested"] == "new"
+
+
+@pytest.mark.browser
+def test_closing_a_popup_during_a_handoff_keeps_the_form_open(paths, monkeypatch):
+    """Re-audit: the wait crashed on the closed tab, which closed the browser and the form."""
+    from patchright.sync_api import sync_playwright
+
+    from recrute import applying, live
+
+    try:
+        pw = sync_playwright().start()
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"playwright unavailable: {e}")
+    try:
+        chromium = pw.chromium.launch(headless=True)
+    except Exception as e:  # noqa: BLE001
+        pw.stop()
+        pytest.skip(f"chromium not installed: {e}")
+    try:
+        context = chromium.new_context()
+        form, popup = context.new_page(), context.new_page()
+        form.set_content("<h1>form</h1>")
+        form.goto("data:text/html,<h1>form</h1>")
+        popup.goto("data:text/html,<h1>terms</h1>")
+        browser = applying.LazyBrowser(SimpleNamespace(paths=paths, stop=threading.Event()))
+        browser.context = context
+        real_settle, closed = live.settle, []
+
+        def close_popup_while_waiting(page, seconds):
+            if not closed and page is popup:
+                closed.append(1)
+                popup.close()
+            return real_settle(page, min(seconds, 0.05))
+
+        monkeypatch.setattr(live, "settle", close_popup_while_waiting)
+        browser.wait_for_human(timeout=1)  # raises without the fix
+        assert closed and not form.is_closed()
+    finally:
+        chromium.close()
+        pw.stop()
+
+
+def test_resolving_the_job_ends_the_handoff(engine, paths, monkeypatch):
+    """Re-audit: 'Give up' left the thread waiting 30 minutes, the form still open."""
+    from recrute import applying, live
+    from recrute.models import JobStatus
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://x", canonical_url="c", status=JobStatus.REJECTED)
+        s.add(job)
+        s.commit()
+        job_id = job.id
+
+    class Tab:
+        url = "https://x"
+
+        def is_closed(self):
+            return False
+
+    monkeypatch.setattr(live, "publish_frame", lambda *a: None)
+    monkeypatch.setattr(live, "apply_inputs", lambda *a, **kw: False)
+    monkeypatch.setattr(live, "settle", lambda *a: None)
+    browser = applying.LazyBrowser(SimpleNamespace(paths=paths, stop=threading.Event(),
+                                                   session=lambda: Session(engine)))
+    browser.context = SimpleNamespace(pages=[Tab()])
+    done = threading.Event()
+
+    def wait():
+        browser.wait_for_human(timeout=30, job_id=job_id)
+        done.set()
+
+    threading.Thread(target=wait, daemon=True).start()
+    assert done.wait(3)
+
+
+def test_assisted_fill_at_a_captcha_records_the_suspension_and_outcome(engine, paths, monkeypatch):
+    """Both re-audits: the suspension was written while this session held the write lock, so it
+    waited on itself, the outcome was lost, and the open form closed. Real file-backed SQLite."""
+    import time
+
+    from recrute import applying
+    from recrute.apply.state import suspension
+    from recrute.models import Application
+    from recrute.schemas import ApplyOutcome
+
+    app_id = _assist_row(engine, details={"handoff_reservation": False})
+    captcha = ApplyOutcome(status="needs_human", reason="blocker: captcha",
+                           details={"account_security": True, "blocker": "captcha",
+                                    "page_left_open": False, "handoff_reservation": False})
+    monkeypatch.setattr("recrute.apply.runner.apply_job", lambda *a, **kw: captcha)
+    started = time.monotonic()
+    with Session(engine) as s:
+        assert applying._run_assist_request(_assist_ctx(engine, paths), s, object())
+    assert time.monotonic() - started < 10  # no waiting out the database's busy timeout
+    from datetime import UTC, datetime
+
+    with Session(engine) as s:
+        assert suspension(s, "greenhouse", datetime.now(UTC)) is not None
+        assert s.get(Application, app_id).outcome["reason"] == "blocker: captcha"
+
+
+def test_a_failed_lease_release_keeps_the_result():
+    from sqlalchemy.exc import OperationalError
+
+    from recrute.apply.scheduler import release_quietly
+
+    class Stuck:
+        def release(self):
+            raise OperationalError("DELETE", {}, Exception("database is locked"))
+
+    release_quietly(Stuck())  # (raising here would replace run_due's result, and close the form)

@@ -522,7 +522,7 @@ def test_cp3_handoff_notifies_before_waiting(engine, monkeypatch, paths):
     order = []
     monkeypatch.setattr("recrute.tasks.notify", lambda *a, **k: order.append("notify") or [])
     monkeypatch.setattr(applying.LazyBrowser, "wait_for_human",
-                        lambda self, timeout=0: order.append("wait"))
+                        lambda self, *a, **kw: order.append("wait"))
     outcome = ApplyOutcome(status="needs_human", reason="new required field",
                            details={"page_left_open": True})
     monkeypatch.setattr("recrute.apply.scheduler.run_due", lambda s, **kw: RunResult(
@@ -870,3 +870,231 @@ def test_inbox_cursor_is_per_server(engine):
                        connect=lambda c: new)
         assert r["messages"] == 1  # UID 5 on the new server is not skipped
         assert get_state(s, "imap:me@example.com@imap.new.example:993:INBOX")["uid"] == 5
+
+
+# --------------------------------------------------------------------------- full audit, Nov 2026
+
+
+def test_failed_question_fetch_is_flagged_at_cp2(engine, monkeypatch, paths):
+    from types import SimpleNamespace
+
+    from recrute import tasks
+    from recrute.applying import QuestionsUnavailableError
+    from recrute.models import Application, Job, JobStatus
+    from recrute.schemas import Packet
+
+    def failed(job, p, s=None):
+        raise QuestionsUnavailableError("greenhouse")
+
+    monkeypatch.setattr("recrute.applying.fetch_questions", failed)
+    ctx = SimpleNamespace(paths=paths, router=None)
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://x", canonical_url="c",
+                  status=JobStatus.SHORTLISTED)
+        s.add(job)
+        s.commit()
+        tasks.build_packet_for(ctx, s, job, None, None,
+                               lambda job, questions, **kw: Packet(job_id=job.id))
+        app = s.exec(select(Application).where(Application.job_id == job.id)).one()
+        flags = Packet.model_validate(app.packet).flags
+    assert [f.where for f in flags] == ["form"] and flags[0].severity == "warn"
+
+
+def test_regenerate_needs_a_note(client):
+    """Audit: the same prompt returns the same cached draft, after you waited for a rebuild."""
+    job_id = _seed_packet()
+    r = client.post(f"/packets/{job_id}/regenerate", data={"note": " ", "rev": _rev(job_id)},
+                    headers=HX)
+    assert r.status_code == 409 and "say what to change" in r.text
+    assert _status(job_id) == "packet_ready"
+
+
+def test_editing_a_cover_letter_keeps_its_company(client, monkeypatch):
+    """Audit: any edit turned 'Dear Acme Hiring Team' into 'Dear Hiring Manager'."""
+    from recrute import packets
+    from recrute.db import get_engine
+    from recrute.models import Job
+
+    seen = {}
+    monkeypatch.setattr(packets, "_rerender_cover_letter",
+                        lambda job, packet, company="": seen.update(company=company) or packet)
+    job_id = _seed_packet(flags=[])
+    with Session(get_engine()) as s:
+        job = s.get(Job, job_id)
+        app, packet = packets.load(s, job_id)[1:]
+        packet.cover_letter, packet.cover_letter_pdf = "Old.", "packets/x.pdf"
+        data = packet.model_dump(mode="json")
+        app.packet, app.packet_rev = data, packets.revision(data)
+        s.add(app)
+        s.commit()
+        assert job.company_id
+        rev = app.packet_rev
+    r = client.post(f"/packets/{job_id}/edit",
+                    data={"rev": rev, "cover_letter": "New.", "then_approve": "0"}, headers=HX)
+    assert r.status_code == 200 and seen["company"] == "Acme"
+
+
+def test_expired_suspension_is_not_shown_and_resume_clears_linkedin_browsing(client):
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.apply.state import suspend
+    from recrute.db import get_engine
+    from recrute.settings import get_state, set_state
+
+    now = datetime.now(UTC)
+    with Session(get_engine()) as s:
+        suspend(s, "greenhouse", now - timedelta(days=2), "old", timedelta(hours=1))
+        suspend(s, "linkedin_easy_apply", now, "LinkedIn browsing: checkpoint", timedelta(days=3))
+        set_state(s, "linkedin_session", {"blocked_until": (now + timedelta(days=3)).isoformat(),
+                                          "block_reason": "checkpoint", "views": 3})
+        s.commit()
+    page = client.get("/applications").text
+    assert "linkedin_easy_apply submissions are paused" in page
+    assert "greenhouse submissions are paused" not in page
+    assert client.post("/channels/linkedin_easy_apply/resume", headers=HX).status_code == 200
+    with Session(get_engine()) as s:
+        assert get_state(s, "linkedin_session") == {"views": 3}
+
+
+def test_dashboard_renders_without_running_the_checks(client, monkeypatch):
+    """Audit: every load ran the CLIs: slow on the old laptop, and a hung one stalled the page."""
+    def forbidden(*a, **kw):
+        raise AssertionError("ran the checks during the page load")
+
+    monkeypatch.setattr("recrute.web.views.run_checks", forbidden)
+    page = client.get("/")
+    assert page.status_code == 200 and 'hx-get="/system-checks"' in page.text
+
+
+def test_system_checks_fragment(client):
+    assert "database" in client.get("/system-checks").text
+
+
+def test_non_ascii_token_is_refused_not_an_error(client):
+    """Audit: compare_digest raises on non-ASCII text, a 500 for any LAN client."""
+    r = client.post("/login", data={"token": "pässwörd", "next": "/"})
+    assert r.status_code == 200 and "wrong token" in r.text
+    r = client.get("/queue", headers={"Host": "evil.example",
+                                      "X-Recrute-Token": "p\xe4ss".encode("latin-1")},
+                   follow_redirects=False)
+    assert r.status_code == 303
+
+
+def test_login_cookie_is_secure_over_https(client):
+    from recrute.web.app import access_token
+
+    r = client.post("https://testserver/login", data={"token": access_token(), "next": "/"},
+                    follow_redirects=False)
+    assert "secure" in r.headers["set-cookie"].lower()
+    r = client.post("http://testserver/login", data={"token": access_token(), "next": "/"},
+                    follow_redirects=False)
+    assert "secure" not in r.headers["set-cookie"].lower()
+
+
+def test_untouched_multi_line_answer_keeps_its_blocking_flag(client):
+    """Re-audit: an input drops newlines, which looked like an edit: that cleared the blocking
+    flag, so an unsupported claim could be approved without the override."""
+    from recrute.packets import _set_answer
+    from recrute.schemas import FormAnswer, FormQuestion, Packet, VerifierFlag
+
+    packet = Packet(job_id=1, questions=[FormQuestion(id="q", label="Why?", type="text")],
+                    answers=[FormAnswer(question_id="q", value="a\nb", source="llm_new")],
+                    flags=[VerifierFlag(where="answer:q", text="b", reason="x", severity="block")])
+    _set_answer(packet, "q", "ab")  # what the browser posts back, untouched
+    assert packet.answer_for("q").source == "llm_new" and packet.blocking_flags()
+    _set_answer(packet, "q", "a real edit")
+    assert packet.answer_for("q").source == "user" and not packet.blocking_flags()
+
+
+def test_two_quick_ingest_clicks_start_one_run(client, monkeypatch):
+    import threading
+
+    from recrute.web import views_apps
+
+    started = []
+    monkeypatch.setattr(threading, "Thread",
+                        lambda target, daemon=True: type("T", (), {
+                            "start": lambda self: started.append(target)})())
+    monkeypatch.setitem(views_apps._ingest_state, "running", False)
+    assert client.post("/profile/ingest", headers=HX).status_code == 200
+    assert client.post("/profile/ingest", headers=HX).status_code == 409
+    assert len(started) == 1
+
+
+def test_assist_request_is_timestamped_and_clears_an_expired_note(client):
+    from datetime import datetime
+
+    from recrute.db import get_engine
+    from recrute.models import Application, JobStatus, utcnow
+    from recrute.packets import request_assist
+
+    job_id = _seed_packet(status=JobStatus.NEEDS_HUMAN)
+    with Session(get_engine()) as s:
+        app = s.exec(select(Application).where(Application.job_id == job_id)).one()
+        app.approved_at = utcnow()
+        app.outcome = {"assist_expired": "The pre-fill wasn't started in time: press it again."}
+        s.add(app)
+        s.commit()
+        request_assist(s, job_id)
+        s.refresh(app)
+        assert app.outcome["assist_requested"] and "assist_expired" not in app.outcome
+        assert (utcnow() - datetime.fromisoformat(app.outcome["assist_requested_at"])
+                ).total_seconds() < 60
+
+
+def test_flagged_answer_you_let_through_is_not_banked(client, monkeypatch):
+    """Re-audit: one click made a flagged claim trusted evidence for every later packet."""
+    from recrute.models import Job
+    from recrute.packets import _save_to_bank
+    from recrute.schemas import FormAnswer, FormQuestion, Packet, VerifierFlag
+
+    saved = []
+    monkeypatch.setattr("recrute.tailor.add_answer", lambda p, q, v, *a, **kw: saved.append(v))
+    packet = Packet(
+        job_id=1,
+        questions=[FormQuestion(id="f", label="Kubernetes experience", type="text"),
+                   FormQuestion(id="c", label="Preferred pronouns style", type="text")],
+        answers=[FormAnswer(question_id="f", value="Ran 40 clusters", source="llm_new"),
+                 FormAnswer(question_id="c", value="Plain and direct", source="llm_new")],
+        flags=[VerifierFlag(where="answer:f", text="40", reason="x", severity="block")])
+    _save_to_bank(Job(title="t", apply_url="u", canonical_url="u"), packet)
+    assert "Ran 40 clusters" not in saved
+
+
+def test_assist_request_rechecks_under_the_lock(client):
+    """Re-audit: it wrote back what it read earlier, over what the worker had just recorded."""
+    import pytest as _pytest
+
+    from recrute.db import get_engine
+    from recrute.models import Application, JobStatus, utcnow
+    from recrute.packets import PacketError, request_assist
+
+    job_id = _seed_packet(status=JobStatus.NEEDS_HUMAN)
+    with Session(get_engine()) as s:
+        app = s.exec(select(Application).where(Application.job_id == job_id)).one()
+        app.approved_at = utcnow()
+        app.outcome = {"reason": "the worker's newest result"}
+        s.add(app)
+        s.commit()
+        request_assist(s, job_id)
+        s.refresh(app)
+        assert app.outcome["reason"] == "the worker's newest result"
+        assert app.outcome["assist_requested"]
+        app.submitted_at = utcnow()
+        s.add(app)
+        s.commit()
+        with _pytest.raises(PacketError):
+            request_assist(s, job_id)
+
+
+def test_a_one_box_multiselect_survives_being_saved(client):
+    """Re-audit: it came back as the text "['United States']", and matched nothing at fill."""
+    from recrute.packets import _set_answer
+    from recrute.schemas import FormAnswer, FormQuestion, Packet
+
+    packet = Packet(job_id=1, questions=[FormQuestion(id="m", label="Country", type="multiselect")],
+                    answers=[FormAnswer(question_id="m", value=["United States"],
+                                        source="answer_bank", needs_review=False)])
+    _set_answer(packet, "m", "United States")
+    answer = packet.answer_for("m")
+    assert answer.value == ["United States"] and answer.source == "answer_bank"

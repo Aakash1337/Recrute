@@ -144,6 +144,9 @@ def _flatten(v: object) -> list[str]:
     return [str(v)] if v else []
 
 
+_ZERO_RANGE = re.compile(r"(?<![\d.,])0\s*(?:-|–|—|to)\s*\d+(?:\.\d+)?(?![\d.,]*\d)")
+
+
 def deterministic_flags(profile: Profile, claims: list[Claim], *, job: JobContext | None = None,
                         extra_support: Iterable[str] = ()) -> list[VerifierFlag]:
     """Token-level support check, most local source first.
@@ -170,11 +173,13 @@ def deterministic_flags(profile: Profile, claims: list[Claim], *, job: JobContex
             texts += [background, *extra]
         if c.kind in ("cover_letter", "answer"):
             allowed = [*job_names, c.question, c.detail]
-        misses = find_unsupported(c.text, SupportIndex.of(texts), allowed)
+        # (a form's "0-2 years" option claims no number you could be asked to support)
+        text = _ZERO_RANGE.sub(" ", c.text) if c.kind == "answer" else c.text
+        misses = find_unsupported(text, SupportIndex.of(texts), allowed)
         if not misses:
             continue
-        not_in_profile = {u.token for u in find_unsupported(c.text, whole, allowed)}
-        not_in_jd = ({u.token for u in find_unsupported(c.text, jd, allowed)}
+        not_in_profile = {u.token for u in find_unsupported(text, whole, allowed)}
+        not_in_jd = ({u.token for u in find_unsupported(text, jd, allowed)}
                      if jd is not None and c.kind in ("cover_letter", "answer")
                      else not_in_profile)
         for u in misses:
@@ -282,7 +287,8 @@ def llm_flags(profile: Profile, claims: list[Claim], router: Completer,
         cites = f" cites {','.join(c.cited_ids)}" if c.cited_ids else ""
         claim_lines.append(f"[{c.where}]{q}{cites}: {c.text}")
     evidence = _saved_evidence(claims, saved)
-    prompt = VERIFY_PROMPT.format(background=background_facts(profile), saved=evidence,
+    prompt = VERIFY_PROMPT.format(background=background_facts(profile, name=False),
+                                  saved=evidence,
                                   saved_rule=_SAVED_RULE if evidence else "",
                                   sources="\n".join(item_lines(profile, cited)) or "(none)",
                                   claims="\n".join(claim_lines))

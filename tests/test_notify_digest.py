@@ -161,3 +161,22 @@ def test_digest_counts_across_dst_boundaries(engine):
         spring = collect_stats(s, now=datetime(2026, 3, 8, 15, 0, tzinfo=UTC), tz=ny)
     assert fall.new_matches == 1
     assert spring.new_matches == 0
+
+
+def test_digest_since_covers_everything_after_the_last_one(engine):
+    """Audit: with a morning digest, a job found at 14:00 was in no digest at all."""
+    with Session(engine) as s:
+        c = Company(name="Acme")
+        s.add(c)
+        s.flush()
+        for title, seen in (("before last digest", datetime(2026, 6, 1, 11, 0, tzinfo=UTC)),
+                            ("that afternoon", datetime(2026, 6, 1, 18, 0, tzinfo=UTC)),
+                            ("this morning", datetime(2026, 6, 2, 11, 0, tzinfo=UTC))):
+            s.add(Job(company_id=c.id, title=title, apply_url=title, canonical_url=title,
+                      badges={}, first_seen=seen))
+        s.commit()
+        st = collect_stats(s, now=datetime(2026, 6, 2, 12, 0, tzinfo=UTC), tz=TZ,
+                           since=datetime(2026, 6, 1, 12, 0, tzinfo=UTC))
+    assert st.new_matches == 2
+    _, body = build_digest(st)
+    assert "New matches since the last digest: 2" in body and "today" not in body

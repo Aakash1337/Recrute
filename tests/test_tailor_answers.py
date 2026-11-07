@@ -1786,3 +1786,201 @@ def test_education_fields_come_from_one_entry():
     for label in ("School", "Major", "GPA"):
         a = profile_answer(FormQuestion(id="x", label=label), p)
         assert a is None or a.value in (None, ""), label  # two of the same level: ambiguous
+
+
+def _two_degrees():
+    from recrute.schemas import Education, Profile
+
+    return Profile(name="Ada", education=[
+        Education(id="m", school="Tech U", degree="Master of Science", end="2025",
+                  field="Security", gpa="3.9"),
+        Education(id="b", school="State U", degree="Bachelor of Science", end="2021",
+                  field="Physics", gpa="3.5")])
+
+
+def _value(label, profile, description=""):
+    from recrute.tailor.answer_questions import profile_answer
+
+    a = profile_answer(FormQuestion(id="x", label=label, description=description), profile)
+    return a.value if a else None
+
+
+@pytest.mark.parametrize("label,description,expected", [
+    # Audit: degrees named in the help text are examples, not a limit on "highest"
+    ("Highest degree", "Include bachelor's and master's degrees.", "Master of Science"),
+    ("Highest degree", "", "Master of Science"),
+    ("Degree", "Your highest completed degree, e.g. bachelor's", "Master of Science"),
+    # a label that limits it still does; levels in conflict are yours to answer
+    ("Degree (undergraduate)", "", "Bachelor of Science"),
+    ("Degree (Bachelor's)", "Do not list your master's here.", "Bachelor of Science"),
+    ("Degree", "Include bachelor's and master's degrees.", None),
+])
+def test_degree_questions_scope(label, description, expected):
+    assert _value(label, _two_degrees(), description) == expected
+
+
+def test_incidental_degree_in_help_text_does_not_change_highest_degree_fields():
+    p = _two_degrees()
+    assert _value("Major", p, "Of your highest degree (for example a bachelor's)") == "Security"
+    assert _value("School", p, "Your highest degree, e.g. bachelor's or master's") == "Tech U"
+
+
+def test_undergraduate_label_ignores_a_graduate_mention_in_its_help_text():
+    assert _value("Undergraduate GPA", _two_degrees(),
+                  "Do not include graduate coursework.") == "3.5"
+
+
+@pytest.mark.parametrize("label", ["GPA (Bachelor's degree)", "School (Bachelor's degree)",
+                                   "Major (Bachelor's degree)", "Bachelor's degree"])
+def test_bachelor_questions_never_take_an_associate_degree(label):
+    """Audit: 'GPA (Bachelor's degree)' got the GPA of an associate degree."""
+    from recrute.schemas import Education, Profile
+
+    p = Profile(name="Ada", education=[
+        Education(id="a", school="City College", degree="Associate of Science", end="2021",
+                  field="IT", gpa="3.9")])
+    assert _value(label, p) is None
+
+
+def test_undergraduate_questions_still_accept_an_associate_degree():
+    from recrute.schemas import Education, Profile
+
+    p = Profile(name="Ada", education=[
+        Education(id="a", school="City College", degree="Associate of Science", end="2021",
+                  field="IT", gpa="3.9")])
+    assert _value("Undergraduate GPA", p) == "3.9"
+    assert _value("GPA (associate or bachelor's degree)", p) == "3.9"
+
+
+def test_associate_and_doctorate_questions_only_take_that_level():
+    from recrute.schemas import Education, Profile
+
+    p = Profile(name="Ada", education=[
+        Education(id="b", school="State U", degree="Bachelor of Science", end="2021",
+                  field="Physics", gpa="3.5")])
+    assert _value("GPA (associate degree)", p) is None
+    assert _value("Degree (doctorate)", p) is None
+
+
+@pytest.mark.parametrize("label,description,value,options,expected", [
+    # Audit: "Yes" here would say the opposite of the saved status
+    ("Are you non-Hispanic?", "", "Hispanic or Latino", ["Yes", "No"], None),
+    ("Are you not Hispanic or Latino?", "", "Hispanic or Latino", ["Yes", "No"], None),
+    ("Are you not Hispanic or Latino?", "", "Non-Hispanic", ["Yes", "No"], None),
+    ("Hispanic/Latino", "Answer Yes if you are NOT Hispanic.", "Hispanic or Latino",
+     ["Yes", "No"], None),
+    # the plain questions
+    ("Are you Hispanic/Latino?", "", "Hispanic or Latino", ["Yes", "No"], "Yes"),
+    ("Are you Hispanic or Latino?", "", "Non-Hispanic", ["Yes", "No"], "No"),
+    ("Are you of Hispanic or Latino origin?", "", "Non-Hispanic", ["Yes", "No"], "No"),
+    ("Hispanic/Latino", "", "Hispanic or Latino", ["Yes", "No", "Decline to answer"], "Yes"),
+    # options that state the fact themselves don't depend on how the question is worded
+    ("Are you non-Hispanic?", "", "Hispanic or Latino",
+     ["Hispanic or Latino", "Not Hispanic or Latino"], "Hispanic or Latino"),
+])
+def test_hispanic_question_polarity(label, description, value, options, expected):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option("eeo_hispanic", value, options, label, description) == expected
+
+
+def test_voice_samples_keep_the_writing_but_no_contact_details(paths):
+    """Audit: a letter's start is its letterhead, and that went to the LLM with the file's name."""
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    folder = paths.resources / "cover_letters"
+    (folder / "Ada_Lovelace_Acme.txt").write_text(
+        "Ada Lovelace\n12 Main Street, Austin, TX 78701\nada@example.com | (415) 555-0177\n"
+        "linkedin.com/in/ada\n\nDear Ms. Byron,\n\nI like plain sentences. Reach me at "
+        "ada2@example.com or https://ada.example/me about the work.\n", encoding="utf-8")
+    samples = load_voice_samples(paths)
+    assert "I like plain sentences." in samples and "about the work" in samples
+    for private in ("12 Main Street", "78701", "ada@example.com", "ada2@example.com", "555-0177",
+                    "linkedin.com", "ada.example", "Ada_Lovelace", "Lovelace", "Byron"):
+        assert private not in samples, private
+
+
+def test_voice_sample_without_a_salutation_still_loses_contact_details(paths):
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    (paths.resources / "writing" / "essay.txt").write_text(
+        "I write short. Email me at ada@example.com.", encoding="utf-8")
+    samples = load_voice_samples(paths)
+    assert "I write short." in samples and "ada@example.com" not in samples
+
+
+@pytest.mark.parametrize("degree,label,expected", [
+    # Re-audit: "graduate" covered both, so a doctoral question took a master's facts
+    ("Master of Science", "GPA (doctoral degree)", None),
+    ("Master of Science", "GPA (PhD)", None),
+    ("Doctor of Philosophy", "GPA (Master's degree)", None),
+    ("Master of Science", "GPA (Master's degree)", "3.9"),
+    ("Doctor of Philosophy", "GPA (PhD)", "3.9"),
+    ("Master of Science", "Graduate GPA", "3.9"),
+    ("Doctor of Philosophy", "Graduate GPA", "3.9"),
+    ("Master of Science", "GPA (Master's or PhD)", "3.9"),
+])
+def test_masters_and_doctoral_questions_keep_to_their_level(degree, label, expected):
+    from recrute.schemas import Education, Profile
+
+    p = Profile(name="Ada", education=[Education(id="e", school="Tech U", degree=degree,
+                                                 end="2023", field="Security", gpa="3.9")])
+    assert _value(label, p) == expected
+
+
+def test_a_single_line_field_gets_one_line_everywhere():
+    """Re-audit: a multi-line answer could never verify: the fill collapses it, the approved
+    value didn't, so it always went to CP3 and CP2 showed something other than what was sent."""
+    from recrute.tailor.answer_questions import _coerce
+    from recrute.tailor.answers import format_value
+
+    text = q("Why us?", "text")
+    assert _coerce(text, "First line.\nSecond line.") == "First line. Second line."
+    assert format_value(text, "First line.\r\n  Second line.") == "First line. Second line."
+    area = q("Why us?", "textarea")
+    assert _coerce(area, "First line.\nSecond line.") == "First line.\nSecond line."
+    assert format_value(area, "First line.\nSecond line.") == "First line.\nSecond line."
+
+
+def test_empty_llm_cover_letter_is_a_failure_not_a_blank_pdf():
+    from test_tailor_support import FakeRouter, make_job, make_profile
+
+    from recrute.llm.base import LLMError
+    from recrute.schemas import ResumeSelection
+    from recrute.tailor.cover_letter import write_cover_letter
+
+    router = FakeRouter({"cover": {"paragraphs": [" "], "cited_ids": []}})
+    with pytest.raises(LLMError):
+        write_cover_letter(make_profile(), ResumeSelection(), make_job(), router)
+
+
+def test_your_name_stays_out_of_llm_background():
+    from test_tailor_support import make_profile
+
+    from recrute.tailor.common import background_facts
+
+    profile = make_profile()
+    assert profile.name in background_facts(profile)  # (the local check still knows it)
+    assert profile.name not in background_facts(profile, name=False)
+
+
+def test_a_cover_letter_the_word_limit_empties_is_a_failure():
+    """Re-audit: one sentence over the limit was removed entirely, leaving a blank letter."""
+    from test_tailor_support import FakeRouter, make_job, make_profile
+
+    from recrute.llm.base import LLMError
+    from recrute.schemas import ResumeSelection
+    from recrute.tailor.cover_letter import write_cover_letter
+
+    router = FakeRouter({"cover": {"paragraphs": ["word " * 400 + "."], "cited_ids": []}})
+    with pytest.raises(LLMError):
+        write_cover_letter(make_profile(), ResumeSelection(), make_job(), router)
+
+
+def test_a_saved_multi_line_answer_fits_a_single_line_field():
+    """Re-audit: the bank's reused answers skipped the one-line rule, so they couldn't verify."""
+    bank = AnswerBank(common={"describe_your_work": "First line.\nSecond line."})
+    hit = match_question(q("Describe your work", "text"), bank)
+    assert hit.value == "First line. Second line."
+    hit = match_question(q("Describe your work", "textarea"), bank)
+    assert hit.value == "First line.\nSecond line."

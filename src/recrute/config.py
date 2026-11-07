@@ -17,6 +17,9 @@ ProviderName = Literal["claude", "codex"]
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8765
+    # both set = HTTPS (recommended on a LAN: the live view carries what you type)
+    ssl_certfile: str = ""
+    ssl_keyfile: str = ""
 
 
 class BrowserConfig(BaseModel):

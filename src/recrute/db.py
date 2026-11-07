@@ -16,7 +16,9 @@ def make_engine(paths: Paths | None = None, url: str | None = None) -> Engine:
         paths = paths or get_paths()
         paths.data.mkdir(parents=True, exist_ok=True)
         url = f"sqlite:///{paths.db_file.as_posix()}"
-    engine = create_engine(url, connect_args={"check_same_thread": False})
+    # (timeout: a long write in one process must not fail a CP2 click or a submission record
+    # in another; SQLite's default is 5 seconds)
+    engine = create_engine(url, connect_args={"check_same_thread": False, "timeout": 30})
 
     @event.listens_for(engine, "connect")
     def _sqlite_pragmas(dbapi_conn, _):

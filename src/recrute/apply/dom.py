@@ -242,16 +242,21 @@ def extract_fields(root: Page | Frame, *, scope: str | None = None,
                                      "containerKeyAttr": container_key_attr,
                                      "formIndex": form_index, "transport": list(transport),
                                      "ignore": ignore})
+    page_text = root.evaluate("document.body ? document.body.textContent : ''") or ""
     fields: list[LiveField] = []
     seen: dict[str, int] = {}
     for i, r in enumerate(raw):
         if not r.get("visible") and not include_hidden and r.get("widget") != "hidden_value":
             # hidden but CHECKED/selected named controls are still submitted by the form: keep
             # them as verification-only fields (their value must be an approved answer)
-            if (r.get("widget") in ("radio", "checkbox", "checkbox_group", "yesno")
-                    and r.get("named") and r.get("current") not in (None, "", [])):
+            # (a yes/no widget and a custom control have no native name, but the form's script
+            # holds their state: a ticked one you never approved mustn't go unseen)
+            filled = r.get("current") not in (None, "", [])
+            if filled and (r.get("widget") == "yesno" or (
+                    r.get("widget") in ("radio", "checkbox", "checkbox_group")
+                    and r.get("named"))):
                 r = {**r, "widget": "hidden_value"}
-            else:
+            elif not (filled and r.get("widget") == "custom"):  # (custom: verify_fields -> CP3)
                 continue
         key = r.get("key") or f"field_{i}"
         if key in seen:
@@ -266,7 +271,7 @@ def extract_fields(root: Page | Frame, *, scope: str | None = None,
             widget=r.get("widget") or "text", option_selectors=r.get("option_selectors") or [],
             trigger=r.get("trigger") or "", current=r.get("current"),
             visible=bool(r.get("visible")), hint=r.get("hint") or "",
-            description=r.get("description") or "",
+            description=r.get("description") or "", page_text=page_text,
         ))
     return fields
 

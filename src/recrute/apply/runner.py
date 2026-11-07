@@ -24,6 +24,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlsplit
 
 from recrute.apply.adapters import adapter_for
 from recrute.apply.base import Adapter, BlockedError, FillReport, blocker_kind
@@ -102,17 +103,22 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
               adapter: Adapter | None = None, router: Any = None, human: Human | None = None,
               files: Mapping[str, str | Path] | None = None, confirm_timeout: float = 25.0,
               ready_timeout: float = 15.0, now: datetime | None = None,
-              pre_submit_check: Callable[[], str | None] | None = None) -> ApplyOutcome:
+              pre_submit_check: Callable[[], str | None] | None = None,
+              pre_start_check: Callable[[], str | None] | None = None) -> ApplyOutcome:
     """`pre_submit_check` runs right before clicking submit; returning a reason (e.g. "CP2
-    approval revoked") aborts to CP3 without submitting."""
+    approval revoked") aborts to CP3 without submitting. `pre_start_check` runs once the browser
+    is ours, before going anywhere, in every mode: getting the browser can mean waiting for
+    discovery, which may have hit a security check meanwhile. A reason means not started."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     now = now or datetime.now(UTC)
     adapter = adapter or adapter_for(job, router=router)
     human = human or Human()
     effective: str = mode if (adapter.can_submit or mode == "dry_run") else "fill_and_pause"
+    # (explicit until a page exists: a return before that has nothing open for you)
     details: dict[str, Any] = {"mode": mode, "effective_mode": effective, "adapter": adapter.name,
-                               "attempted_at": now.isoformat(), "submit_attempted": False}
+                               "attempted_at": now.isoformat(), "submit_attempted": False,
+                               "page_left_open": False, "handoff_reservation": False}
 
     if packet.job_id != job.id:
         return ApplyOutcome(status="failed", reason="packet belongs to a different job",
@@ -138,7 +144,12 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
     receipt.copy_files(file_map)
     details["files"] = {k: str(v) for k, v in file_map.items()}
 
-    page = _new_page(page_factory)
+    try:
+        page = _new_page(page_factory)
+    except Exception as e:  # noqa: BLE001 - whatever it was, no page exists yet
+        from recrute.errors import BrowserUnavailableError, safe_error
+
+        raise BrowserUnavailableError(safe_error(e)[:300]) from e
     keep_open = False
     clicked_submit = False
     report: FillReport | None = None
@@ -192,7 +203,17 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
         return ", ".join(labels.get(i, i) for i in ids)
 
     try:
-        response = page.goto(adapter.start_url(job), wait_until="domcontentloaded")
+        if pre_start_check is not None and (why := pre_start_check()):
+            details["not_started"] = True
+            return done("failed", why, check_blockers=False)
+        start_url = adapter.start_url(job)
+        if urlsplit(start_url).scheme.lower() not in ("http", "https"):
+            return done("needs_human", "the job's link isn't a web address", check_blockers=False)
+        response = page.goto(start_url, wait_until="domcontentloaded")
+        refused = getattr(response, "status", None)
+        if refused in (403, 429):  # the site is turning us away: never just retried
+            keep_open = mode != "dry_run"
+            return blocked(f"the site refused the page (HTTP {refused})")
         adapter.wait_ready(page, ready_timeout)
         details["start_url"] = page.url
 
@@ -310,7 +331,10 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
             keep_open = True
             return done("needs_human", "error after submit was clicked (verify manually): "
                         f"{safe_error(e)}"[:300])
-        keep_open = mode == "fill_and_pause"
+        if mode == "fill_and_pause":
+            # the form stays open for you, and you may finish it: never retried on its own
+            keep_open = True
+            return done("needs_human", f"error before submit: {safe_error(e)}"[:300])
         return done("failed", f"error before submit: {safe_error(e)}"[:300])
     finally:
         if not keep_open:

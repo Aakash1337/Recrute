@@ -284,8 +284,8 @@ Details:
   the answers used.
 - **Guardrails**: daily cap, per-company cap, a cooldown, and never applying twice to the same job
   ID.
-- Workday and other sites that require an account per company stay on "manual with assist": the
-  system opens the page and puts your answers on the clipboard, and you do the rest.
+- Workday and other sites that require an account per company stay manual: the generic filler
+  fills what it can and hands the form to you (CP3), or you pick "I'll apply myself" at CP1.
 
 ### 3.8 Tracking & Follow-up
 - Status pipeline: `discovered → shortlisted → materials_ready → applied → acknowledged →
@@ -326,7 +326,9 @@ Details:
   type there (passwords, verification codes) and the screenshots (which can show it) are kept in
   memory only and never written to disk, so the live view needs the worker in the web server's
   process (`recrute serve --worker`). Input is bound to the exact tab shown: a popup or a
-  navigation since the picture you acted on drops it.
+  navigation since the picture you acted on drops it. "Never written to disk" says nothing about
+  the network: over plain HTTP on the LAN all of this travels unencrypted, so the page warns you
+  and `[server] ssl_certfile`/`ssl_keyfile` turn on HTTPS.
 
 ### Stack
 Decided on **Python**. It was switched from Go after you made "fewest problems, and best at
@@ -348,15 +350,17 @@ strongest ecosystem.
 
 ### Independent auditor
 - `tools/audit.py` runs **Codex on `gpt-6.1-sol`** (on your subscription, in a read-only sandbox)
-  as a second pair of eyes on everything Claude builds.
+  as a second pair of eyes on everything Claude builds. A whole-repo audit also runs
+  **Claude Code on `claude-opus-5-5`** (subscription, read-only tools) as a separate session.
 - It reviews against this plan for:
   - Correctness
   - Account and data safety
   - Plan conformance (checkpoints, no fabrication, visa rules, caps)
   - Windows compatibility
   - Robustness and test gaps
-- Findings are written to `data/audits/` as JSON and markdown. Claude fixes them and re-audits.
-  The audit runs after every milestone, or on `--changed` files during work.
+- Findings are written to `data/audits/` as JSON and markdown, per auditor (`latest-sol.md`,
+  `latest-opus.md`) and together (`latest.md`). Claude fixes them and re-audits. The audit runs
+  after every milestone, or on `--changed` files during work.
 - The auditor is told not to read `resources/` or `data/` (your personal data). The prompt is in
   `tools/audit_prompt.md`.
 
@@ -457,7 +461,7 @@ automated.
 | LLM invents experience                           | Truthfulness verifier plus CP2; profile-grounded generation only |
 | Low-quality mass applying hurts your reputation  | Score threshold, per-company caps, daily caps                |
 | PII leakage                                      | Local-first, secrets in the keyring, receipts dir gitignored, minimal data sent to the LLM |
-| Hitting subscription usage limits                | Rules before LLM calls, batched scoring, caching by JD hash, pause/resume queues, failover between Claude and Codex, reserve setting |
+| Hitting subscription usage limits                | Rules before LLM calls, batched scoring, caching by JD hash, pause/resume queues, failover between Claude and Codex |
 | Double-applying / applying to closed jobs        | Dedup by canonical URL and ATS job ID; re-check the posting is live before filling |
 
 ---
@@ -492,20 +496,23 @@ automated.
 
 ## 8. Verification status (v1)
 **Verified:**
-- ~800 automated tests, run in CI on Linux and Windows.
-- An independent Codex `gpt-6.1-sol` audit of every PR, with every finding fixed or explicitly
-  resolved.
-- A live smoke run: 7 real boards gave 1,085 postings, the rules kept 66, and real LLM triage
-  queued 4. The UI was checked on that data.
+- About 1,500 automated tests, run in CI on Linux and Windows.
+- An independent Codex `gpt-6.1-sol` audit of every PR, with critical and high findings fixed
+  before merging.
+- A live run from discovery through CP2 with a fake candidate (Oct 2026): 15,166 real postings
+  from 120 boards, real LLM triage, tailored packets, and CP1/CP2 in the web UI.
+- Dry-run fills of five real application forms (Greenhouse, Ashby, Lever), read back and checked
+  against the approved packet. Nothing was submitted.
 - Both subscription CLIs run isolated. A canary file check confirmed the model can't read files.
 - The browser detection probe was clean.
 
 **Needs your first supervised runs** (the trial period exists for exactly this):
-- **Live application forms.** Adapters were built against the real Greenhouse/Lever/Ashby API
-  shapes and against local copies of their DOM. No real application has been submitted yet.
-  Each adapter's first 5 submissions are fill-and-pause, so you watch them.
+- **Submitting a real application.** No real application has been submitted yet. Each adapter's
+  first 5 submissions are fill-and-pause, so you watch them.
 - **LinkedIn Easy Apply and logged-in LinkedIn browsing.** The markup was modeled; it has never
-  been exercised on your account.
-- **The alert-email and inbox classifiers.** They were tested on synthetic mail only.
+  been exercised on a real account.
+- **Your real inbox, and notifications.** The inbox and alert-email classifiers were tested on
+  synthetic mail only; ntfy, Telegram and email have never been sent for real.
 - **The H-1B CSV importer.** It has been tested against the column layouts I know of; check it
   against a real USCIS download.
+- **The browser extension in Chrome, and the Windows laptop setup.** Windows is only covered by CI.

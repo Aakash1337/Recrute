@@ -1,7 +1,7 @@
 """Pipeline stages run by the worker (and callable from the CLI)."""
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from sqlmodel import Session, col, select
 
@@ -27,18 +27,21 @@ def _same_json(column, value) -> list:
 def filter_new(session: Session, criteria: Criteria,
                eligibility_fn: Callable[[str], set[str]] | None = None,
                badge_fn: Callable[[Job, Company | None], dict] | None = None,
-               limit: int = 2000) -> dict:
+               limit: int = 2000, waiting_companies: Iterable[int] = ()) -> dict:
     """Classify + hard-filter jobs that haven't been through the rules yet.
 
     Each result is written with a conditional update bound to the job's state as read (still
     awaiting rules, same title/description), so a CP1 decision or a re-poll that happened
-    meanwhile is never overwritten."""
-    from sqlalchemy import update
+    meanwhile is never overwritten. Jobs at `waiting_companies` (applied there recently) stay
+    as they are, to go through the rules when that company's cooldown ends."""
+    from sqlalchemy import or_, update
 
+    waiting = list(waiting_companies)
     rows = session.exec(
         select(Job, Company).join(Company, Company.id == Job.company_id, isouter=True)
         .where(Job.status == JobStatus.DISCOVERED, col(Job.priority).is_(None),
-               col(Job.filter_reason).is_(None))
+               col(Job.filter_reason).is_(None),
+               or_(col(Job.company_id).is_(None), col(Job.company_id).not_in(waiting)))
         .limit(limit)
     ).all()
     kept = dropped = skipped = 0
@@ -72,6 +75,8 @@ def filter_new(session: Session, criteria: Criteria,
             session.add(StatusEvent(job_id=job.id, status=JobStatus.FILTERED_OUT,
                                     note=result.reason))
             dropped += 1
+        if (kept + dropped) % 100 == 0:
+            session.commit()  # (never hold the shared database's write lock for a whole run)
     session.commit()
     session.expire_all()
     out = {"kept": kept, "dropped": dropped}

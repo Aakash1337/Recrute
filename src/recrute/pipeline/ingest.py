@@ -1,10 +1,15 @@
 """Upsert RawJobs into the DB with deduplication and company-registry maintenance."""
 
+import ipaddress
+import logging
+import socket
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import timedelta
+from urllib.parse import urlsplit
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, col, select
 
 from recrute.models import Company, Job, JobSource, JobStatus, StatusEvent, utcnow
@@ -16,6 +21,8 @@ from recrute.pipeline.normalize import (
     normalize_company,
 )
 from recrute.schemas import RawJob
+
+log = logging.getLogger(__name__)
 
 # A fuzzy (company+title) match only merges with jobs seen this recently; older ones are
 # treated as a new opening (reposts are common).
@@ -87,6 +94,23 @@ def source_url(raw: RawJob) -> str:
 
 # Sources that emit several roles from one page (and often one shared careers link).
 MULTI_ROLE_SOURCES = {"hn_whoshiring"}
+
+
+def _public_web_address(url: str) -> bool:
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower().rstrip(".")
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        return False
+    if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        try:  # "127.1", "2130706433", "0x7f.0.0.1": browsers read these as addresses too
+            ip = ipaddress.ip_address(socket.inet_aton(host))
+        except (OSError, ValueError):
+            return True  # a name
+    return ip.is_global
 
 
 def job_canonical(raw: RawJob) -> tuple[str, str]:
@@ -236,6 +260,11 @@ def _retarget_unsent_application(session: Session, job: Job) -> None:
 def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
     """Upsert one posting (runs inside a savepoint; see ingest)."""
     target, canon = job_canonical(raw)
+    if not _public_web_address(target):
+        # scraped data: the logged-in browser (and this server, which trusts local requests)
+        # must only ever be sent to a page on the web
+        log.warning("skipping a posting from %s: its link isn't a web address", raw.source)
+        return
     fkey = fuzzy_key(raw.company, raw.title, raw.locations)
     desc = description_markdown(raw.description_html, raw.description_text)
     job = _find_existing(session, raw, canon, fkey)
@@ -332,13 +361,23 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
         # Savepoint per posting: if a concurrent writer (web capture, another discovery run)
         # inserted the same job/company/source between our lookup and insert, the uniqueness
         # conflict is retried once, which then finds and merges the winner's row.
-        for attempt in (1, 2):
+        for attempt in (1, 2, 3):
             snap = (stats.new, stats.updated, stats.merged, len(stats.new_job_ids),
                     len(stats.job_ids))
             try:
                 with session.begin_nested():
                     _ingest_one(session, raw, stats, now)
                 break
+            except OperationalError as e:
+                # another connection committed between this posting's read and its write:
+                # SQLite refuses that at once, however long the busy timeout is
+                session.rollback()
+                if "locked" not in str(e).lower() or attempt == 3:
+                    raise
+                stats.new, stats.updated, stats.merged = snap[:3]
+                del stats.new_job_ids[snap[3]:]
+                del stats.job_ids[snap[4]:]
+                time.sleep(0.2 * attempt)
             except IntegrityError:
                 stats.new, stats.updated, stats.merged = snap[:3]
                 del stats.new_job_ids[snap[3]:]

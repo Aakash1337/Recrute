@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from markupsafe import escape
 from sqlmodel import col, func, select
@@ -41,16 +42,15 @@ def login_form(request: Request, next: str = "/"):
 
 @router.post("/login")
 def login(request: Request, token: Annotated[str, Form()], next: Annotated[str, Form()] = "/"):
-    import hmac
-
     from recrute.web.app import access_token
+    from recrute.web.security import token_matches
 
-    if not hmac.compare_digest(token.strip(), access_token()):
+    if not token_matches(token.strip(), access_token()):
         return page(request, "login.html", {"next": next, "error": "wrong token"})
     resp = RedirectResponse(next if next.startswith("/") and not next.startswith("//") else "/",
                             status_code=303)
     resp.set_cookie(COOKIE, access_token(), httponly=True, samesite="strict",
-                    max_age=60 * 60 * 24 * 90)
+                    secure=request.url.scheme == "https", max_age=60 * 60 * 24 * 90)
     return resp
 
 
@@ -68,9 +68,15 @@ def dashboard(request: Request):
         ctx = {"by_status": {k.value if hasattr(k, "value") else k: v
                              for k, v in by_status.items()},
                "llm": llm, "tasks": tasks, "settings": settings,
-               "checks": run_checks(get_config(), get_paths()),
                "apps_min": APPS_PER_DAY_MIN, "apps_max": APPS_PER_DAY_MAX}
         return page(request, "dashboard.html", ctx, s)
+
+
+@router.get("/system-checks", response_class=HTMLResponse)
+def system_checks(request: Request):
+    """Loaded after the dashboard renders: it runs the CLIs, which can take a while."""
+    return templates.TemplateResponse(request, "_checks.html",
+                                      {"checks": run_checks(get_config(), get_paths())})
 
 
 @router.post("/settings/apps-per-day", response_class=HTMLResponse)
@@ -172,6 +178,11 @@ def settings_page(request: Request):
 @router.post("/settings/{key}", response_class=HTMLResponse)
 async def settings_update(request: Request, key: str):
     form = await request.form()
+    # (database waits: not on the event loop, which serves the live view)
+    return await run_in_threadpool(_save_setting, key, form)
+
+
+def _save_setting(key: str, form) -> HTMLResponse:
     with session_scope() as s:
         current = all_settings(s)
         if key not in current:

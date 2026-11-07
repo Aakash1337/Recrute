@@ -28,6 +28,8 @@ FIX = Path(__file__).parent / "fixtures" / "apply"
 
 GET_ROUTES: list[tuple[str, str, int]] = [
     (r"^/greenhouse/acme/jobs/999$", "not_found.html", 404),
+    (r"^/greenhouse/acme/jobs/403$", "not_found.html", 403),
+    (r"^/greenhouse/acme/jobs/429$", "not_found.html", 429),
     (r"/confirmation$", "greenhouse_confirmation.html", 200),
     (r"^/greenhouse/acme/jobs/\d+$", "greenhouse.html", 200),
     (r"^/greenhouse/embed/job_app$", "greenhouse.html", 200),
@@ -1528,3 +1530,83 @@ def test_unapproved_lever_location_never_passes(srv, context, paths, human, resu
     problems = adapter.presubmit_problems(page, packet, {"resume": resume})
     assert "location" in problems
     page.close()
+
+
+def test_link_that_is_not_a_web_address_never_reaches_the_browser(srv, context, paths, human,
+                                                                  resume):
+    j = job("file:///etc/passwd", "greenhouse")
+    out = run(j, gh_packet(resume), context, paths, human)
+    assert out.status == "needs_human" and "web address" in out.reason
+    assert out.details["page_left_open"] is False
+    assert out.details.get("final_url", "") in ("about:blank", "")
+
+
+def test_error_in_fill_and_pause_hands_over_instead_of_failing(srv, context, paths, human, resume,
+                                                               monkeypatch):
+    """Audit: 'failed' put it back in the drip queue while the form stayed open for you."""
+    from recrute.apply.adapters.greenhouse import GreenhouseAdapter
+
+    def boom(*a, **kw):
+        raise RuntimeError("selector gone")
+
+    monkeypatch.setattr(GreenhouseAdapter, "wait_ready", boom)
+    out = run(job(f"{srv.url}/greenhouse/acme/jobs/1001", "greenhouse"), gh_packet(resume),
+              context, paths, human, mode="fill_and_pause")
+    assert out.status == "needs_human" and out.details["page_left_open"] is True
+    assert srv.posts == []
+
+
+def test_pre_start_check_stops_before_going_anywhere(srv, context, paths, human, resume):
+    """Re-audit (high): getting the browser can mean waiting for discovery, so it's asked once
+    the browser is ours, before navigating, in every mode."""
+    out = run(job(f"{srv.url}/greenhouse/acme/jobs/1001", "greenhouse"), gh_packet(resume),
+              context, paths, human, mode="fill_and_pause",
+              pre_start_check=lambda: "channel suspended: checkpoint")
+    assert out.status == "failed" and out.details["not_started"] is True
+    assert out.details["page_left_open"] is False and out.details["handoff_reservation"] is False
+    assert out.details.get("final_url") == "about:blank" and srv.posts == []
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_a_site_refusing_the_page_is_a_blocker_not_a_retry(srv, context, paths, human, resume,
+                                                           status):
+    """Re-audit: it became 'no form found' and was retried against a site turning us away."""
+    out = run(job(f"{srv.url}/greenhouse/acme/jobs/{status}", "greenhouse"), gh_packet(resume),
+              context, paths, human, mode="fill_and_pause")
+    assert out.status == "needs_human" and f"HTTP {status}" in out.details["blocker"]
+    assert srv.posts == []
+
+
+def test_hidden_ticked_custom_controls_cannot_pass_unseen(context):
+    """Re-audit (critical): the page script reports them on purpose so they can't be invisible,
+    and they were then thrown away, so the pre-submit check passed with an unapproved consent."""
+    from recrute.apply.base import verify_fields
+    from recrute.apply.dom import extract_fields
+    from recrute.schemas import Packet
+
+    page = context.new_page()
+    page.set_content("""<form>
+      <div role="checkbox" aria-checked="true" aria-label="I consent to marketing"
+           style="display:none" id="hidden-consent"></div>
+      <div role="switch" aria-checked="false" aria-label="Not ticked"
+           style="display:none" id="hidden-off"></div>
+      <label for="n">Name</label><input id="n" name="n">
+    </form>""")
+    fields = {f.id: f for f in extract_fields(page, scope="form")}
+    page.close()
+    custom = [f for f in fields.values() if f.widget == "custom"]
+    assert len(custom) == 1 and custom[0].current == "true"  # (an unticked one means nothing)
+    problems = verify_fields(list(fields.values()), Packet(job_id=1), {})
+    assert custom[0].id in problems and "needs you" in problems[custom[0].id]
+
+
+def test_a_file_type_hint_is_not_an_attached_file(context):
+    """Re-audit: 'Accepted: .pdf, .doc' read as two attachments."""
+    from recrute.apply.dom import extract_fields
+
+    page = context.new_page()
+    page.set_content("""<form><div class="field"><label for="r">Resume</label>
+      <input type="file" id="r" name="r"><p>Accepted: .pdf, .doc</p></div></form>""")
+    fields = extract_fields(page, scope="form", include_hidden=True)
+    page.close()
+    assert [f.current for f in fields if f.id == "r"] == [None]

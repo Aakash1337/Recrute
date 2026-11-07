@@ -1,5 +1,6 @@
 import copy
 
+import pytest
 from test_tailor_support import SELECT_OUT, FakeRouter, make_job, make_profile
 
 from recrute.schemas import FormAnswer, FormQuestion
@@ -258,3 +259,56 @@ def test_address_as_a_verb_is_not_evidence_for_the_saved_address():
     verify(profile, collect_claims(profile, answers=answers, questions=questions),
            router=router, saved=[("what_is_your_address", "100 Congress Ave, Austin, TX")])
     assert "Congress" not in router.calls[0][1]
+
+
+def _degree_flags(summary, degree="Master of Science"):
+    from recrute.schemas import Education, Profile, ResumeSelection
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    profile = Profile(name="Ada", education=[Education(id="e", school="Tech U", degree=degree,
+                                                       end="2023", field="Cybersecurity")])
+    claims = collect_claims(profile, ResumeSelection(summary=summary))
+    return {f.text for f in deterministic_flags(profile, claims)
+            if f.where == "resume.summary" and f.severity == "block"}
+
+
+@pytest.mark.parametrize("summary,degree", [
+    # a live run: every packet was blocked by its own candidate's degree
+    ("Analyst with an M.S. in Cybersecurity.", "Master of Science"),
+    ("Analyst with an MS in Cybersecurity.", "Master of Science"),
+    ("Analyst with an MSc in Cybersecurity.", "Master of Science"),
+    ("Analyst with a Master of Science in Cybersecurity.", "M.S."),
+    ("Analyst with a PhD in Cybersecurity.", "Doctor of Philosophy"),
+])
+def test_a_degree_under_another_name_is_supported(summary, degree):
+    assert _degree_flags(summary, degree) == set()
+
+
+@pytest.mark.parametrize("summary,degree,token", [
+    ("Analyst with an M.A. in Cybersecurity.", "Master of Science", "M.A"),
+    ("Analyst with an MBA in Cybersecurity.", "Master of Science", "MBA"),
+    ("Analyst with a PhD in Cybersecurity.", "Master of Science", "PhD"),
+    ("Analyst with an MS in Cybersecurity.", "Bachelor of Science", "MS"),
+])
+def test_a_degree_you_do_not_hold_is_still_blocked(summary, degree, token):
+    assert token in _degree_flags(summary, degree)
+
+
+@pytest.mark.parametrize("value,blocked", [
+    ("0-5 years experience", set()),  # a live run: blocked by its "0"
+    ("0-2 years", set()),
+    ("0 to 7 years", set()),
+    ("3-7 years", {"3", "7"}),  # a real claim: still needs support
+    ("10+ years", {"10"}),
+])
+def test_only_a_range_from_zero_makes_no_numeric_claim(value, blocked):
+    from recrute.schemas import FormAnswer, FormQuestion, Profile
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    question = FormQuestion(id="y", label="How many years of experience do you have?",
+                            type="select", options=[value])
+    answer = FormAnswer(question_id="y", value=value, source="llm_new")
+    claims = collect_claims(Profile(name="Ada"), answers=[answer], questions=[question])
+    got = {f.text for f in deterministic_flags(Profile(name="Ada"), claims)
+           if f.severity == "block"}
+    assert got == blocked

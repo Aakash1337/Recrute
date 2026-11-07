@@ -517,3 +517,46 @@ def test_hn_explicit_url_of_another_role_is_rejected():
     jobs = {j.title: j for j in jobs_from_extraction(rows, [c])}
     assert jobs["Security Engineer"].ats_job_id == "111"
     assert jobs["Data Analyst"].ats_job_id == "222"  # its own link, not the other role's
+
+
+def test_hn_all_roles_line_naming_one_role_still_covers_every_role():
+    """Audit: 'All roles (including Security Engineer) require US citizenship' went to that one
+    role, so the other kept passing the eligibility filter."""
+    from recrute.badges.sponsorship import eligibility_flags
+    from recrute.sources.hn import role_sections
+
+    titles = ["Security Engineer", "Security Analyst"]
+    text = ("Acme | Security Engineer, Security Analyst | Remote (US)\n"
+            "All roles (including Security Engineer) require US citizenship.\n"
+            "Security Engineer: build detections.\nSecurity Analyst: triage alerts.")
+    secs = role_sections(text, titles)
+    for t in titles:
+        assert "citizenship_required" in eligibility_flags(secs[t])
+
+
+def test_hn_header_link_of_another_role_is_rejected():
+    """Audit: a link the header gives for one role was accepted for the other."""
+    from recrute.sources.hn import jobs_from_extraction
+
+    link = "https://boards.greenhouse.io/acme/jobs/111"
+    c = {"id": 92, "created_at_i": 1_750_000_000,
+         "text": f"Acme | Remote (US) | Apply for Security Engineer: {link}<p>"
+                 "Security Engineer: build detections.<p>Data Analyst: build dashboards."}
+    rows = {"jobs": [{"comment_id": 92, "company": "Acme", "title": t, "apply_url": link}
+                     for t in ("Security Engineer", "Data Analyst")]}
+    jobs = {j.title: j for j in jobs_from_extraction(rows, [c])}
+    assert jobs["Security Engineer"].ats_job_id == "111"
+    assert jobs["Data Analyst"].ats_job_id != "111"
+    assert link not in (jobs["Data Analyst"].apply_url or "")
+
+
+def test_hn_shared_header_link_still_applies_to_every_role():
+    from recrute.sources.hn import jobs_from_extraction
+
+    link = "https://acme.example/careers"
+    c = {"id": 93, "created_at_i": 1_750_000_000,
+         "text": f"Acme | Remote (US) | Apply: {link}<p>"
+                 "Security Engineer: build detections.<p>Data Analyst: build dashboards."}
+    rows = {"jobs": [{"comment_id": 93, "company": "Acme", "title": t, "apply_url": link}
+                     for t in ("Security Engineer", "Data Analyst")]}
+    assert {j.apply_url for j in jobs_from_extraction(rows, [c])} == {link}

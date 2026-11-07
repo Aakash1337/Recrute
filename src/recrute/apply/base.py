@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Mapping, Sequence
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
 from urllib.parse import urlparse
@@ -43,6 +44,8 @@ class LiveField(FormQuestion):
     current: str | list[str] | None = None  # value already present (prefilled)
     visible: bool = True
     hint: str = ""  # placeholder / format hint (date pickers)
+    # the page's whole text, to tell misplaced help text from removed help text (never saved)
+    page_text: str = Field(default="", exclude=True, repr=False)
 
 
 class FillReport(BaseModel):
@@ -218,12 +221,13 @@ def same_question(approved: FormQuestion, live: FormQuestion) -> bool:
         # upload widgets often expose only their button text ("Attach"); the field is identified
         # by its id, and any instructions must still match
         return _same_description(approved.description, live.description) or (
-            not live.description)
+            not live.description and _help_text_still_on_page(approved, live))
     if not _same_description(approved.description, live.description):
-        # The one tolerated case: the live page shows NO description (the extractor can miss
-        # help text rendered away from the field) while the label is exactly the approved one.
-        # Added or different descriptions always count as a change.
-        if live.description or not a or a != b:
+        # The one tolerated case: the field shows NO description (the extractor can miss help
+        # text rendered away from the field), the label is exactly the approved one, and the
+        # approved help text is still on the page. Added, different or removed descriptions
+        # always count as a change.
+        if live.description or not a or a != b or not _help_text_still_on_page(approved, live):
             return False
     if not a or not b or a == b:
         return True
@@ -256,9 +260,34 @@ def _tokens(s: str) -> list[str]:
     return re.findall(rf"[a-z0-9{re.escape(_MEANINGFUL)}]+", s)
 
 
+HELP_TEXT_LIMIT = 20000  # characters of help text kept, live and when fetched before CP2
+# What we wrote ourselves to explain a question at CP2: never on the site's page.
+PHONE_COUNTRY_NOTE = "The country of your phone number (dialing code)."
+_OWN_NOTES = {PHONE_COUNTRY_NOTE}
+# Shorter text ("Currently") could be anywhere on the page, so finding it there proves nothing.
+_MIN_VERIFIABLE_HELP = 20
+
+
+@lru_cache(maxsize=2)
+def _compact_page(text: str) -> str:
+    return _compact(dom.norm(text))
+
+
+def _help_text_still_on_page(approved: FormQuestion, live: FormQuestion) -> bool:
+    """Help text missing from the field may only be misplaced if the page still says it; if the
+    page no longer does, its qualifier ("Currently") is gone and the question changed."""
+    if approved.description in _OWN_NOTES:
+        return True
+    want = _compact(dom.norm(approved.description or ""))
+    return len(want) >= _MIN_VERIFIABLE_HELP and want in _compact_page(
+        getattr(live, "page_text", ""))
+
+
 def _same_description(approved: str, live: str) -> bool:
     """Descriptions must say the same thing. Added or removed help text counts as a change:
     conditions ("with Kubernetes", "in Canada") often live there."""
+    if max(len(approved or ""), len(live or "")) >= HELP_TEXT_LIMIT:
+        return False  # cut off: a condition past the cut can't be seen, so it can't be vouched for
     a, b = dom.norm(approved or ""), dom.norm(live or "")
     return a == b or _compact(a) == _compact(b)
 
@@ -340,6 +369,22 @@ def identity_changed(q: FormQuestion, packet: Packet,
                               for pq in packet.questions)
 
 
+def _approved_answer_lost(q: FormQuestion, packet: Packet,
+                          aliases: Mapping[str, Sequence[str]] = {}) -> bool:
+    """You approved an answer to this field, but it no longer asks the same thing: submitting
+    without it (even an optional one) wouldn't be what you approved. An unticked box loses
+    nothing."""
+    by_id = {pq.id: pq for pq in packet.questions}
+    want = dom.norm(q.label)
+    matched = [by_id[qid] for qid in (q.id, *aliases.get(q.id, ())) if qid in by_id] or [
+        pq for pq in packet.questions if want and dom.norm(pq.label) == want]
+    for pq in matched:
+        a = packet.answer_for(pq.id)
+        if has_value(a) and a.value is not False and not same_question(pq, q):
+            return True
+    return False
+
+
 def _implicit_upload_ok(q: FormQuestion) -> bool:
     """An upload may be matched by role (resume / cover letter) only when it's a plain request:
     extra instructions (e.g. "include your salary history") need you."""
@@ -391,11 +436,14 @@ def coverage_check(questions_on_page: Sequence[FormQuestion], packet: Packet, *,
                    aliases: Mapping[str, Sequence[str]] = {}, accept_prefilled: bool = False,
                    files: Mapping[str, Path] | None = None) -> list[str]:
     """Ids of REQUIRED fields on the live form that the approved packet does not answer (or
-    answers with a value that isn't one of the field's options). Never guesses: anything
-    returned here sends the application to the human (CP3)."""
+    answers with a value that isn't one of the field's options), and of optional fields whose
+    approved answer no longer applies. Never guesses: anything returned here sends the
+    application to the human (CP3)."""
     return [q.id for q in questions_on_page
-            if q.required and not question_covered(q, packet, aliases=aliases,
-                                                   accept_prefilled=accept_prefilled, files=files)]
+            if (q.required and not question_covered(q, packet, aliases=aliases,
+                                                    accept_prefilled=accept_prefilled,
+                                                    files=files))
+            or _approved_answer_lost(q, packet, aliases)]
 
 
 # id(page) -> {question id: file name} attached during the current fill of that page

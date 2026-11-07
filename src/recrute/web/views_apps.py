@@ -1,10 +1,13 @@
 """Packets (CP2), applications (CP3/tracking), inbox, companies, profile, capture API, files."""
 
+import json
 import threading
 import time
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from markupsafe import escape
 from sqlmodel import col, select
@@ -14,6 +17,7 @@ from recrute.db import session_scope
 from recrute.models import Application, Company, EmailEvent, Job, JobStatus
 from recrute.paths import get_paths
 from recrute.schemas import Packet
+from recrute.web.security import _is_loopback_ip, token_matches
 from recrute.web.views import page
 
 router = APIRouter()
@@ -67,7 +71,10 @@ def live_page(request: Request):
     from recrute import live
 
     with session_scope() as s:
-        return page(request, "live.html", {"info": live.frame_info(get_paths())}, s)
+        client = request.client.host if request.client else None
+        exposed = request.url.scheme != "https" and not _is_loopback_ip(client)
+        return page(request, "live.html", {"info": live.frame_info(get_paths()),
+                                           "exposed": exposed}, s)
 
 
 @router.get("/live/frame")
@@ -202,16 +209,28 @@ async def packet_edit(request: Request, job_id: int):
         elif key.startswith("q__") and f"present__{key[3:]}" not in form:
             vals = form.getlist(key)
             answers[key[3:]] = vals if len(vals) > 1 else vals[0]
+    # (database waits and a PDF render: not on the event loop, which serves the live view)
+    return await run_in_threadpool(_save_packet_edit, job_id, form, answers)
+
+
+def _save_packet_edit(job_id: int, form, answers: dict) -> HTMLResponse:
     rev = str(form.get("rev") or "")
     with session_scope() as s:
         try:
             new_rev = packets.edit(s, job_id, rev, answers, form.get("cover_letter"))
-            if form.get("then_approve") == "1":
-                packets.approve(s, job_id, new_rev,
-                                override_blocks=form.get("override") == "on")
-                return _msg("Saved and approved.")
         except packets.PacketError as e:
             return _msg(str(e), False, 409)
+        if form.get("then_approve") == "1":
+            try:
+                packets.approve(s, job_id, new_rev,
+                                override_blocks=form.get("override") == "on")
+            except packets.PacketError as e:
+                # your edits were saved, so the page's revision is out of date: without the new
+                # one, ticking the box and pressing again would say the packet changed
+                resp = _msg(f"Saved, but not approved: {e}", False, 409)
+                resp.headers["HX-Trigger"] = json.dumps({"packetRev": new_rev})
+                return resp
+            return _msg("Saved and approved.")
     resp = _msg("Saved.")
     # re-render the page so every form carries the new revision, flags and file links
     resp.headers["HX-Refresh"] = "true"
@@ -264,11 +283,16 @@ def applications_page(request: Request):
             groups[job.status.value].append((job, company, app))
         reminders = reminders_from_db(s, follow_up_days=get_setting(s, "follow_up_days"),
                                       ghost_days=get_setting(s, "ghost_days"))
+        from recrute.apply.state import suspension
         from recrute.models import Setting
 
-        suspended = [(r.key.removeprefix("state:suspend:"), r.value)
-                     for r in s.exec(select(Setting).where(
-                         col(Setting.key).startswith("state:suspend:"))).all() if r.value]
+        now = datetime.now(UTC)
+        suspended = []  # (what the scheduler actually enforces: an expired one is over)
+        for r in s.exec(select(Setting).where(
+                col(Setting.key).startswith("state:suspend:"))).all():
+            channel = r.key.removeprefix("state:suspend:")
+            if (active := suspension(s, channel, now)) is not None:
+                suspended.append((channel, active))
         return page(request, "applications.html", {"groups": groups, "reminders": reminders,
                                                    "suspended": suspended}, s)
 
@@ -276,9 +300,15 @@ def applications_page(request: Request):
 @router.post("/channels/{channel}/resume", response_class=HTMLResponse)
 def channel_resume(channel: str):
     from recrute.apply.state import clear_suspension
+    from recrute.settings import get_state, set_state
 
     with session_scope() as s:
         clear_suspension(s, channel)
+        if channel == "linkedin_easy_apply":  # (a security check pauses browsing too)
+            state = dict(get_state(s, "linkedin_session") or {})
+            if state.pop("blocked_until", None):
+                state.pop("block_reason", None)
+                set_state(s, "linkedin_session", state)
         s.commit()
     return _msg(f"{channel} resumed.")
 
@@ -373,6 +403,7 @@ def companies_toggle(company_id: int):
 # ------------------------------------------------------------------------------ profile
 
 
+_INGEST_LOCK = threading.Lock()
 _ingest_state: dict = {"running": False, "error": None}
 
 
@@ -417,8 +448,10 @@ def profile_page(request: Request):
 
 @router.post("/profile/ingest", response_class=HTMLResponse)
 def profile_ingest():
-    if _ingest_state["running"]:
-        return _msg("already running", False, 409)
+    with _INGEST_LOCK:  # (two quick clicks must not start two LLM runs)
+        if _ingest_state["running"]:
+            return _msg("already running", False, 409)
+        _ingest_state.update(running=True, error=None)
 
     def run():
         from sqlmodel import Session
@@ -428,7 +461,6 @@ def profile_ingest():
         from recrute.llm.router import LLMRouter, build_providers
         from recrute.tailor import ingest_resume
 
-        _ingest_state.update(running=True, error=None)
         try:
             paths = get_paths()
             router = LLMRouter(get_config(), build_providers(get_config(), paths),
@@ -475,14 +507,12 @@ def profile_accept(digest: Annotated[str, Form()] = "",
 async def api_capture(request: Request):
     """Browser extension endpoint. Auth: X-Recrute-Token (checked by the access middleware;
     this route additionally requires it even for local requests)."""
-    import hmac
-
     from recrute.capture.page import raw_job_from_capture
     from recrute.pipeline.ingest import ingest
     from recrute.web.app import access_token
 
     token = request.headers.get("x-recrute-token", "")
-    if not token or not hmac.compare_digest(token, access_token()):
+    if not token or not token_matches(token, access_token()):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     body = await request.body()
     if len(body) > MAX_CAPTURE_BYTES:
@@ -495,13 +525,17 @@ async def api_capture(request: Request):
                             status_code=400)
     if not url.lower().startswith(("http://", "https://")):
         return JSONResponse({"ok": False, "error": "bad url"}, status_code=400)
-    raw = raw_job_from_capture(url, html, data.get("title"))
-    if raw is None:
-        return JSONResponse({"ok": False, "error": "not a job page"}, status_code=422)
-    with session_scope() as s:
-        stats = ingest(s, [raw])
-        # the job ingestion actually resolved this capture to (a merge may have matched a job
-        # stored under another key)
-        job_id = stats.job_ids[0] if stats.job_ids else None
-        return {"ok": True, "job_id": job_id, "new": stats.new == 1}
+
+    def save():  # (parsing and database waits: not on the event loop)
+        raw = raw_job_from_capture(url, html, data.get("title"))
+        if raw is None:
+            return JSONResponse({"ok": False, "error": "not a job page"}, status_code=422)
+        with session_scope() as s:
+            stats = ingest(s, [raw])
+            # the job ingestion actually resolved this capture to (a merge may have matched a
+            # job stored under another key)
+            job_id = stats.job_ids[0] if stats.job_ids else None
+            return {"ok": True, "job_id": job_id, "new": stats.new == 1}
+
+    return await run_in_threadpool(save)
 

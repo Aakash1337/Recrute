@@ -50,9 +50,13 @@
     const next = el.nextElementSibling || el.previousElementSibling;
     const body = new URLSearchParams({action});
     if (reason) body.set('reason', reason);
+    // (the promise also resolves when the server refused: only an accepted decision signals)
+    let accepted = false;
+    const onDecided = () => { accepted = true; };
+    document.body.addEventListener('decided', onDecided);
     htmx.ajax('POST', '/jobs/' + pane.dataset.jobId + '/decide', {target: '#detail', values: Object.fromEntries(body)})
-      .then(() => { el.remove(); if (next && next.dataset.id) select(next); })
-      .finally(() => { busy = false; });
+      .then(() => { if (accepted) { el.remove(); if (next && next.dataset.id) select(next); } })
+      .finally(() => { document.body.removeEventListener('decided', onDecided); busy = false; });
   }
   window.recruteDecide = decide;
   document.addEventListener('keydown', e => {

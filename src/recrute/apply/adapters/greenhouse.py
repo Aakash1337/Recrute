@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
 from recrute.apply import dom
-from recrute.apply.base import BaseAdapter, LiveField
+from recrute.apply.base import PHONE_COUNTRY_NOTE, BaseAdapter, LiveField
 from recrute.schemas import FormQuestion
 
 if TYPE_CHECKING:
@@ -28,8 +28,6 @@ if TYPE_CHECKING:
     from recrute.models import Job
 
 API = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs/{job_id}?questions=true"
-# the live picker shows no help text (tolerated by same_question); this says what it asks
-PHONE_COUNTRY_NOTE = "The country of your phone number (dialing code)."
 _PATH_RE = re.compile(r"greenhouse\.io/(?!embed/)([\w-]+)/jobs/(\d+)")
 
 
@@ -70,7 +68,7 @@ def _question(q: dict[str, Any], out: list[FormQuestion], seen: set[str]) -> Non
             id=name, label=(q.get("label") or name).strip(), type=qt,  # type: ignore[arg-type]
             required=bool(q.get("required")),
             options=[str(v.get("label")) for v in f.get("values") or []],
-            description=dom.html_to_text(q.get("description"))[:1000]))
+            description=dom.html_to_text(q.get("description"))[:20000]))
 
 
 def parse_questions(data: dict[str, Any]) -> list[FormQuestion]:

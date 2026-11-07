@@ -4,19 +4,22 @@
 <p class="muted">The automation browser runs on the Recrute server. When it hands a form to you
 (CP3) or you open it below, it appears here: click on the picture to click in the browser, type
 in the box to type. Press <b>Done</b> when you've finished (e.g. after submitting).</p>
+{% if exposed %}<p class="warn">This connection isn't encrypted: what you type here, passwords included, and the pictures of the page can be read by anyone able to watch your network. Set up HTTPS (see the README) before using this for passwords.</p>{% endif %}
 <p id="live-status" hx-get="/live/status" hx-trigger="load, every 3s"></p>
 <div style="position:relative;display:inline-block;border:1px solid var(--line)">
   <img id="live-frame" alt="" style="max-width:100%;min-height:200px;cursor:crosshair">
 </div>
 <p>
-  <input id="live-text" placeholder="text to type into the focused field" size="50">
-  <button onclick="liveSend({type:'type', text: document.getElementById('live-text').value}); document.getElementById('live-text').value='';">Type</button>
+  <input id="live-text" placeholder="text to type into the focused field" size="50" autocomplete="off">
+  <label class="muted"><input type="checkbox" onchange="document.getElementById('live-text').type = this.checked ? 'password' : 'text'"> hide</label>
+  <button onclick="liveType()">Type</button>
   {% for k in ['Enter', 'Tab', 'Backspace', 'Escape', 'ArrowDown', 'ArrowUp'] %}
   <button onclick="liveSend({type:'key', key:'{{ k }}'})">{{ k }}</button>{% endfor %}
   <button onclick="liveSend({type:'scroll', dy: 500})">Scroll ↓</button>
   <button onclick="liveSend({type:'scroll', dy: -500})">Scroll ↑</button>
   <button class="primary" onclick="liveSend({type:'done'})">Done</button>
 </p>
+<p id="live-feedback" class="warn" aria-live="polite"></p>
 <h2>Open the automation browser</h2>
 <form hx-post="/live/open" hx-target="find .result">
   <input name="url" size="60" placeholder="https://www.linkedin.com/login" value="https://www.linkedin.com/login">
@@ -67,13 +70,28 @@ in the box to type. Press <b>Done</b> when you've finished (e.g. after submittin
     revoke(shownUrl); shownUrl = null;
   });
   window.addEventListener('pageshow', e => { if (e.persisted && stopped) { stopped = false; loop(); } });
+  function liveFeedback(text) { document.getElementById('live-feedback').textContent = text; }
   function liveSend(ev) {
     const f = window.__frame;
-    if (!f || !f.session || Date.now() - f.shownAt > 5000) return;
+    if (!f || !f.session || Date.now() - f.shownAt > 5000) {
+      liveFeedback('Not sent: the picture is out of date. Wait a moment, then try again.');
+      return false;
+    }
+    liveFeedback('');
     ev.session = f.session;
     ev.target = f.target;  // the tab (and navigation) of the picture this input was made on
     htmx.ajax('POST', '/live/input', {values: ev, swap: 'none'});
+    return true;
   }
+  function liveType() {  // (what you typed stays in the box unless it was actually sent)
+    const box = document.getElementById('live-text');
+    if (liveSend({type: 'type', text: box.value})) box.value = '';
+  }
+  document.body.addEventListener('htmx:afterRequest', e => {
+    const xhr = e.detail.xhr;
+    if (e.detail.pathInfo && e.detail.pathInfo.requestPath === '/live/input' && xhr && xhr.status >= 400)
+      liveFeedback('Not applied: the page changed since that picture. Look at it again, then retry.');
+  });
   img.addEventListener('click', e => {
     const f = window.__frame; if (!f) return;
     const r = img.getBoundingClientRect();

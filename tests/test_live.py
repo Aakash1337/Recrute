@@ -320,3 +320,77 @@ def test_navigation_during_typing_discards_the_rest(paths, monkeypatch):
     assert live.apply_inputs(paths, page) is False
     assert "".join(typed) == "user\n"  # nothing after the navigation
     live.clear(paths)
+
+
+def test_old_open_request_is_dropped(paths):
+    import json
+
+    from recrute import live
+
+    live.request_open(paths, "https://www.linkedin.com/login")
+    f = live.live_dir(paths) / "open.json"
+    f.write_text(json.dumps({"url": "https://x.example", "at": time.time() - 7200}))
+    assert live.take_open_request(paths) is None and not f.exists()
+
+
+@pytest.mark.browser
+def test_click_that_navigates_stops_the_batch_in_a_real_browser(paths):
+    """Re-audit: a fake page hid this. Without letting the browser's events through, a navigation
+    isn't seen, and the next queued click lands on a page you haven't seen. (A real server:
+    page.route needs those same events to answer, so it can't show this.)"""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from patchright.sync_api import sync_playwright
+
+    from recrute import live
+
+    pages = {"/one": '<a href="/two" style="position:fixed;left:0;top:0;width:400px;'
+                     'height:400px;display:block">go</a>',
+             "/two": '<script>addEventListener("click",()=>{document.title="clicked"})</script>'
+                     '<body style="height:100vh">next</body>'}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = pages.get(self.path, "").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        pw = sync_playwright().start()
+    except Exception as e:  # noqa: BLE001
+        server.shutdown()
+        pytest.skip(f"playwright unavailable: {e}")
+    try:
+        browser = pw.chromium.launch(headless=True)
+    except Exception as e:  # noqa: BLE001
+        pw.stop()
+        server.shutdown()
+        pytest.skip(f"chromium not installed: {e}")
+    try:
+        page = browser.new_page(viewport={"width": 800, "height": 600})
+        page.goto(f"{base}/one")
+        live.start_session(paths)
+        live.publish_frame(paths, page)
+        session, target = live.active_session(), live.page_target(page)
+        for _ in range(2):
+            live.enqueue(paths, {"session": session, "target": target, "type": "click",
+                                 "x": 100, "y": 100})
+        live.apply_inputs(paths, page)
+        page.wait_for_url(f"{base}/two")
+        page.wait_for_timeout(300)
+        assert page.title() != "clicked"  # the second click never reached it
+    finally:
+        live.clear(paths)
+        browser.close()
+        pw.stop()
+        server.shutdown()

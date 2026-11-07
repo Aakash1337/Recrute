@@ -57,6 +57,13 @@ def _host_name(host_header: str) -> str:
     return host_header.rsplit(":", 1)[0] if host_header.count(":") == 1 else host_header
 
 
+def token_matches(value: str, token: str) -> bool:
+    """Constant-time; bytes, because compare_digest raises on non-ASCII text (a 500 for any LAN
+    client that sends one)."""
+    return hmac.compare_digest(value.encode("utf-8", "surrogateescape"),
+                               token.encode("utf-8", "surrogateescape"))
+
+
 class AccessMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, token_provider):
         super().__init__(app)
@@ -67,8 +74,8 @@ class AccessMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         host_header = request.headers.get("host", "")
         header_token = request.headers.get("x-recrute-token", "")
-        header_ok = bool(header_token) and hmac.compare_digest(header_token, token)
-        cookie_ok = hmac.compare_digest(request.cookies.get(COOKIE, ""), token)
+        header_ok = bool(header_token) and token_matches(header_token, token)
+        cookie_ok = token_matches(request.cookies.get(COOKIE, ""), token)
         client = request.client.host if request.client else None
         hosts = LOOPBACK_HOSTS | ({"testserver"} if client == "testclient" else set())
         local = _is_loopback_ip(client) and _host_name(host_header) in hosts

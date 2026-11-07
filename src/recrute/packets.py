@@ -13,7 +13,7 @@ import re
 from sqlalchemy import exists, update
 from sqlmodel import Session, col, select
 
-from recrute.models import Application, Decision, Job, JobStatus, StatusEvent, utcnow
+from recrute.models import Application, Company, Decision, Job, JobStatus, StatusEvent, utcnow
 from recrute.schemas import FormAnswer, Packet
 
 log = logging.getLogger(__name__)
@@ -123,6 +123,10 @@ def _save_to_bank(job: Job, packet: Packet) -> None:
         q = by_q.get(a.question_id)
         if q is None or a.source not in ("llm_new", "user") or not isinstance(a.value, str):
             continue
+        # a flagged claim you let through stays a one-off: banked, it would never be checked
+        # again and would count as support for others. (Editing an answer clears its flags.)
+        if any(f.where == f"answer:{a.question_id}" for f in packet.flags):
+            continue
         if q.type not in ("text", "textarea") or not a.value.strip() or len(a.value) > 1500:
             continue
         # job-specific wording may sit in the help text: judge the FULL question
@@ -178,7 +182,13 @@ def edit(session: Session, job_id: int, rev: str, answers: dict[str, str | list[
                     raise PacketError(f"{q.label}: the cover letter is longer than the field's "
                                       f"{q.max_length} characters")
                 _set_answer(packet, q.id, text)
-        packet = _rerender_cover_letter(job, packet)
+        company = session.get(Company, job.company_id) if job.company_id else None
+        try:
+            packet = _rerender_cover_letter(job, packet, company.name if company else "")
+        except Exception as e:  # a PDF that won't render must not look like nothing happened
+            from recrute.errors import safe_error
+
+            raise PacketError(f"the cover letter PDF couldn't be rendered: {safe_error(e)}") from e
     new_rev = _store(session, app, packet, rev)
     session.add(Decision(job_id=job_id, checkpoint="CP2", action="edit"))
     session.commit()
@@ -205,9 +215,12 @@ def _as_list(v) -> list[str]:
     return sorted(str(x).strip() for x in items if str(x).strip())
 
 
-def _same_answer(old, new) -> bool:
-    """Semantically unchanged (serialization differences are not an edit)."""
+def _same_answer(old, new, *, single_line: bool = False) -> bool:
+    """Semantically unchanged (serialization differences are not an edit). A single-line input
+    drops an older answer's newlines before you've touched it: that clears nothing."""
     new = _as_submitted(old, new)
+    if single_line and isinstance(old, str) and isinstance(new, str):
+        old = old.replace("\r", "").replace("\n", "")
     if isinstance(old, list | tuple) or isinstance(new, list | tuple):
         return _as_list(old) == _as_list(new)
     if isinstance(old, bool) or isinstance(new, bool):
@@ -222,15 +235,19 @@ def _set_answer(packet: Packet, qid: str, value) -> None:
         packet.answers.append(FormAnswer(question_id=qid, value=value, source="user",
                                          confidence=1.0, needs_review=False))
         return
+    if isinstance(a.value, list) and isinstance(value, str):  # (a one-box multiselect)
+        value = [value] if value.strip() else []
     value = _as_submitted(a.value, value)
-    if not _same_answer(a.value, value):
+    q = next((x for x in packet.questions if x.id == qid), None)
+    if not _same_answer(a.value, value, single_line=q is not None and not q.options
+                        and q.type != "textarea"):
         a.value, a.source, a.confidence, a.needs_review = value, "user", 1.0, False
         packet.flags = [f for f in packet.flags if f.where != f"answer:{qid}"]
     else:
         a.needs_review = False  # reviewed as-is
 
 
-def _rerender_cover_letter(job: Job, packet: Packet) -> Packet:
+def _rerender_cover_letter(job: Job, packet: Packet, company: str = "") -> Packet:
     """Edited letters get a NEW, uniquely named file (never overwriting a file an earlier or
     concurrent revision points to), and the packet's artifact fingerprints are updated."""
     import uuid
@@ -248,7 +265,8 @@ def _rerender_cover_letter(job: Job, packet: Packet) -> Packet:
     stem = old.stem.split("_edited_")[0]
     new = old.with_name(f"{stem}_edited_{uuid.uuid4().hex[:12]}{old.suffix}")
     paragraphs = [p.strip() for p in packet.cover_letter.split("\n\n") if p.strip()]
-    render_cover_letter(load_profile(paths), paragraphs, new, job_title=job.title, paths=paths)
+    render_cover_letter(load_profile(paths), paragraphs, new, company=company,
+                        job_title=job.title, paths=paths)
     rel = new.relative_to(paths.data).as_posix()
     for a in packet.answers:  # file-upload answers that pointed at the old letter
         if a.value == old_rel:
@@ -260,7 +278,10 @@ def _rerender_cover_letter(job: Job, packet: Packet) -> Packet:
 
 
 def regenerate(session: Session, job_id: int, rev: str, note: str) -> None:
-    """Back to the packet builder with a steering note ("emphasize the Kafka work")."""
+    """Back to the packet builder with a steering note ("emphasize the Kafka work"). The note is
+    required: the same prompt returns the same cached draft."""
+    if not note.strip():
+        raise PacketError("say what to change: without a note you'd get the same draft back")
     job, app, packet = load(session, job_id)
     _transition(session, job_id, [JobStatus.PACKET_READY], JobStatus.SHORTLISTED, rev)
     packet.user_note = note.strip()
@@ -340,7 +361,19 @@ def request_assist(session: Session, job_id: int) -> None:
                           "and approve it first")
     import uuid
 
+    # under the row's write lock, re-read: the worker may have just recorded an outcome
+    session.commit()
+    session.execute(update(Application).where(Application.id == app.id).values(id=Application.id)
+                    .execution_options(synchronize_session=False))
+    session.refresh(app)
+    session.refresh(job)
+    if (job.status != JobStatus.NEEDS_HUMAN or app.approved_at is None or not app.packet
+            or app.submitted_at is not None):
+        session.rollback()
+        raise PacketError("this job changed since you opened the page: reload")
     # a unique token: the worker consumes exactly this request, once
-    app.outcome = {**(app.outcome or {}), "assist_requested": uuid.uuid4().hex}
+    outcome = {k: v for k, v in (app.outcome or {}).items() if k != "assist_expired"}
+    app.outcome = {**outcome, "assist_requested": uuid.uuid4().hex,
+                   "assist_requested_at": utcnow().isoformat()}
     session.add(app)
     session.commit()
