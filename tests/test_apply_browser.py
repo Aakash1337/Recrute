@@ -1649,3 +1649,39 @@ def test_yes_no_state_is_read_however_it_is_shown(context, html, expected):
     fields = [f for f in extract_fields(page, scope="form") if f.widget == "yesno"]
     page.close()
     assert len(fields) == 1 and fields[0].current == expected
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("wrapper", ['<form class="job-location-form">',
+                                     '<form class="preselected-answers">'])
+def test_hidden_answer_is_verified_whatever_the_page_calls_its_form(context, wrapper):
+    """Final audit: any ancestor whose class mentions 'select' or 'location' made a plain text box
+    count as a picker, so the hidden answer beside it was never checked, and was submitted."""
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    page = context.new_page()
+    page.set_content(f"""{wrapper}
+      <div><label for="n">Name</label><input id="n" name="n" value="Ada">
+      <input type="hidden" name="requires_sponsorship" value="No"></div>
+    </form>""")
+    fields = {f.id: f for f in dom.extract_fields(page)}
+    page.close()
+    assert "requires_sponsorship" in fields
+    problems = verify_fields(list(fields.values()),
+                             Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")]),
+                             {})
+    assert "requires_sponsorship" in problems
+
+
+@pytest.mark.browser
+def test_hidden_value_of_a_real_picker_is_still_exempt(context):
+    from recrute.apply import dom
+
+    page = context.new_page()
+    page.set_content("""<form><div class="location-picker">
+      <label for="loc">Location</label><input id="loc" role="combobox" value="Austin">
+      <input type="hidden" name="location_id" value="123"></div></form>""")
+    fields = {f.id for f in dom.extract_fields(page)}
+    page.close()
+    assert "location_id" not in fields

@@ -97,8 +97,11 @@ MULTI_ROLE_SOURCES = {"hn_whoshiring"}
 
 
 def _public_web_address(url: str) -> bool:
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower().rstrip(".")
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower().rstrip(".")
+    except ValueError:  # "https://[bad/x": not somewhere a browser should go
+        return False
     if parts.scheme.lower() not in ("http", "https") or not host:
         return False
     if "%" in host or "\\" in url:  # browsers decode these into the real destination
@@ -261,7 +264,11 @@ def _retarget_unsent_application(session: Session, job: Job) -> None:
 
 def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
     """Upsert one posting (runs inside a savepoint; see ingest)."""
-    target, canon = job_canonical(raw)
+    try:
+        target, canon = job_canonical(raw)
+    except ValueError:  # a malformed link: this posting, not the rest of the source
+        log.warning("skipping a posting from %s: its link can't be read", raw.source)
+        return
     if not _public_web_address(target):
         # scraped data: the logged-in browser (and this server, which trusts local requests)
         # must only ever be sent to a page on the web

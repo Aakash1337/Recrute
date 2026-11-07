@@ -988,3 +988,22 @@ def test_a_posting_retries_when_another_connection_commits_mid_write(engine, mon
             source="x", source_job_id="1", title="Analyst", company="Acme",
             url="https://acme.example/jobs/1")])
         assert len(calls) == 2 and stats.new == 1 and len(session.exec(select(Job)).all()) == 1
+
+
+def test_one_malformed_link_does_not_stop_the_rest_of_the_source(engine):
+    """Final audit: a ValueError from one bad URL aborted the source's ingest on every run."""
+    from recrute.models import Job
+    from recrute.pipeline.ingest import ingest
+    from recrute.schemas import RawJob
+
+    with Session(engine) as session:
+        stats = ingest(session, [
+            RawJob(source="x", source_job_id="1", title="Analyst", company="Acme",
+                   url="https://[bad/x"),
+            RawJob(source="x", source_job_id="2", title="Analyst", company="Beta",
+                   url="http://[foo]/"),
+            RawJob(source="x", source_job_id="3", title="Engineer", company="Acme",
+                   url="https://acme.example/jobs/3")])
+        assert stats.new == 1
+        assert [j.apply_url for j in session.exec(select(Job)).all()] == [
+            "https://acme.example/jobs/3"]

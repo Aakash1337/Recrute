@@ -6,6 +6,7 @@ or because the application form has a *required* cover-letter field.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 
@@ -14,7 +15,7 @@ from pydantic import BaseModel
 from recrute.llm.base import LLMError
 from recrute.paths import Paths
 from recrute.schemas import FormQuestion, Profile, ResumeSelection
-from recrute.tailor.answers import _ADDRESS_VALUE_RE, _EMAIL_VALUE_RE, _PHONE_IN_TEXT_RE
+from recrute.tailor.answers import _EMAIL_VALUE_RE, _PHONE_IN_TEXT_RE
 from recrute.tailor.common import (
     STRS,
     Completer,
@@ -27,6 +28,8 @@ from recrute.tailor.common import (
     word_count,
 )
 from recrute.tailor.ingest import RESUME_SUFFIXES, extract_text
+
+log = logging.getLogger(__name__)
 
 _CL_RE = re.compile(r"cover[\s_-]*letter|letter[\s_-]+of[\s_-]+(interest|motivation)|"
                     r"motivation(al)?[\s_-]*letter", re.IGNORECASE)
@@ -63,7 +66,12 @@ def load_voice_samples(paths: Paths, *, per_file: int = 1200, budget: int = 3000
             if not p.is_file() or p.suffix.lower() not in RESUME_SUFFIXES \
                     or p.name.startswith("."):
                 continue
-            text = _voice_text(extract_text(p))
+            try:
+                text = _voice_text(extract_text(p))
+            except Exception as e:  # noqa: BLE001 - optional styling: one bad file mustn't stop
+                # every cover letter (and its name can be personal: only the error's kind)
+                log.warning("skipping an unreadable writing sample (%s)", e.__class__.__name__)
+                continue
             if not text:
                 continue
             excerpt = truncate(text, min(per_file, budget - used))
@@ -73,6 +81,12 @@ def load_voice_samples(paths: Paths, *, per_file: int = 1200, budget: int = 3000
     return "\n".join(chunks)
 
 
+# A street address in prose, kept tight: the field-value pattern runs from the first "3 years" to
+# the last "way" in a whole letter. Capitalised words, a street word, or a state and ZIP.
+_ADDRESS_IN_PROSE = re.compile(
+    r"\b\d+[A-Za-z]?\s+(?:[A-Z][\w.'-]*\s+){0,4}?(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|"
+    r"Blvd|Lane|Ln|Drive|Dr|Court|Ct|Place|Pl|Way|Hwy|Highway|Parkway|Pkwy)\b\.?|"
+    r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b")
 _SALUTATION = re.compile(r"\b(?:dear|hello|hi|greetings|to whom)\b[^:,;]{0,80}[,:;]", re.I)
 
 
@@ -82,7 +96,7 @@ def _voice_text(raw: str) -> str:
     text = " ".join(raw.split())
     if (m := _SALUTATION.search(text[:1500])) is not None:
         text = text[m.end():].strip()
-    for rx in (_EMAIL_VALUE_RE, _PHONE_IN_TEXT_RE, _ADDRESS_VALUE_RE):
+    for rx in (_EMAIL_VALUE_RE, _PHONE_IN_TEXT_RE, _ADDRESS_IN_PROSE):
         text = rx.sub("[removed]", text)
     return re.sub(r"\S*(?:https?://|www\.|linkedin\.com|github\.com)\S*", "[removed]", text)
 

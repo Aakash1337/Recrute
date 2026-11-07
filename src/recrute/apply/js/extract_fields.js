@@ -145,7 +145,10 @@
       if (!shown.length) continue;
       if (shown.length > 1) return false;
       const w = shown[0];
-      return w.matches(PICKER) || !!w.closest(PICKER);
+      // (bounded by this wrapper: a <form class="job-location-form"> or <body class="preselected">
+      // far above must not make a plain text box a picker, and its hidden neighbour unchecked)
+      const p = w.closest(PICKER);
+      return w.matches(PICKER) || (!!p && cur.contains(p));
     }
     return false;
   };

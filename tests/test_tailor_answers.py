@@ -2035,3 +2035,27 @@ def test_answer_naming_the_employer_is_not_reused(paths, monkeypatch):
                                         source="user"),
                              FormAnswer(question_id="b", value="Written first.", source="user")])
     assert _banked(paths, monkeypatch, packet, company="Acme") == ["Written first."]
+
+
+def test_voice_sample_prose_survives_the_address_filter(paths):
+    """Final audit: on one long line the field-value pattern ran from '3 engineers' to the last
+    'way', deleting most of the letter."""
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    (paths.resources / "writing" / "w.txt").write_text(
+        "Ada Lovelace\n12 Main Street, Austin, TX 78701\n\nDear team,\n\nI led 3 engineers on the "
+        "rollout. We cut alerts by 40% along the way. That is the way I work, and the place I "
+        "want to drive it next.\n", encoding="utf-8")
+    samples = load_voice_samples(paths)
+    for kept in ("I led 3 engineers on the rollout.", "40% along the way",
+                 "That is the way I work", "the place I want to drive it next"):
+        assert kept in samples, kept
+
+
+def test_an_unreadable_writing_sample_is_skipped_not_fatal(paths):
+    """Final audit: one corrupt PDF failed every packet that needed a cover letter."""
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    (paths.resources / "cover_letters" / "broken.pdf").write_bytes(b"not a pdf at all")
+    (paths.resources / "writing" / "ok.txt").write_text("I write short.", encoding="utf-8")
+    assert "I write short." in load_voice_samples(paths)
