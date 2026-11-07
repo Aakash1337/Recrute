@@ -517,13 +517,17 @@ async def api_capture(request: Request):
                             status_code=400)
     if not url.lower().startswith(("http://", "https://")):
         return JSONResponse({"ok": False, "error": "bad url"}, status_code=400)
-    raw = raw_job_from_capture(url, html, data.get("title"))
-    if raw is None:
-        return JSONResponse({"ok": False, "error": "not a job page"}, status_code=422)
-    with session_scope() as s:
-        stats = ingest(s, [raw])
-        # the job ingestion actually resolved this capture to (a merge may have matched a job
-        # stored under another key)
-        job_id = stats.job_ids[0] if stats.job_ids else None
-        return {"ok": True, "job_id": job_id, "new": stats.new == 1}
+
+    def save():  # (parsing and database waits: not on the event loop)
+        raw = raw_job_from_capture(url, html, data.get("title"))
+        if raw is None:
+            return JSONResponse({"ok": False, "error": "not a job page"}, status_code=422)
+        with session_scope() as s:
+            stats = ingest(s, [raw])
+            # the job ingestion actually resolved this capture to (a merge may have matched a
+            # job stored under another key)
+            job_id = stats.job_ids[0] if stats.job_ids else None
+            return {"ok": True, "job_id": job_id, "new": stats.new == 1}
+
+    return await run_in_threadpool(save)
 

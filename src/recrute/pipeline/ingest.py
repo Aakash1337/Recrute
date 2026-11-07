@@ -1,5 +1,6 @@
 """Upsert RawJobs into the DB with deduplication and company-registry maintenance."""
 
+import ipaddress
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -91,6 +92,20 @@ def source_url(raw: RawJob) -> str:
 
 # Sources that emit several roles from one page (and often one shared careers link).
 MULTI_ROLE_SOURCES = {"hn_whoshiring"}
+
+
+def _public_web_address(url: str) -> bool:
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower().rstrip(".")
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        return False
+    if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True  # a name
+    return ip.is_global
 
 
 def job_canonical(raw: RawJob) -> tuple[str, str]:
@@ -240,8 +255,9 @@ def _retarget_unsent_application(session: Session, job: Job) -> None:
 def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
     """Upsert one posting (runs inside a savepoint; see ingest)."""
     target, canon = job_canonical(raw)
-    if urlsplit(target).scheme.lower() not in ("http", "https"):
-        # scraped data: the logged-in browser must only ever be sent to a web page
+    if not _public_web_address(target):
+        # scraped data: the logged-in browser (and this server, which trusts local requests)
+        # must only ever be sent to a page on the web
         log.warning("skipping a posting from %s: its link isn't a web address", raw.source)
         return
     fkey = fuzzy_key(raw.company, raw.title, raw.locations)

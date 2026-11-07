@@ -84,7 +84,7 @@ class LazyBrowser:
                 if live.apply_inputs(self.ctx.paths, page, tabs=self._open_tabs):
                     return  # you pressed "Done" in the live view
                 live.publish_frame(self.ctx.paths, page)
-                time.sleep(1)
+                live.settle(page, 1)
         finally:
             live.clear(self.ctx.paths)
 
@@ -120,6 +120,36 @@ def notify_handoff(ctx, job_id: int | None, reason: str) -> None:
                    f"open in the automation browser for {minutes} minutes. "
                    f"{base}/applications", priority="high")
     except Exception as e:  # a failed notification must not break the hand-off
+        log.warning("CP3 notification failed: %s", e.__class__.__name__)
+
+
+def _came_back_to_you(ctx, job_id: int | None) -> bool:
+    try:
+        with ctx.session() as s:
+            job = s.get(Job, job_id) if job_id else None
+            return job is not None and job.status == JobStatus.NEEDS_HUMAN
+    except Exception as e:  # noqa: BLE001 - must not break the worker
+        log.warning("checking a job's status failed: %s", e.__class__.__name__)
+        return False
+
+
+def notify_needs_you(ctx, job_id: int | None, reason: str) -> None:
+    """Came back to you with no form open: no hand-off wait, so nothing else would tell you."""
+    from recrute.models import Company
+    from recrute.settings import get_setting
+    from recrute.tasks import notify
+
+    try:
+        with ctx.session() as s:
+            job = s.get(Job, job_id) if job_id else None
+            if job is None:
+                return
+            company = s.get(Company, job.company_id) if job.company_id else None
+            base = get_setting(s, "notify")["ui_base_url"] or ""
+            notify(s, "Recrute needs you (CP3)",
+                   f"{job.title} at {company.name if company else '?'}: {reason}. "
+                   f"{base}/applications", priority="high")
+    except Exception as e:  # a failed notification must not break the worker
         log.warning("CP3 notification failed: %s", e.__class__.__name__)
 
 
@@ -180,9 +210,13 @@ def run_due_task(ctx) -> dict:
         mode = result.mode
         if result.ran and result.outcome and result.outcome.details.get("browser_unavailable"):
             notify_browser_down(ctx, result.outcome.reason)
+        for job_id in getattr(result, "recovered", None) or ():
+            notify_needs_you(ctx, job_id, "an attempt was interrupted and may have been sent")
         if result.ran and result.outcome and left_open(result.outcome):
             notify_handoff(ctx, result.job_id, result.outcome.reason)
             browser.wait_for_human()  # a filled form is waiting for you (CP3), in any mode
+        elif result.ran and result.outcome and _came_back_to_you(ctx, result.job_id):
+            notify_needs_you(ctx, result.job_id, result.outcome.reason)
         return {"ran": result.ran, "reason": result.reason[:200] if result.reason else "",
                 "job_id": result.job_id, "mode": mode,
                 "status": result.outcome.status if result.outcome else None,
@@ -289,13 +323,20 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
             lease.release()
         files = {k: v for k, v in (("resume", app.resume_path),
                                    ("cover_letter", app.cover_letter_path)) if v}
-        from recrute.errors import BrowserUnavailableError
+        from recrute.errors import BrowserUnavailableError, safe_error
         from recrute.schemas import ApplyOutcome
+
+        def still_allowed(channel: str = adapter.name) -> str | None:
+            # (asked again once the browser is ours)
+            with ctx.session() as fresh:
+                info = suspension(fresh, channel, datetime.now(UTC))
+            return f"channel suspended: {info.get('reason')}" if info else None
 
         try:
             outcome = apply_job(job, Packet.model_validate(app.packet), mode="fill_and_pause",
                                 page_factory=browser, paths=ctx.paths, adapter=adapter,
-                                router=ctx.router, files=files or None)
+                                router=ctx.router, files=files or None,
+                                pre_start_check=still_allowed)
         except BrowserUnavailableError as e:
             # the request was consumed but no form exists: nothing holds a cap slot
             outcome = ApplyOutcome(status="needs_human", reason=f"the browser didn't start: {e}",
@@ -303,6 +344,14 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
                                             "handoff_reservation": False,
                                             "browser_unavailable": True})
             notify_browser_down(ctx, outcome.reason)
+        except Exception as e:  # noqa: BLE001 - the runner handles what happens on a page
+            # without this the request would vanish with no reason shown. We can't tell how far
+            # it got, so it keeps its cap slot until you look (like a crash in a scheduled run)
+            outcome = ApplyOutcome(
+                status="needs_human", reason=f"the pre-fill crashed: {safe_error(e)}"[:300],
+                details={"submit_attempted": False, "page_left_open": False,
+                         "handoff_reservation": True,
+                         "attempted_at": datetime.now(UTC).isoformat()})
         _record_assist(session, app, outcome)
         if left_open(outcome):
             notify_handoff(ctx, job.id, outcome.reason)

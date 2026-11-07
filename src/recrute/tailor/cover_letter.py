@@ -161,9 +161,10 @@ def write_cover_letter(profile: Profile, selection: ResumeSelection, job: JobCon
         voice=f"\nVOICE SAMPLES\n{voice}" if voice else "")
     raw = parse_llm(_Cover, router.complete("tailor", prompt, schema=COVER_SCHEMA,
                                             system=COVER_SYSTEM), "cover letter")
-    if not any(p.strip() for p in raw.paragraphs):
-        raise LLMError("cover letter: the LLM returned no text")  # never a blank PDF
+    paragraphs = limit_words(raw.paragraphs, max_words)
+    if not any(p.strip() for p in paragraphs):
+        raise LLMError("cover letter: the LLM returned no usable text")  # never a blank PDF
     known = set(profile.all_items()) | {e.id for e in profile.experience} \
         | {p.id for p in profile.projects}
-    return CoverLetter(paragraphs=limit_words(raw.paragraphs, max_words),
+    return CoverLetter(paragraphs=paragraphs,
                        cited_ids=[i for i in dict.fromkeys(raw.cited_ids) if i in known])

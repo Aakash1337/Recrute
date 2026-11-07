@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -119,7 +119,7 @@ def offsite_apply_url(soup: BeautifulSoup) -> str | None:
     parts = urlsplit(raw)
     target = parse_qs(parts.query).get("url")
     if target:
-        return unquote(target[0])
+        return target[0]  # (parse_qs already decoded it: decoding twice alters its query)
     return raw if "linkedin.com" not in (parts.hostname or "") else None
 
 

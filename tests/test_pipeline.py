@@ -944,3 +944,19 @@ def test_a_link_that_is_not_a_web_address_is_never_ingested(engine):
                             url="https://acme.example/jobs/1")])
     assert [j.apply_url for j in session.exec(select(Job)).all()] == [
         "https://acme.example/jobs/1"]
+
+
+@pytest.mark.parametrize("url", [
+    "http://localhost:8765/settings", "http://127.0.0.1/x", "http://[::1]/x", "http://10.0.0.5/",
+    "http://192.168.1.1/admin", "http://169.254.169.254/latest", "http://printer.local/",
+])
+def test_a_link_into_your_own_network_is_never_ingested(engine, url):
+    """Re-audit: this server trusts local requests, and the browser is logged in."""
+    from recrute.models import Job
+    from recrute.pipeline.ingest import ingest
+    from recrute.schemas import RawJob
+
+    with Session(engine) as session:
+        ingest(session, [RawJob(source="x", source_job_id="1", title="Analyst", company="Acme",
+                                url=url)])
+        assert session.exec(select(Job)).all() == []

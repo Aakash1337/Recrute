@@ -380,6 +380,11 @@ def discover_linkedin(ctx) -> dict:
         found = []
         result: dict = {}
         crashed: Exception | None = None
+        # held until a security check is on record: a form-fill waiting for the browser must not
+        # get it first and find no suspension
+        from recrute.browser.runtime import BROWSER_LOCK
+
+        BROWSER_LOCK.acquire()
         try:
             for raw in src.fetch(sctx):
                 found.append(raw)
@@ -399,6 +404,8 @@ def discover_linkedin(ctx) -> dict:
                    f"{until:%Y-%m-%d}. Log in manually and check your account.", "high")
         except Exception as e:  # e.g. a navigation timeout: keep what was already collected
             crashed = e
+        finally:
+            BROWSER_LOCK.release()
         # (the budget was reserved in the DB slot by slot, before each page: nothing to save)
         if found:
             result.update(ingest(s, found).as_dict())

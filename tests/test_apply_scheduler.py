@@ -1133,3 +1133,52 @@ def test_browser_outage_on_the_last_retry_keeps_the_job_queued(session, paths):
     session.refresh(app)
     session.refresh(job)
     assert job.status == JobStatus.APPROVED and app.attempts == 2
+
+
+def test_suspended_while_waiting_for_the_browser_goes_nowhere(session, paths):
+    """Re-audit (high): an attempt passed the check, waited for the browser while discovery hit
+    a LinkedIn checkpoint, then filled the form anyway: only submitting re-checked it."""
+    from recrute.apply.state import suspend
+
+    graduate(session, n=4)  # still in trial: fill-and-pause never reaches the submit gate
+    app, job = add_app(session, 1)
+    seen = {}
+
+    def runner(job_, packet, **kw):
+        with Session(session.get_bind()) as other:  # discovery, holding the browser
+            suspend(other, "greenhouse", at(12), "LinkedIn browsing: checkpoint")
+        seen["why"] = kw["pre_start_check"]()
+        return ApplyOutcome(status="failed", reason=seen["why"],
+                            details={"mode": kw["mode"], "effective_mode": kw["mode"],
+                                     "not_started": True, "page_left_open": False,
+                                     "handoff_reservation": False, "submit_attempted": False})
+
+    res = due(session, paths, runner)
+    assert res.mode == "fill_and_pause" and "suspended" in seen["why"]
+    session.refresh(app)
+    session.refresh(job)
+    # it never touched a form: back in the queue, with its attempt and cap slot returned
+    assert job.status == JobStatus.APPROVED and app.attempts == 0
+    assert day_counts(session, at(12, 30)).by_channel == {}
+
+
+def test_renewal_finishing_during_held_is_not_a_lost_lease(engine, monkeypatch):
+    """Re-audit: held() read the row after a renewal it had not seen, and said lost."""
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.apply import state
+    from recrute.apply.state import Lease
+
+    lease = Lease(engine, "me", timedelta(minutes=5), lambda: datetime.now(UTC))
+    assert lease.acquire()
+    real_session, fired = state.Session, []
+
+    class RenewsDuringTheRead(real_session):
+        def get(self, *a, **kw):
+            if not fired:
+                fired.append(1)
+                lease.renew()
+            return super().get(*a, **kw)
+
+    monkeypatch.setattr(state, "Session", RenewsDuringTheRead)
+    assert lease.held() is True and lease.renewals == 1

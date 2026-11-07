@@ -260,6 +260,7 @@ def _tokens(s: str) -> list[str]:
     return re.findall(rf"[a-z0-9{re.escape(_MEANINGFUL)}]+", s)
 
 
+HELP_TEXT_LIMIT = 1000  # characters of help text kept, live and when fetched before CP2
 # What we wrote ourselves to explain a question at CP2: never on the site's page.
 PHONE_COUNTRY_NOTE = "The country of your phone number (dialing code)."
 _OWN_NOTES = {PHONE_COUNTRY_NOTE}
@@ -286,7 +287,14 @@ def _same_description(approved: str, live: str) -> bool:
     """Descriptions must say the same thing. Added or removed help text counts as a change:
     conditions ("with Kubernetes", "in Canada") often live there."""
     a, b = dom.norm(approved or ""), dom.norm(live or "")
-    return a == b or _compact(a) == _compact(b)
+    if a == b or _compact(a) == _compact(b):
+        return True
+    if min(len(approved or ""), len(live or "")) >= HELP_TEXT_LIMIT:
+        # both were cut at the limit: compared as far as both go
+        ca, cb = _compact(a), _compact(b)
+        n = min(len(ca), len(cb))
+        return ca[:n] == cb[:n]
+    return False
 
 
 def resolve_answer(q: FormQuestion, packet: Packet, aliases: Mapping[str, Sequence[str]] = {},

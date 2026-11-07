@@ -378,3 +378,55 @@ def test_browser_failure_on_a_live_open_request_is_reported(paths, monkeypatch):
     ctx = SimpleNamespace(paths=paths, stop=threading.Event())
     assert applying.run_due_task(ctx) == {"live_session_failed": "https://www.linkedin.com/login"}
     assert notified
+
+
+def test_assist_crash_shows_why_and_keeps_its_slot(engine, paths, monkeypatch):
+    """Re-audit: it vanished with no reason on the Applications page."""
+    from recrute import applying
+    from recrute.models import Application
+
+    def crash(*a, **kw):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("recrute.apply.runner.apply_job", crash)
+    app_id = _assist_row(engine, details={"handoff_reservation": False})
+    with Session(engine) as s:
+        assert applying._run_assist_request(_assist_ctx(engine, paths), s, object())
+    with Session(engine) as s:
+        outcome = s.get(Application, app_id).outcome
+    assert "the pre-fill crashed" in outcome["reason"]
+    assert outcome["details"]["handoff_reservation"] is True
+
+
+def test_what_comes_back_to_you_with_no_form_open_is_notified(engine, paths, monkeypatch):
+    """Re-audit: failed 3x and interrupted attempts only showed up in the next digest."""
+    from recrute import applying, tasks
+    from recrute.apply.scheduler import RunResult
+    from recrute.models import JobStatus
+    from recrute.schemas import ApplyOutcome
+
+    with Session(engine) as s:
+        job = Job(title="Analyst", apply_url="https://x", canonical_url="c",
+                  status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.commit()
+        job_id = job.id
+    sent = []
+    monkeypatch.setattr(tasks, "notify", lambda s, title, body, priority="default": sent.append(
+        (title, body, priority)))
+
+    def result(**kw):
+        return RunResult(**kw)
+
+    outcome = ApplyOutcome(status="failed", reason="failed 3x: timeout",
+                           details={"page_left_open": False})
+    monkeypatch.setattr("recrute.apply.scheduler.run_due", lambda s, **kw: result(
+        ran=True, reason="failed 3x", outcome=outcome, job_id=job_id, recovered=[job_id]))
+    monkeypatch.setattr(applying, "_run_assist_request", lambda ctx, s, b: None)
+    ctx = SimpleNamespace(session=lambda: Session(engine), paths=paths, router=None,
+                          stop=threading.Event())
+    applying.run_due_task(ctx)
+    bodies = [b for _, b, _ in sent]
+    assert any("may have been sent" in b for b in bodies)
+    assert any("failed 3x" in b and "open in the automation" not in b for b in bodies)
+    assert {p for _, _, p in sent} == {"high"}

@@ -440,3 +440,25 @@ def test_optional_question_that_changed_keeps_its_approved_answer_from_being_dro
     assert coverage_check([live], unticked) == []
     same = LiveField(id="o", label="Years of Python", type="text")
     assert coverage_check([same], answered) == []
+
+
+def _long_help(tail: str = "") -> str:
+    return "You must consent to the following terms before continuing. " * 30 + tail
+
+
+def test_long_help_text_cut_at_the_limit_is_compared_as_far_as_both_go():
+    """Re-audit: 1000 characters fetched, 500 read live: every long one looked changed."""
+    from recrute.apply.base import HELP_TEXT_LIMIT
+
+    approved = FormQuestion(id="c", label="Consent", description=_long_help()[:HELP_TEXT_LIMIT])
+    same = LiveField(id="c", label="Consent", description=_long_help()[:HELP_TEXT_LIMIT])
+    assert same_question(approved, same)
+    # differently spaced where it was cut, as the two ways of reading it can be
+    spaced = _long_help().replace("terms before", "terms  before")[:HELP_TEXT_LIMIT]
+    assert same_question(approved, LiveField(id="c", label="Consent", description=spaced))
+    changed = "You must waive your rights before continuing. " + _long_help()
+    assert not same_question(approved, LiveField(id="c", label="Consent",
+                                                 description=changed[:HELP_TEXT_LIMIT]))
+    # a live text that simply ends early isn't "cut": the rest of it is gone
+    short = _long_help()[:400]
+    assert not same_question(approved, LiveField(id="c", label="Consent", description=short))

@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from markupsafe import escape
 from sqlmodel import col, func, select
@@ -177,6 +178,11 @@ def settings_page(request: Request):
 @router.post("/settings/{key}", response_class=HTMLResponse)
 async def settings_update(request: Request, key: str):
     form = await request.form()
+    # (database waits: not on the event loop, which serves the live view)
+    return await run_in_threadpool(_save_setting, key, form)
+
+
+def _save_setting(key: str, form) -> HTMLResponse:
     with session_scope() as s:
         current = all_settings(s)
         if key not in current:

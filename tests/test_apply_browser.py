@@ -1552,3 +1552,14 @@ def test_error_in_fill_and_pause_hands_over_instead_of_failing(srv, context, pat
               context, paths, human, mode="fill_and_pause")
     assert out.status == "needs_human" and out.details["page_left_open"] is True
     assert srv.posts == []
+
+
+def test_pre_start_check_stops_before_going_anywhere(srv, context, paths, human, resume):
+    """Re-audit (high): getting the browser can mean waiting for discovery, so it's asked once
+    the browser is ours, before navigating, in every mode."""
+    out = run(job(f"{srv.url}/greenhouse/acme/jobs/1001", "greenhouse"), gh_packet(resume),
+              context, paths, human, mode="fill_and_pause",
+              pre_start_check=lambda: "channel suspended: checkpoint")
+    assert out.status == "failed" and out.details["not_started"] is True
+    assert out.details["page_left_open"] is False and out.details["handoff_reservation"] is False
+    assert out.details.get("final_url") == "about:blank" and srv.posts == []

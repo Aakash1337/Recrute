@@ -123,6 +123,10 @@ def _save_to_bank(job: Job, packet: Packet) -> None:
         q = by_q.get(a.question_id)
         if q is None or a.source not in ("llm_new", "user") or not isinstance(a.value, str):
             continue
+        # a flagged claim you let through stays a one-off: banked, it would never be checked
+        # again and would count as support for others. (Editing an answer clears its flags.)
+        if any(f.where == f"answer:{a.question_id}" for f in packet.flags):
+            continue
         if q.type not in ("text", "textarea") or not a.value.strip() or len(a.value) > 1500:
             continue
         # job-specific wording may sit in the help text: judge the FULL question

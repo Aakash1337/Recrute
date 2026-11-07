@@ -587,8 +587,8 @@ def finalize(session: Session, *, app_id: int, job_id: int, attempt_id: str, lea
         target, note = JobStatus.NEEDS_HUMAN, outcome.reason
     elif outcome.status == "dry_run":
         target, note = JobStatus.APPROVED, "dry run"
-    elif outcome.details.get("browser_unavailable"):
-        # no page existed: not an attempt at all, so it can't use up the job's retries
+    elif outcome.details.get("browser_unavailable") or outcome.details.get("not_started"):
+        # it never touched a form: not an attempt at all, so it can't use up the job's retries
         target, note = JobStatus.APPROVED, outcome.reason
         app.attempts = max(0, (app.attempts or 0) - 1)
     elif outcome.details.get("page_left_open"):
@@ -788,7 +788,7 @@ def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: d
         packet = Packet.model_validate(claimed.packet)  # the packet that was just claimed
         outcome = runner(run_job, packet, mode=mode, page_factory=page_factory, paths=paths,
                          adapter=adapter, router=router, human=human, files=files or None,
-                         now=now.astimezone(UTC), pre_submit_check=gate)
+                         now=now.astimezone(UTC), pre_submit_check=gate, pre_start_check=gate)
     except BrowserUnavailableError as e:
         # no page existed, so nothing was sent: the job keeps its place (and its attempts), and
         # the channel waits rather than failing every job in the queue the same way

@@ -729,3 +729,13 @@ def test_guest_block_keeps_the_wait_linkedin_asked_for():
     ctx = SourceContext(http=FakeHttp(), criteria=many_queries())
     list(src.fetch(ctx))
     assert ctx.retry_after == 86400.0 and "blocked" in ctx.errors["linkedin_guest"]
+
+
+def test_offsite_apply_url_is_decoded_once():
+    """Re-audit: decoding twice altered a value in the target's own query."""
+    from bs4 import BeautifulSoup
+
+    wrapped = ("https://www.linkedin.com/jobs/view/externalApply/1?url="
+               "https%3A%2F%2Fats.example%2Fjob%3Fref%3Da%2526b")
+    soup = BeautifulSoup(f'<code id="applyUrl"><!--"{wrapped}"--></code>', "html.parser")
+    assert lg.offsite_apply_url(soup) == "https://ats.example/job?ref=a%26b"

@@ -1962,3 +1962,16 @@ def test_your_name_stays_out_of_llm_background():
     profile = make_profile()
     assert profile.name in background_facts(profile)  # (the local check still knows it)
     assert profile.name not in background_facts(profile, name=False)
+
+
+def test_a_cover_letter_the_word_limit_empties_is_a_failure():
+    """Re-audit: one sentence over the limit was removed entirely, leaving a blank letter."""
+    from test_tailor_support import FakeRouter, make_job, make_profile
+
+    from recrute.llm.base import LLMError
+    from recrute.schemas import ResumeSelection
+    from recrute.tailor.cover_letter import write_cover_letter
+
+    router = FakeRouter({"cover": {"paragraphs": ["word " * 400 + "."], "cited_ids": []}})
+    with pytest.raises(LLMError):
+        write_cover_letter(make_profile(), ResumeSelection(), make_job(), router)

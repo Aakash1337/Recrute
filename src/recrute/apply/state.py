@@ -177,14 +177,23 @@ class Lease:
     def held(self) -> bool:
         """Still ours and not expired (a stale holder must not act even if nobody took over
         yet: another worker may do so at any moment)."""
-        with self._mu:
-            stamp, renewing = self.stamp, self._renewing
-        if stamp is None or self.clock() - stamp >= self.ttl:
-            return False
-        with Session(self.bind) as s:
-            row = s.get(Setting, LOCK_KEY)
-            # (a renewal may have committed just before it got to update self.stamp)
-            return row is not None and row.updated_at in (stamp, renewing)
+        for _ in range(3):
+            with self._mu:
+                stamp, renewing = self.stamp, self._renewing
+            if stamp is None or self.clock() - stamp >= self.ttl:
+                return False
+            with Session(self.bind) as s:
+                row = s.get(Setting, LOCK_KEY)
+                # (a renewal may have committed just before it got to update self.stamp)
+                if row is not None and row.updated_at in (stamp, renewing):
+                    return True
+                if row is None:
+                    return False
+            with self._mu:
+                if (self.stamp, self._renewing) == (stamp, renewing):
+                    return False  # nothing of ours changed: somebody else's stamp
+            # a renewal of ours finished during the read: look again
+        return False
 
     def start_heartbeat(self, interval: float) -> None:
         def beat() -> None:

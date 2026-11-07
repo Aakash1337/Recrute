@@ -168,7 +168,7 @@
         if (h && !h.contains(el) && h !== c.label && !c.label.contains(h)) t = txt(h);
       }
     }
-    return clean(t).slice(0, 500);
+    return clean(t).slice(0, 1000);  // (HELP_TEXT_LIMIT in base.py)
   };
   const push = f => { if (f.description === undefined) f.description = descOf(f); out.push(f); };
 

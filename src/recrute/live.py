@@ -67,7 +67,17 @@ def _watch(page) -> None:
         with _LOCK:
             _NAV[key] = _NAV.get(key, 0) + 1
 
+    def requested(request) -> None:
+        # as soon as a navigation STARTS: it may not have committed by the next event's check,
+        # and that event would land on the new page
+        try:
+            if request.is_navigation_request():
+                navigated(None)
+        except Exception:  # noqa: BLE001 - page closing
+            pass
+
     try:
+        page.on("request", requested)
         page.on("framenavigated", navigated)
         page.on("frameattached", navigated)  # a new frame appearing (e.g. a sign-in popup
         page.on("framedetached", navigated)  # embedded in the page) changes it too
@@ -191,7 +201,8 @@ def publish_frame(paths: Paths, page) -> None:
     """Keep the latest screenshot of `page` (in memory) for the live view."""
     before = page_target(page)
     try:
-        jpg = page.screenshot(type="jpeg", quality=60)
+        # (caret: you need to see it, and hiding it touches the page's DOM every second)
+        jpg = page.screenshot(type="jpeg", quality=60, caret="initial")
         size = page.viewport_size or page.evaluate(
             "() => ({width: window.innerWidth, height: window.innerHeight})")
     except Exception:  # page navigating/closing: skip this frame
@@ -205,6 +216,16 @@ def publish_frame(paths: Paths, page) -> None:
         meta["session"] = _SESSION.get("id")
         _FRAME.clear()
         _FRAME.update(jpg=jpg, meta=meta)
+
+
+def settle(page, seconds: float) -> None:
+    """Wait, letting the browser's events through. time.sleep would not: the sync API only
+    dispatches them during its own calls, so a navigation in that time goes unseen."""
+    wait = getattr(page, "wait_for_timeout", None)
+    if callable(wait):
+        wait(seconds * 1000)
+    else:
+        time.sleep(seconds)
 
 
 def apply_inputs(paths: Paths, page, tabs=None) -> bool:
@@ -221,6 +242,10 @@ def apply_inputs(paths: Paths, page, tabs=None) -> bool:
     open_tabs = tab_set()
 
     def unchanged(target: Any) -> bool:
+        try:
+            settle(page, 0)  # (without this a navigation hasn't been seen yet)
+        except Exception:  # noqa: BLE001 - closing page
+            return False
         return page_target(page) == target and tab_set() == open_tabs
 
     with _LOCK:
@@ -245,7 +270,7 @@ def apply_inputs(paths: Paths, page, tabs=None) -> bool:
         try:
             if ev.get("type") == "click":
                 page.mouse.click(ev["x"], ev["y"])
-                time.sleep(CLICK_SETTLE)  # let a navigation the click starts register
+                settle(page, CLICK_SETTLE)  # let a navigation the click starts register
             elif ev.get("type") == "type":
                 # one character at a time, re-checking the page before each: if it navigates
                 # mid-word (Enter in the text, an auto-submitting field), the rest of the text
@@ -255,7 +280,7 @@ def apply_inputs(paths: Paths, page, tabs=None) -> bool:
                         moved = True
                         break
                     page.keyboard.type(ch)
-                    time.sleep(TYPE_DELAY)
+                    settle(page, TYPE_DELAY)
             elif ev.get("type") == "key":
                 page.keyboard.press(ev["key"])
             elif ev.get("type") == "scroll":

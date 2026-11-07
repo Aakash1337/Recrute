@@ -103,9 +103,12 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
               adapter: Adapter | None = None, router: Any = None, human: Human | None = None,
               files: Mapping[str, str | Path] | None = None, confirm_timeout: float = 25.0,
               ready_timeout: float = 15.0, now: datetime | None = None,
-              pre_submit_check: Callable[[], str | None] | None = None) -> ApplyOutcome:
+              pre_submit_check: Callable[[], str | None] | None = None,
+              pre_start_check: Callable[[], str | None] | None = None) -> ApplyOutcome:
     """`pre_submit_check` runs right before clicking submit; returning a reason (e.g. "CP2
-    approval revoked") aborts to CP3 without submitting."""
+    approval revoked") aborts to CP3 without submitting. `pre_start_check` runs once the browser
+    is ours, before going anywhere, in every mode: getting the browser can mean waiting for
+    discovery, which may have hit a security check meanwhile. A reason means not started."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     now = now or datetime.now(UTC)
@@ -200,6 +203,9 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
         return ", ".join(labels.get(i, i) for i in ids)
 
     try:
+        if pre_start_check is not None and (why := pre_start_check()):
+            details["not_started"] = True
+            return done("failed", why, check_blockers=False)
         start_url = adapter.start_url(job)
         if urlsplit(start_url).scheme.lower() not in ("http", "https"):
             return done("needs_human", "the job's link isn't a web address", check_blockers=False)
