@@ -34,7 +34,7 @@
     <form hx-post="/packets/{{ job.id }}/edit" hx-target="#result">
       <input type="hidden" name="rev" value="{{ rev }}">
       <h2>Form answers</h2>
-      <table>
+      <table class="answers">
       {% for q in packet.questions %}
         {% set a = answers.get(q.id) %}
         <tr class="{{ 'new' if a and a.needs_review }}">
@@ -42,7 +42,7 @@
             {% if q.description %}<br><span class="muted" style="font-style:italic">{{ q.description }}</span>{% endif %}
             <br><span class="muted">{{ a.source if a else 'unanswered' }}</span></td>
           <td>
-          {% if q.type == 'file' %}<span class="muted">{{ a.value if a else '' }}</span>
+          {% if q.type == 'file' %}<span class="muted">{{ a.value if a and a.value else 'not attached' }}</span>
           {% elif q.options %}
             {% set multi = q.type in ('multiselect', 'checkbox') and q.options | length > 1 %}
             {% if multi %}<input type="hidden" name="present__{{ q.id }}" value="1">{% endif %}

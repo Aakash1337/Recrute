@@ -30,7 +30,7 @@
     .P0 { background: var(--p0); } .P1 { background: var(--p1); } .P2 { background: var(--p2); } .P3 { background: var(--p3); }
     .badge { font-size: .8em; border: 1px solid var(--line); border-radius: 4px; padding: 0 .35em; white-space: nowrap; }
     .score { font-weight: 700; font-variant-numeric: tabular-nums; }
-    .split { display: grid; grid-template-columns: minmax(360px, 42%) 1fr; gap: 1rem; align-items: start; }
+    .split { display: grid; grid-template-columns: minmax(360px, 42%) minmax(0, 1fr); gap: 1rem; align-items: start; }
     .list { max-height: calc(100vh - 140px); overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
     .row { padding: .5rem .7rem; border-bottom: 1px solid var(--line); cursor: pointer; }
     .row.sel { background: var(--hl); outline: 2px solid var(--p2); outline-offset: -2px; }
@@ -41,6 +41,9 @@
     button.primary { background: var(--ok); color: white; border-color: transparent; }
     button.danger { background: var(--bad); color: white; border-color: transparent; }
     input, select, textarea { font: inherit; padding: .25rem .4rem; }
+    select { max-width: 100%; }
+    table.answers { table-layout: fixed; }
+    table.answers td { overflow-wrap: anywhere; }
     textarea { width: 100%; min-height: 5rem; }
     kbd { font-size: .8em; border: 1px solid var(--line); border-radius: 3px; padding: 0 .3em; }
     .new { background: #f59e0b22; } .flag-block { color: var(--bad); } .flag-warn { color: var(--warn); }

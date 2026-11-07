@@ -4,7 +4,7 @@ import threading
 import time
 
 import pytest
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 
 @pytest.fixture
@@ -82,3 +82,38 @@ def test_invalid_setting_shows_its_message(ui):
     form.locator("input[name=url]").fill("not a url")
     form.locator("button").click()
     page.wait_for_selector(".bad")
+
+
+def test_applications_page_says_when_it_is_empty(ui):
+    page, base = ui
+    page.goto(f"{base}/applications")
+    assert "No applications yet" in page.locator("main").inner_text()
+
+
+def test_long_form_options_do_not_widen_the_packet_page(ui):
+    """A live packet's long option text pushed the page past the window and squeezed the labels."""
+    from test_integration_web import _seed_packet
+
+    from recrute.db import get_engine
+    from recrute.models import Application
+    from recrute.schemas import FormAnswer, FormQuestion, Packet
+
+    page, base = ui
+    job_id = _seed_packet()
+    long_option = "I am not a U.S. person, and I am not a current citizen. " * 8
+    with Session(get_engine()) as s:
+        app = s.exec(select(Application).where(Application.job_id == job_id)).one()
+        packet = Packet.model_validate(app.packet)
+        packet.questions += [
+            FormQuestion(id="x", label="Which applies?", type="select", options=[long_option]),
+            FormQuestion(id="cover", label="Cover Letter", type="file")]
+        packet.answers += [FormAnswer(question_id="cover", value=None, source="default")]
+        app.packet = packet.model_dump(mode="json")
+        s.add(app)
+        s.commit()
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.goto(f"{base}/packets/{job_id}")
+    page.wait_for_selector("table.answers")
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    answers = page.locator("table.answers").inner_text()
+    assert "not attached" in answers and "None" not in answers

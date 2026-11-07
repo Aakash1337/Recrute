@@ -10,6 +10,7 @@
 <h2>Reminders</h2>
 <ul>{% for r in reminders %}<li>{{ r.message }} {% if r.kind == 'ghosted' %}<button hx-post="/applications/{{ r.job_id }}/ghosted" hx-swap="outerHTML">Mark ghosted</button>{% endif %}</li>{% endfor %}</ul>
 {% endif %}
+{% if not (groups.values() | select | list) %}<p class="muted">No applications yet. Jobs appear here once you say "Go ahead" on a packet.</p>{% endif %}
 {% for key in ['needs_human', 'approved', 'applying', 'applied', 'acknowledged', 'interviewing', 'offer', 'declined', 'ghosted'] %}
 {% set rows = groups.get(key, []) %}
 {% if rows %}

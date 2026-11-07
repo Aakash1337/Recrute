@@ -204,13 +204,14 @@ class SupportIndex:
         for tok in _TERM_RE.findall(text):
             low = tok.lower()
             self.words.add(low)
+            self.words.add(low.replace(".", ""))  # "M.S." and "MS" are the same term
             self.words.update(p for p in re.split(r"[.\-/]", low) if p)
 
     def has_number(self, forms: set[str]) -> bool:
         return bool(forms & self.numbers)
 
     def has_term(self, term: str) -> bool:
-        if _term_variants(term) & self.words:
+        if _term_variants(term) & self.words or term.lower().replace(".", "") in self.words:
             return True
         parts = [p for p in re.split(r"[.\-/]", term.lower()) if p]
         return len(parts) > 1 and all(_term_variants(p) & self.words for p in parts)
@@ -271,9 +272,31 @@ def find_unsupported(text: str, index: SupportIndex, allowed: Iterable[str] = ()
     return out
 
 
+# Names of one degree: the profile may say any of them, and a resume another. (No dotted forms:
+# "M.S." would also index "m" and "s", and then "M.A." would look supported. See has_term.)
+_DEGREE_NAMES = [("Master of Science", "MS", "MSc"), ("Master of Arts", "MA"),
+                 ("Master of Business Administration", "MBA"),
+                 ("Master of Engineering", "MEng"), ("Master of Technology", "MTech"),
+                 ("Bachelor of Science", "BS", "BSc"), ("Bachelor of Arts", "BA"),
+                 ("Bachelor of Engineering", "BEng", "BE"),
+                 ("Bachelor of Technology", "BTech"), ("Doctor of Philosophy", "PhD", "DPhil"),
+                 ("Associate of Science", "AS"), ("Associate of Arts", "AA")]
+
+
+def degree_names(profile: Profile) -> str:
+    """The other names of the degrees in the profile ("Master of Science" -> "MS MSc")."""
+    found: list[str] = []
+    for ed in profile.education:
+        degree = re.sub(r"\s+", " ", (ed.degree or "").replace(".", "")).strip().casefold()
+        for names in _DEGREE_NAMES:
+            if any(re.search(rf"\b{re.escape(n.casefold())}\b", degree) for n in names):
+                found += names
+    return " ".join(dict.fromkeys(found))
+
+
 def profile_texts(profile: Profile) -> list[str]:
     """Every string in the profile (for building a whole-profile SupportIndex)."""
-    out: list[str] = []
+    out: list[str] = [degree_names(profile)]
 
     def walk(v: Any) -> None:
         if isinstance(v, str):
@@ -324,6 +347,8 @@ def background_facts(profile: Profile) -> str:
               for p in profile.projects]
     lines += [f"Education: {ed.degree} {ed.field}, {ed.school} ({ed.end})".replace("  ", " ")
               for ed in profile.education]
+    if names := degree_names(profile):
+        lines.append(f"Degree names: {names}")
     lines += [f"Certification: {c.name}" for c in profile.certifications]
     lines += [f"Skills ({cat}): {', '.join(skills)}" for cat, skills in profile.skills.items()
               if skills]
