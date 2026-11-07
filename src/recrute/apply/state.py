@@ -66,6 +66,13 @@ def suspend(session: Session, channel: str, now: datetime, reason: str,
     checkpoint / unusual activity, unexpected logout) until expiry or a human clears it."""
     val = {"until": (now + duration).astimezone(UTC).isoformat(), "reason": reason[:300],
            "since": now.astimezone(UTC).isoformat()}
+    current = get_state(session, _suspend_key(channel))
+    if current and isinstance(current, dict) and current.get("until"):
+        try:
+            if datetime.fromisoformat(current["until"]) > now + duration:
+                return current  # a browser hiccup can't cut short a security pause
+        except ValueError:
+            return current  # unreadable: stays in force until you clear it
     set_state(session, _suspend_key(channel), val)
     return val
 

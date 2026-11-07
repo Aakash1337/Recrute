@@ -2,6 +2,7 @@
 
 import ipaddress
 import logging
+import socket
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -104,7 +105,10 @@ def _public_web_address(url: str) -> bool:
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        return True  # a name
+        try:  # "127.1", "2130706433", "0x7f.0.0.1": browsers read these as addresses too
+            ip = ipaddress.ip_address(socket.inet_aton(host))
+        except (OSError, ValueError):
+            return True  # a name
     return ip.is_global
 
 

@@ -260,7 +260,7 @@ def _tokens(s: str) -> list[str]:
     return re.findall(rf"[a-z0-9{re.escape(_MEANINGFUL)}]+", s)
 
 
-HELP_TEXT_LIMIT = 1000  # characters of help text kept, live and when fetched before CP2
+HELP_TEXT_LIMIT = 20000  # characters of help text kept, live and when fetched before CP2
 # What we wrote ourselves to explain a question at CP2: never on the site's page.
 PHONE_COUNTRY_NOTE = "The country of your phone number (dialing code)."
 _OWN_NOTES = {PHONE_COUNTRY_NOTE}
@@ -286,15 +286,10 @@ def _help_text_still_on_page(approved: FormQuestion, live: FormQuestion) -> bool
 def _same_description(approved: str, live: str) -> bool:
     """Descriptions must say the same thing. Added or removed help text counts as a change:
     conditions ("with Kubernetes", "in Canada") often live there."""
+    if max(len(approved or ""), len(live or "")) >= HELP_TEXT_LIMIT:
+        return False  # cut off: a condition past the cut can't be seen, so it can't be vouched for
     a, b = dom.norm(approved or ""), dom.norm(live or "")
-    if a == b or _compact(a) == _compact(b):
-        return True
-    if min(len(approved or ""), len(live or "")) >= HELP_TEXT_LIMIT:
-        # both were cut at the limit: compared as far as both go
-        ca, cb = _compact(a), _compact(b)
-        n = min(len(ca), len(cb))
-        return ca[:n] == cb[:n]
-    return False
+    return a == b or _compact(a) == _compact(b)
 
 
 def resolve_answer(q: FormQuestion, packet: Packet, aliases: Mapping[str, Sequence[str]] = {},

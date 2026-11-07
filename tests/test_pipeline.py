@@ -949,6 +949,8 @@ def test_a_link_that_is_not_a_web_address_is_never_ingested(engine):
 @pytest.mark.parametrize("url", [
     "http://localhost:8765/settings", "http://127.0.0.1/x", "http://[::1]/x", "http://10.0.0.5/",
     "http://192.168.1.1/admin", "http://169.254.169.254/latest", "http://printer.local/",
+    "http://127.1:8765/settings", "http://2130706433:8765/settings",
+    "http://0x7f000001:8765/settings", "http://0x7f.0.0.1/", "http://[::ffff:127.0.0.1]/",
 ])
 def test_a_link_into_your_own_network_is_never_ingested(engine, url):
     """Re-audit: this server trusts local requests, and the browser is logged in."""

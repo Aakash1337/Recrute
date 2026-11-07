@@ -275,7 +275,10 @@ def graduate(s, channel="greenhouse", n=5):
     """n trial applications the human already saw through -> adapter out of trial."""
     for i in range(n):
         base = 900 if channel == "greenhouse" else 950
-        add_app(s, base + i, channel=channel, status=JobStatus.APPLIED, trial=True)
+        app, _ = add_app(s, base + i, channel=channel, status=JobStatus.APPLIED, trial=True)
+        app.outcome = {"status": "needs_human", "details": {"page_left_open": True}}
+        s.add(app)
+        s.commit()
 
 
 def test_run_due_never_runs_unapproved(session, paths):
@@ -1182,3 +1185,53 @@ def test_renewal_finishing_during_held_is_not_a_lost_lease(engine, monkeypatch):
 
     monkeypatch.setattr(state, "Session", RenewsDuringTheRead)
     assert lease.held() is True and lease.renewals == 1
+
+
+def test_job_whose_approval_was_revoked_mid_attempt_does_not_sit_queued_forever(session, paths):
+    """Re-audit: approved_at empty but 'queued': it could never run, or be rebuilt."""
+    graduate(session)
+    app, job = add_app(session, 1)
+
+    def runner(job_, packet, **kw):
+        with Session(session.get_bind()) as other:  # the posting moved meanwhile
+            a = other.get(Application, app.id)
+            a.approved_at = None
+            other.add(a)
+            other.commit()
+        return ApplyOutcome(status="failed", reason="CP2 approval was revoked",
+                            details={"mode": kw["mode"], "effective_mode": kw["mode"],
+                                     "not_started": True, "submit_attempted": False})
+
+    due(session, paths, runner)
+    session.refresh(job)
+    assert job.status == JobStatus.NEEDS_HUMAN
+
+
+def test_a_browser_hiccup_cannot_shorten_a_security_pause(session):
+    """Re-audit: 1 hour overwrote 3 days on an account that just hit a checkpoint."""
+    from recrute.apply.state import suspend, suspension
+
+    suspend(session, "linkedin_easy_apply", at(12), "checkpoint", timedelta(days=3))
+    suspend(session, "linkedin_easy_apply", at(12), "browser down", timedelta(hours=1))
+    active = suspension(session, "linkedin_easy_apply", at(14))
+    assert active is not None and active["reason"] == "checkpoint"
+    # a longer one still extends it
+    suspend(session, "linkedin_easy_apply", at(12), "again", timedelta(days=9))
+    assert suspension(session, "linkedin_easy_apply", at(12) + timedelta(days=5))["reason"] == \
+        "again"
+
+
+def test_trial_counts_only_clean_fills(session):
+    """Re-audit: forms you finished by hand after a CAPTCHA graduated the adapter."""
+    from recrute.apply.scheduler import supervised_success_count
+
+    for i, details in enumerate(({"page_left_open": True},
+                                 {"page_left_open": True, "blocker": "captcha"},
+                                 {"page_left_open": False, "error": "no form"},
+                                 {"page_left_open": True, "fill_failed": {"q": "x"}},
+                                 {"page_left_open": True, "verify_problems": {"q": "x"}})):
+        app, _ = add_app(session, 800 + i, status=JobStatus.APPLIED, trial=True)
+        app.outcome = {"status": "needs_human", "details": details}
+        session.add(app)
+    session.commit()
+    assert supervised_success_count(session, "greenhouse") == 1

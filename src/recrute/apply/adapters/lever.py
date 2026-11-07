@@ -93,7 +93,7 @@ def parse_apply_html(html: str) -> list[FormQuestion]:
             type="multiselect" if sel.has_attr("multiple") else "select",
             required=sel.has_attr("required"),
             options=[o.get_text(strip=True) for o in sel.find_all("option") if o.get("value")],
-            description=" ".join(desc_el.get_text().split())[:1000] if desc_el else ""))
+            description=" ".join(desc_el.get_text().split())[:20000] if desc_el else ""))
     # anything else ("Additional information", the disability form's signature)
     for q in dom.parse_static_form(str(form)):
         if q.id in seen or q.id.startswith("cards[") or q.id in (

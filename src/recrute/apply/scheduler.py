@@ -351,12 +351,21 @@ def last_run_at(session: Session, now: datetime) -> datetime | None:
 
 
 def supervised_success_count(session: Session, channel: str) -> int:
+    """Trial forms the adapter really filled and you then sent. One that hit a CAPTCHA or failed
+    to fill, which you then applied to by hand, says nothing about trusting the adapter."""
     rows = session.exec(
         select(Application).join(Job, Application.job_id == Job.id).where(
             Application.channel == channel, Application.trial == True,  # noqa: E712
             Job.status.in_(SENT_STATUSES))  # type: ignore[attr-defined]
     ).all()
-    return len(rows)
+    return sum(_clean_fill(app) for app in rows)
+
+
+def _clean_fill(app: Application) -> bool:
+    outcome = app.outcome or {}
+    d = _details(app)
+    return bool(d.get("page_left_open")) and not outcome.get("unmatched_fields") and not any(
+        d.get(k) for k in ("blocker", "fill_failed", "verify_problems", "error"))
 
 
 def company_events(session: Session, exclude_job_id: int | None = None
@@ -602,6 +611,10 @@ def finalize(session: Session, *, app_id: int, job_id: int, attempt_id: str, lea
     else:
         target, note = JobStatus.APPROVED, f"will retry: {outcome.reason}"
 
+    if target == JobStatus.APPROVED and app.approved_at is None:
+        # approval was revoked during the attempt (the posting moved): it would sit "queued"
+        # forever, since only approved jobs run
+        target, note = JobStatus.NEEDS_HUMAN, "approval revoked during the attempt; rebuild it"
     result = "status_updated"
     if not ours:
         result = "status_left_unchanged: attempt no longer owns the job (lease lost/recovered)"

@@ -1975,3 +1975,12 @@ def test_a_cover_letter_the_word_limit_empties_is_a_failure():
     router = FakeRouter({"cover": {"paragraphs": ["word " * 400 + "."], "cited_ids": []}})
     with pytest.raises(LLMError):
         write_cover_letter(make_profile(), ResumeSelection(), make_job(), router)
+
+
+def test_a_saved_multi_line_answer_fits_a_single_line_field():
+    """Re-audit: the bank's reused answers skipped the one-line rule, so they couldn't verify."""
+    bank = AnswerBank(common={"describe_your_work": "First line.\nSecond line."})
+    hit = match_question(q("Describe your work", "text"), bank)
+    assert hit.value == "First line. Second line."
+    hit = match_question(q("Describe your work", "textarea"), bank)
+    assert hit.value == "First line.\nSecond line."

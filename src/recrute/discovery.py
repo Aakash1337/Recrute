@@ -384,7 +384,9 @@ def discover_linkedin(ctx) -> dict:
         # get it first and find no suspension
         from recrute.browser.runtime import BROWSER_LOCK
 
-        BROWSER_LOCK.acquire()
+        # (a hand-off can hold it for 30 minutes, and everything else on this thread would wait)
+        if not BROWSER_LOCK.acquire(timeout=30):
+            return {"skipped": "browser busy"}
         try:
             for raw in src.fetch(sctx):
                 found.append(raw)
@@ -392,11 +394,11 @@ def discover_linkedin(ctx) -> dict:
             result["stopped"] = str(e)  # quiet stop: someone else already raised the alarm
         except SourceBlocked as e:
             until, why = now + e.backoff, e.reason
+            # first: a security signal while BROWSING stops automated Easy Apply too
+            suspend(s, LINKEDIN_CHANNEL, now, f"LinkedIn browsing: {e.reason}", e.backoff)
             update_state(bind, "linkedin_session", lambda cur: (
                 {**cur, "blocked_until": until.isoformat(), "block_reason": why}, None))
             result["blocked"] = e.reason
-            # ...and a security signal while BROWSING stops automated Easy Apply too.
-            suspend(s, LINKEDIN_CHANNEL, now, f"LinkedIn browsing: {e.reason}", e.backoff)
             from recrute.tasks import notify
 
             notify(s, "LinkedIn browsing paused",

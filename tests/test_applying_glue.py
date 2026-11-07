@@ -430,3 +430,141 @@ def test_what_comes_back_to_you_with_no_form_open_is_notified(engine, paths, mon
     assert any("may have been sent" in b for b in bodies)
     assert any("failed 3x" in b and "open in the automation" not in b for b in bodies)
     assert {p for _, _, p in sent} == {"high"}
+
+
+def _allowed(engine, app_id, job_id, **over):
+    from recrute.applying import _assist_block_reason
+
+    args = dict(app_id=app_id, job_id=job_id, channel="greenhouse", rev=None,
+                target=("https://job-boards.greenhouse.io/acme/jobs/1", "greenhouse", None),
+                asked=None, adapter_name="greenhouse") | over
+    return _assist_block_reason(SimpleNamespace(session=lambda: Session(engine)), **args)
+
+
+def test_assisted_fill_asks_again_once_the_browser_is_ours(engine, paths):
+    """Both re-audits: you could give up, or the posting could move, while it waited."""
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.apply.state import suspend
+    from recrute.models import Application, JobStatus
+
+    app_id = _assist_row(engine)
+    with Session(engine) as s:
+        app = s.get(Application, app_id)
+        job_id, rev = app.job_id, app.packet_rev
+    assert _allowed(engine, app_id, job_id, rev=rev) is None
+    old = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    assert "waited too long" in _allowed(engine, app_id, job_id, rev=rev, asked=old)
+    assert "target changed" in _allowed(engine, app_id, job_id, rev=rev,
+                                        target=("https://new", None, None))
+    assert "packet changed" in _allowed(engine, app_id, job_id, rev="other")
+    with Session(engine) as s:
+        suspend(s, "greenhouse", datetime.now(UTC), "checkpoint")
+    assert "suspended" in _allowed(engine, app_id, job_id, rev=rev)
+    with Session(engine) as s:
+        job = s.get(Job, job_id)
+        job.status = JobStatus.REJECTED
+        s.add(job)
+        s.commit()
+    assert "the job is now" in _allowed(engine, app_id, job_id, rev=rev)
+
+
+def test_expiry_cleanup_leaves_a_newer_request_alone(engine, paths, monkeypatch):
+    """Re-audit: it wrote back what it read earlier, over the request you'd just made."""
+    from datetime import UTC, datetime, timedelta
+
+    from recrute import applying
+    from recrute.models import Application
+
+    old = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+    app_id = _assist_row(engine, assist_requested_at=old)
+    real = applying._assist_expired
+
+    def pressed_again_meanwhile(outcome, now):
+        expired = real(outcome, now)
+        with Session(engine) as other:
+            a = other.get(Application, app_id)
+            a.outcome = {"assist_requested": "new", "assist_requested_at": now.isoformat()}
+            other.add(a)
+            other.commit()
+        monkeypatch.setattr(applying, "_assist_expired", real)
+        return expired
+
+    monkeypatch.setattr(applying, "_assist_expired", pressed_again_meanwhile)
+    with Session(engine) as s:
+        applying._run_assist_request(_assist_ctx(engine, paths), s, object())
+    with Session(engine) as s:
+        assert s.get(Application, app_id).outcome["assist_requested"] == "new"
+
+
+@pytest.mark.browser
+def test_closing_a_popup_during_a_handoff_keeps_the_form_open(paths, monkeypatch):
+    """Re-audit: the wait crashed on the closed tab, which closed the browser and the form."""
+    from patchright.sync_api import sync_playwright
+
+    from recrute import applying, live
+
+    try:
+        pw = sync_playwright().start()
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"playwright unavailable: {e}")
+    try:
+        chromium = pw.chromium.launch(headless=True)
+    except Exception as e:  # noqa: BLE001
+        pw.stop()
+        pytest.skip(f"chromium not installed: {e}")
+    try:
+        context = chromium.new_context()
+        form, popup = context.new_page(), context.new_page()
+        form.set_content("<h1>form</h1>")
+        form.goto("data:text/html,<h1>form</h1>")
+        popup.goto("data:text/html,<h1>terms</h1>")
+        browser = applying.LazyBrowser(SimpleNamespace(paths=paths, stop=threading.Event()))
+        browser.context = context
+        real_settle, closed = live.settle, []
+
+        def close_popup_while_waiting(page, seconds):
+            if not closed and page is popup:
+                closed.append(1)
+                popup.close()
+            return real_settle(page, min(seconds, 0.05))
+
+        monkeypatch.setattr(live, "settle", close_popup_while_waiting)
+        browser.wait_for_human(timeout=1)  # raises without the fix
+        assert closed and not form.is_closed()
+    finally:
+        chromium.close()
+        pw.stop()
+
+
+def test_resolving_the_job_ends_the_handoff(engine, paths, monkeypatch):
+    """Re-audit: 'Give up' left the thread waiting 30 minutes, the form still open."""
+    from recrute import applying, live
+    from recrute.models import JobStatus
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://x", canonical_url="c", status=JobStatus.REJECTED)
+        s.add(job)
+        s.commit()
+        job_id = job.id
+
+    class Tab:
+        url = "https://x"
+
+        def is_closed(self):
+            return False
+
+    monkeypatch.setattr(live, "publish_frame", lambda *a: None)
+    monkeypatch.setattr(live, "apply_inputs", lambda *a, **kw: False)
+    monkeypatch.setattr(live, "settle", lambda *a: None)
+    browser = applying.LazyBrowser(SimpleNamespace(paths=paths, stop=threading.Event(),
+                                                   session=lambda: Session(engine)))
+    browser.context = SimpleNamespace(pages=[Tab()])
+    done = threading.Event()
+
+    def wait():
+        browser.wait_for_human(timeout=30, job_id=job_id)
+        done.set()
+
+    threading.Thread(target=wait, daemon=True).start()
+    assert done.wait(3)

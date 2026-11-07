@@ -446,19 +446,27 @@ def _long_help(tail: str = "") -> str:
     return "You must consent to the following terms before continuing. " * 30 + tail
 
 
-def test_long_help_text_cut_at_the_limit_is_compared_as_far_as_both_go():
-    """Re-audit: 1000 characters fetched, 500 read live: every long one looked changed."""
+def _consent(description: str, live: bool = False):
+    cls = LiveField if live else FormQuestion
+    return cls(id="c", label="Consent", description=description)
+
+
+def test_long_help_text_is_compared_whole():
+    """Re-audits: read at two different lengths, every long one looked changed; compared only as
+    far as both went, a condition added past the cut went unnoticed."""
+    approved = _consent(_long_help())
+    assert same_question(approved, _consent(_long_help(), live=True))
+    # spacing isn't a change...
+    assert same_question(approved, _consent(_long_help().replace("terms before", "terms  before"),
+                                            live=True))
+    # ...but anything else is, however far in
+    added = _long_help(" You also waive your right to sue.")
+    assert not same_question(approved, _consent(added, live=True))
+    assert not same_question(approved, _consent(_long_help()[:400], live=True))
+
+
+def test_help_text_too_long_to_compare_comes_back_to_you():
     from recrute.apply.base import HELP_TEXT_LIMIT
 
-    approved = FormQuestion(id="c", label="Consent", description=_long_help()[:HELP_TEXT_LIMIT])
-    same = LiveField(id="c", label="Consent", description=_long_help()[:HELP_TEXT_LIMIT])
-    assert same_question(approved, same)
-    # differently spaced where it was cut, as the two ways of reading it can be
-    spaced = _long_help().replace("terms before", "terms  before")[:HELP_TEXT_LIMIT]
-    assert same_question(approved, LiveField(id="c", label="Consent", description=spaced))
-    changed = "You must waive your rights before continuing. " + _long_help()
-    assert not same_question(approved, LiveField(id="c", label="Consent",
-                                                 description=changed[:HELP_TEXT_LIMIT]))
-    # a live text that simply ends early isn't "cut": the rest of it is gone
-    short = _long_help()[:400]
-    assert not same_question(approved, LiveField(id="c", label="Consent", description=short))
+    cut = ("x " * HELP_TEXT_LIMIT)[:HELP_TEXT_LIMIT]
+    assert not same_question(_consent(cut), _consent(cut, live=True))

@@ -62,10 +62,12 @@ class LazyBrowser:
             self.context = self._cm.__enter__()
         return self.context.new_page()
 
-    def wait_for_human(self, timeout: float = PAUSE_WAIT_SECONDS) -> None:
-        """Fill-and-pause: keep the window open until you're done, close the tab(s), or time
-        runs out. Meanwhile the page is streamed to the web UI's live view and your remote
-        clicks/typing are replayed (so you can do CP3 from another device)."""
+    def wait_for_human(self, timeout: float = PAUSE_WAIT_SECONDS,
+                       job_id: int | None = None) -> None:
+        """Fill-and-pause: keep the window open until you're done, close the tab(s), resolve the
+        job on the Applications page, or time runs out. Meanwhile the page is streamed to the web
+        UI's live view and your remote clicks/typing are replayed (so you can do CP3 from another
+        device)."""
         from recrute import live
 
         if self.context is None:
@@ -84,9 +86,23 @@ class LazyBrowser:
                 if live.apply_inputs(self.ctx.paths, page, tabs=self._open_tabs):
                     return  # you pressed "Done" in the live view
                 live.publish_frame(self.ctx.paths, page)
-                live.settle(page, 1)
+                try:
+                    live.settle(page, 1)
+                except Exception:  # noqa: BLE001 - that tab closed (a popup, say): the form may
+                    self.ctx.stop.wait(0.5)  # still be open in another; look again
+                if job_id is not None and self._resolved(job_id):
+                    return
         finally:
             live.clear(self.ctx.paths)
+
+    def _resolved(self, job_id: int) -> bool:
+        """You pressed "I submitted it" or "Give up": nobody is coming back to this form."""
+        try:
+            with self.ctx.session() as s:
+                job = s.get(Job, job_id)
+                return job is None or job.status != JobStatus.NEEDS_HUMAN
+        except Exception:  # noqa: BLE001 - a busy database just means: ask again next time
+            return False
 
     def _open_tabs(self) -> list:
         return [p for p in (self.context.pages if self.context else []) if not p.is_closed()]
@@ -214,7 +230,8 @@ def run_due_task(ctx) -> dict:
             notify_needs_you(ctx, job_id, "an attempt was interrupted and may have been sent")
         if result.ran and result.outcome and left_open(result.outcome):
             notify_handoff(ctx, result.job_id, result.outcome.reason)
-            browser.wait_for_human()  # a filled form is waiting for you (CP3), in any mode
+            # a filled form is waiting for you (CP3), in any mode
+            browser.wait_for_human(job_id=result.job_id)
         elif result.ran and result.outcome and _came_back_to_you(ctx, result.job_id):
             notify_needs_you(ctx, result.job_id, result.outcome.reason)
         return {"ran": result.ran, "reason": result.reason[:200] if result.reason else "",
@@ -241,6 +258,33 @@ def _assist_expired(outcome: dict, now) -> bool:
         return True  # unreadable: never act on it
 
 
+def _assist_block_reason(ctx, *, app_id: int, job_id: int, channel: str, rev: str | None,
+                         target: tuple, asked: str | None, adapter_name: str) -> str | None:
+    """Why this assisted fill may no longer start, asked once the browser is ours."""
+    from datetime import UTC, datetime
+
+    from recrute.apply.scheduler import cap_block_reason
+    from recrute.apply.state import suspension
+
+    now = datetime.now(UTC)
+    if _assist_expired({"assist_requested_at": asked}, now):
+        return "the pre-fill waited too long for the browser: press it again"
+    with ctx.session() as s:
+        app, job = s.get(Application, app_id), s.get(Job, job_id)
+        if app is None or job is None or app.approved_at is None or app.submitted_at is not None:
+            return "this packet is no longer approved"
+        if job.status != JobStatus.NEEDS_HUMAN:
+            return f"the job is now {job.status}"
+        if app.packet_rev != rev:
+            return "the approved packet changed"
+        if (job.apply_url, job.ats, job.ats_job_id) != target:
+            return "the job's apply target changed"
+        if info := suspension(s, adapter_name, now):
+            return f"channel suspended: {info.get('reason')}"
+        return cap_block_reason(s, datetime.now().astimezone(), app_id=app_id, job=job,
+                                channel=channel)
+
+
 def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | None:
     """"Open & pre-fill" from the Applications page: fill_and_pause on a NEEDS_HUMAN job."""
     from recrute.apply.runner import apply_job
@@ -259,6 +303,16 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
         if _assist_expired(app.outcome, datetime.now(UTC)):
             # a fill starts from you being there: not hours later, after a cap reset or at the
             # end of an account suspension, with nobody watching
+            from sqlalchemy import update
+
+            session.commit()
+            session.execute(update(Application).where(Application.id == app.id)
+                            .values(id=Application.id)
+                            .execution_options(synchronize_session=False))
+            session.refresh(app)  # (under its write lock: you may have just pressed it again)
+            if (app.outcome or {}).get("assist_requested") != token:
+                session.rollback()
+                continue
             kept = {k: v for k, v in app.outcome.items()
                     if k not in ("assist_requested", "assist_requested_at", "assist_deferred")}
             kept["assist_expired"] = "The pre-fill wasn't started in time: press it again."
@@ -308,6 +362,7 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
                            if k not in ("assist_requested", "assist_requested_at",
                                         "assist_deferred")}
             prior = outcome_now.get("details") or {}
+            requested_at = app.outcome.get("assist_requested_at")
             # (kept apart: only an EARLIER attempt's reservation outlives this one)
             outcome_now["details"] = {**prior, "last_attempt_at": now_iso,
                                       "attempt_started_at": prior.get("attempt_started_at")
@@ -326,14 +381,18 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
         from recrute.errors import BrowserUnavailableError, safe_error
         from recrute.schemas import ApplyOutcome
 
-        def still_allowed(channel: str = adapter.name) -> str | None:
-            # (asked again once the browser is ours)
-            with ctx.session() as fresh:
-                info = suspension(fresh, channel, datetime.now(UTC))
-            return f"channel suspended: {info.get('reason')}" if info else None
+        # what this fill was allowed for, fixed here: getting the browser can take a while, and
+        # you may have given up on it, or the posting moved, in the meantime
+        run_job = Job(**job.model_dump())
+        target = (job.apply_url, job.ats, job.ats_job_id)
+        allowed = dict(app_id=app.id, job_id=job.id, channel=app.channel, rev=app.packet_rev,
+                       target=target, asked=requested_at, adapter_name=adapter.name)
+
+        def still_allowed(a: dict = allowed) -> str | None:
+            return _assist_block_reason(ctx, **a)
 
         try:
-            outcome = apply_job(job, Packet.model_validate(app.packet), mode="fill_and_pause",
+            outcome = apply_job(run_job, Packet.model_validate(app.packet), mode="fill_and_pause",
                                 page_factory=browser, paths=ctx.paths, adapter=adapter,
                                 router=ctx.router, files=files or None,
                                 pre_start_check=still_allowed)
@@ -355,7 +414,7 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
         _record_assist(session, app, outcome)
         if left_open(outcome):
             notify_handoff(ctx, job.id, outcome.reason)
-            browser.wait_for_human()
+            browser.wait_for_human(job_id=job.id)
         return {"assist": job.id, "status": outcome.status}
     return None
 
@@ -378,6 +437,16 @@ def _record_assist(session: Session, app: Application, outcome) -> None:
     session.refresh(app)
     prior = dict(app.outcome or {})
     new = outcome.model_dump(mode="json")
+    # first, in its own session: bookkeeping that fails must not lose the kill switch
+    if details.get("account_security"):
+        from recrute.apply.scheduler import _keep_trying
+
+        def stop_channel() -> None:
+            with Session(session.get_bind()) as s:
+                suspend(s, app.channel, datetime.now(UTC),
+                        f"{outcome.reason} (assisted fill, job {app.job_id})")
+
+        _keep_trying(stop_channel)
     history = list(prior.get("assist_history", []))[-9:] + [
         {"at": datetime.now(UTC).isoformat(), "status": new.get("status"),
          "reason": new.get("reason")}]
@@ -400,7 +469,4 @@ def _record_assist(session: Session, app: Application, outcome) -> None:
         app.receipt_dir = outcome.receipt_dir
     app.last_error = outcome.reason or app.last_error
     session.add(app)
-    if details.get("account_security"):
-        suspend(session, app.channel, datetime.now(UTC),
-                f"{outcome.reason} (assisted fill, job {app.job_id})")
     session.commit()

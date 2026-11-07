@@ -522,7 +522,7 @@ def test_cp3_handoff_notifies_before_waiting(engine, monkeypatch, paths):
     order = []
     monkeypatch.setattr("recrute.tasks.notify", lambda *a, **k: order.append("notify") or [])
     monkeypatch.setattr(applying.LazyBrowser, "wait_for_human",
-                        lambda self, timeout=0: order.append("wait"))
+                        lambda self, *a, **kw: order.append("wait"))
     outcome = ApplyOutcome(status="needs_human", reason="new required field",
                            details={"page_left_open": True})
     monkeypatch.setattr("recrute.apply.scheduler.run_due", lambda s, **kw: RunResult(

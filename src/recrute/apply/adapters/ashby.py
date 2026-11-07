@@ -64,7 +64,7 @@ def parse_form(data: dict[str, Any]) -> list[FormQuestion]:
             out.append(FormQuestion(
                 id=f["path"], label=(f.get("title") or "").strip(), type=qt,  # type: ignore[arg-type]
                 required=bool(entry.get("isRequired")), options=opts,
-                description=dom.html_to_text(entry.get("descriptionHtml"))[:1000]))
+                description=dom.html_to_text(entry.get("descriptionHtml"))[:20000]))
     return out
 
 

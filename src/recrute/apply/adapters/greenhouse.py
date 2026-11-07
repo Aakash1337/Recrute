@@ -68,7 +68,7 @@ def _question(q: dict[str, Any], out: list[FormQuestion], seen: set[str]) -> Non
             id=name, label=(q.get("label") or name).strip(), type=qt,  # type: ignore[arg-type]
             required=bool(q.get("required")),
             options=[str(v.get("label")) for v in f.get("values") or []],
-            description=dom.html_to_text(q.get("description"))[:1000]))
+            description=dom.html_to_text(q.get("description"))[:20000]))
 
 
 def parse_questions(data: dict[str, Any]) -> list[FormQuestion]:

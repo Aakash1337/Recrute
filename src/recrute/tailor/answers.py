@@ -1136,6 +1136,8 @@ def match_question(q: FormQuestion, bank: AnswerBank, *,
     if common is None:
         return None
     text, exact = common
+    if q.type != "textarea":
+        text = one_line(text)
     if q.max_length and len(text) > q.max_length:
         return None
     return FormAnswer(question_id=q.id, value=text, source="answer_bank",
