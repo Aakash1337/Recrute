@@ -60,7 +60,10 @@
   }
   window.recruteDecide = decide;
   document.addEventListener('keydown', e => {
-    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+    // (Ctrl+A is selecting text, and a held key isn't a decision about the next job)
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    const active = document.activeElement;
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName) || active.isContentEditable) return;
     const el = sel();
     if (e.key === 'j') select(el ? el.nextElementSibling : rows()[0]);
     else if (e.key === 'k') select(el ? el.previousElementSibling : rows()[0]);

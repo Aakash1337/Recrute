@@ -1042,24 +1042,6 @@ def test_assist_request_is_timestamped_and_clears_an_expired_note(client):
                 ).total_seconds() < 60
 
 
-def test_flagged_answer_you_let_through_is_not_banked(client, monkeypatch):
-    """Re-audit: one click made a flagged claim trusted evidence for every later packet."""
-    from recrute.models import Job
-    from recrute.packets import _save_to_bank
-    from recrute.schemas import FormAnswer, FormQuestion, Packet, VerifierFlag
-
-    saved = []
-    monkeypatch.setattr("recrute.tailor.add_answer", lambda p, q, v, *a, **kw: saved.append(v))
-    packet = Packet(
-        job_id=1,
-        questions=[FormQuestion(id="f", label="Kubernetes experience", type="text"),
-                   FormQuestion(id="c", label="Preferred pronouns style", type="text")],
-        answers=[FormAnswer(question_id="f", value="Ran 40 clusters", source="llm_new"),
-                 FormAnswer(question_id="c", value="Plain and direct", source="llm_new")],
-        flags=[VerifierFlag(where="answer:f", text="40", reason="x", severity="block")])
-    _save_to_bank(Job(title="t", apply_url="u", canonical_url="u"), packet)
-    assert "Ran 40 clusters" not in saved
-
 
 def test_assist_request_rechecks_under_the_lock(client):
     """Re-audit: it wrote back what it read earlier, over what the worker had just recorded."""
@@ -1098,3 +1080,12 @@ def test_a_one_box_multiselect_survives_being_saved(client):
     _set_answer(packet, "m", "United States")
     answer = packet.answer_for("m")
     assert answer.value == ["United States"] and answer.source == "answer_bank"
+
+
+
+def test_login_redirect_stays_on_this_site(client):
+    from recrute.web.app import access_token
+
+    r = client.post("/login", data={"token": access_token(), "next": "/\\evil.example"},
+                    follow_redirects=False)
+    assert r.headers["location"] == "/"

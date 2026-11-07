@@ -173,6 +173,18 @@
   const push = f => { if (f.description === undefined) f.description = descOf(f); out.push(f); };
 
   // yes/no button pairs (Ashby "yesno")
+  // One definition of "selected", also used by fill_yesno: state may be in ARIA, a class or an
+  // input inside. Unclear (both selected) is reported as it is, so it can't verify and goes to you.
+  const yesnoSelected = b => b.getAttribute('aria-pressed') === 'true'
+    || b.getAttribute('aria-checked') === 'true'
+    || /(^|[\s_-])(active|selected|pressed)($|[\s_-])/i.test(b.getAttribute('class') || '');
+  const yesnoCurrent = (yn, btns) => {
+    const on = btns.filter(yesnoSelected);
+    if (on.length === 1) return on[0].innerText.trim() || null;
+    if (on.length > 1) return on.map(b => b.innerText.trim()).join(' and ');
+    const box = yn.querySelector('input:checked');
+    return box ? (box.value || 'checked') : null;
+  };
   for (const yn of scope.querySelectorAll('[class*="yesno"]')) {
     const btns = [...yn.querySelectorAll('button')];
     if (btns.length < 2 || yn.parentElement.closest('[class*="yesno"]')) continue;
@@ -181,7 +193,7 @@
     push({key: keyOf(yn) || keyOf(yn.querySelector('input') || yn), label: clean(lab.text),
           type: 'radio', widget: 'yesno', required: reqOf(yn, lab), selector: sel(yn),
           options: btns.map(b => clean(txt(b))), option_selectors: btns.map(sel),
-          current: (btns.find(b => b.getAttribute('aria-pressed') === 'true') || {innerText: ''}).innerText.trim() || null,
+          current: yesnoCurrent(yn, btns),
           visible: visible(yn), trigger: '', max_length: null});
   }
 

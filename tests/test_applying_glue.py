@@ -606,3 +606,29 @@ def test_a_failed_lease_release_keeps_the_result():
             raise OperationalError("DELETE", {}, Exception("database is locked"))
 
     release_quietly(Stuck())  # (raising here would replace run_due's result, and close the form)
+
+
+def test_a_tab_we_opened_that_failed_to_load_is_still_handed_to_you(paths, monkeypatch):
+    """A regression from the blank-tab fix: 'still hand over the window' closed it at once."""
+    import threading
+
+    from recrute import applying, live
+
+    class Tab:
+        url = "about:blank"
+
+        def is_closed(self):
+            return False
+
+    ours = Tab()
+    monkeypatch.setattr(live, "start_session", lambda p: None)
+    monkeypatch.setattr(live, "clear", lambda p: None)
+    monkeypatch.setattr(live, "apply_inputs", lambda *a, **kw: False)
+    monkeypatch.setattr(live, "publish_frame", lambda *a: None)
+    seen = []
+    monkeypatch.setattr(live, "settle", lambda page, s: seen.append(page))
+    browser = applying.LazyBrowser(SimpleNamespace(paths=paths, stop=threading.Event()))
+    browser.context = SimpleNamespace(pages=[ours])
+    browser._opened.append(ours)
+    browser.wait_for_human(timeout=0.05)
+    assert seen and seen[0] is ours

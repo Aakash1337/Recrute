@@ -148,8 +148,12 @@ def fill_yesno(root: Page | Frame, f: LiveField, value: Any, human: Human) -> st
         raise FillError(f"approved value {value!r} is not Yes/No")
     btn = root.locator(f.option_selectors[f.options.index(label)]).first
     human.click(btn)
-    pressed = btn.evaluate("b => b.getAttribute('aria-pressed') === 'true'"
-                           " || /active|selected|pressed/i.test(b.className)")
+    # (the same definition as extract_fields.js: "inactive" isn't "active")
+    pressed = btn.evaluate(
+        "b => b.getAttribute('aria-pressed') === 'true'"
+        " || b.getAttribute('aria-checked') === 'true'"
+        " || /(^|[\\s_-])(active|selected|pressed)($|[\\s_-])/i"
+        ".test(b.getAttribute('class') || '')")
     if not pressed:
         raise FillError("yes/no button did not stay selected")
     return label

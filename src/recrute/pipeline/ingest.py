@@ -101,6 +101,8 @@ def _public_web_address(url: str) -> bool:
     host = (parts.hostname or "").lower().rstrip(".")
     if parts.scheme.lower() not in ("http", "https") or not host:
         return False
+    if "%" in host or "\\" in url:  # browsers decode these into the real destination
+        return False
     if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
         return False
     try:

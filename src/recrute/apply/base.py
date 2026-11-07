@@ -798,8 +798,15 @@ class BaseAdapter:
 
     def _confirm_hits(self, page: Page) -> tuple[set[str], set[str]]:
         urls, texts = set(), set()
+        main_host = urlparse(page.url).hostname or ""
         for root in [page, *page.frames[1:]]:
             try:
+                host = urlparse(root.url).hostname or ""
+                # an analytics, chat or ad frame loading /success says nothing about this form:
+                # only the page itself, or a frame of the application system, can confirm it
+                if root is not page and host != main_host and not any(
+                        host == h or host.endswith("." + h) for h in self.hosts):
+                    continue
                 urls.add(root.url)
             except Exception:
                 continue

@@ -143,3 +143,17 @@ def test_live_input_that_could_not_be_sent_says_so_and_keeps_your_text(ui):
     page.click("button:has-text('Type')")
     assert "Not sent" in page.locator("#live-feedback").inner_text()
     assert page.input_value("#live-text") == "my text"
+
+
+def test_ctrl_a_selects_text_and_does_not_approve(ui):
+    """Re-audit: Ctrl+A approved the job, and its row vanished."""
+    from test_web import seed_job
+
+    page, base = ui
+    job_id = seed_job()
+    page.goto(f"{base}/queue")
+    page.wait_for_selector(f"#job-pane[data-job-id='{job_id}']")
+    for key in ("Control+a", "Control+s", "Control+m", "Alt+a", "Meta+a"):
+        page.keyboard.press(key)
+    page.wait_for_timeout(300)
+    assert page.locator(f"#row-{job_id}").count() == 1
