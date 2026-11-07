@@ -45,9 +45,11 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import or_, update
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, col, select
 
 from recrute.apply.state import DEFAULT_SUSPENSION, Lease, suspend, suspension
+from recrute.errors import BrowserUnavailableError
 from recrute.models import Application, Job, JobStatus, StatusEvent
 from recrute.schemas import ApplyOutcome, Packet
 from recrute.settings import get_setting
@@ -62,6 +64,7 @@ log = logging.getLogger(__name__)
 DEFAULT_MIN_GAP = timedelta(minutes=6)
 FIRST_RUN_MAX_DELAY = timedelta(minutes=20)
 TRIAL_THRESHOLD = 5
+BROWSER_DOWN_WAIT = timedelta(hours=1)
 DEFAULT_LEASE_TTL = timedelta(minutes=5)
 DEFAULT_HEARTBEAT = 60.0  # seconds between lease renewals (must be well under the TTL)
 DEFAULT_COMPANY_CAP = 1
@@ -310,8 +313,11 @@ def may_have_been_sent(app: Application, job_status: JobStatus | None = None) ->
     if (app.submitted_at is not None or out.get("status") == "in_progress"
             or d.get("submit_attempted")):
         return True
-    handed_over = d.get("handoff_reservation") or (
-        out.get("status") == "needs_human" and d.get("effective_mode") == "fill_and_pause")
+    if "handoff_reservation" in d:  # (the attempt says; older rows only have the mode)
+        handed_over = d["handoff_reservation"]
+    else:
+        handed_over = out.get("status") == "needs_human" and \
+            d.get("effective_mode") == "fill_and_pause"
     return bool(handed_over) and (job_status is None or job_status in _RESERVING)
 
 
@@ -581,6 +587,9 @@ def finalize(session: Session, *, app_id: int, job_id: int, attempt_id: str, lea
         target, note = JobStatus.NEEDS_HUMAN, outcome.reason
     elif outcome.status == "dry_run":
         target, note = JobStatus.APPROVED, "dry run"
+    elif outcome.details.get("page_left_open"):
+        # a form open for you may get submitted by you: retrying could apply twice
+        target, note = JobStatus.NEEDS_HUMAN, outcome.reason
     elif outcome.reason == "closed":
         target, note = JobStatus.CLOSED, "posting closed before applying"
         app.last_error = "posting closed"
@@ -617,6 +626,20 @@ def finalize(session: Session, *, app_id: int, job_id: int, attempt_id: str, lea
     session.add(app)
     session.commit()
     return result
+
+
+def _keep_trying(step: Callable[[], Any], rollback: Callable[[], None] = lambda: None,
+                 tries: int = 3) -> Any:
+    """Record something irreversible even if the shared database is briefly busy."""
+    for attempt in range(tries):
+        try:
+            return step()
+        except OperationalError:
+            rollback()
+            if attempt == tries - 1:
+                raise
+            time_mod.sleep(1)
+    return None
 
 
 def default_owner() -> str:
@@ -762,6 +785,15 @@ def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: d
         outcome = runner(run_job, packet, mode=mode, page_factory=page_factory, paths=paths,
                          adapter=adapter, router=router, human=human, files=files or None,
                          now=now.astimezone(UTC), pre_submit_check=gate)
+    except BrowserUnavailableError as e:
+        # no page existed, so nothing was sent: the job keeps its place (and its attempts), and
+        # the channel waits rather than failing every job in the queue the same way
+        log.error("browser unavailable for application %s: %s", app_id, e)
+        outcome = ApplyOutcome(status="failed", reason=f"the browser didn't start: {e}"[:300],
+                               details={"mode": mode, "effective_mode": mode,
+                                        "submit_attempted": False, "page_left_open": False,
+                                        "handoff_reservation": False,
+                                        "browser_unavailable": True})
     except Exception as e:  # noqa: BLE001 - we can't know how far it got: never retry blindly
         from recrute.errors import safe_error, safe_traceback
 
@@ -770,14 +802,31 @@ def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: d
         outcome = ApplyOutcome(status="needs_human",
                                reason=f"runner crashed: {safe_error(e)}"[:300],
                                details={"mode": mode, "effective_mode": mode,
-                                        "submit_attempted": mode == "submit"})
+                                        "submit_attempted": mode == "submit",
+                                        # a crash mid-fill may have left a form open for you
+                                        "handoff_reservation": mode == "fill_and_pause"})
 
-    base.finalized = finalize(session, app_id=app_id, job_id=job_id,  # type: ignore[arg-type]
-                              attempt_id=attempt_id, lease=lease, outcome=outcome,
-                              adapter_name=adapter.name, max_attempts=max_attempts, now=clock())
+    # the kill switch comes first, in its own session: failing to record the attempt must not
+    # keep applying on an account that just hit a security check
     if outcome.details.get("account_security"):
-        suspend(session, channel, now, f"{outcome.reason} (job {job_id})", suspend_for)
+        def stop_channel() -> None:
+            with Session(session.get_bind()) as s:
+                suspend(s, channel, now, f"{outcome.reason} (job {job_id})", suspend_for)
+
+        _keep_trying(stop_channel)
         log.warning("channel %s suspended: %s", channel, outcome.reason)
+    elif outcome.details.get("browser_unavailable"):
+        suspend(session, channel, now, outcome.reason, BROWSER_DOWN_WAIT)
+    base.finalized = _keep_trying(
+        lambda: finalize(session, app_id=app_id, job_id=job_id,  # type: ignore[arg-type]
+                         attempt_id=attempt_id, lease=lease, outcome=outcome,
+                         adapter_name=adapter.name, max_attempts=max_attempts, now=clock()),
+        session.rollback)
+    if outcome.details.get("browser_unavailable"):
+        session.execute(update(Application).where(Application.id == app_id)
+                        .values(attempts=Application.attempts - 1)
+                        .execution_options(synchronize_session=False))
+        session.commit()
     base.ran, base.reason, base.mode, base.outcome = True, outcome.reason, mode, outcome
     return base
 

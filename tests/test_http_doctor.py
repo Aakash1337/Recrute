@@ -134,3 +134,16 @@ def test_profile_commands_explain_a_missing_input(monkeypatch, tmp_path):
         assert result.exit_code == 1 and hint in result.output
         assert not isinstance(result.exception, FileNotFoundError)
     db.get_engine.cache_clear()
+
+
+@pytest.mark.parametrize("message,falls_back", [
+    ("Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome", True),
+    ("Executable doesn't exist at /x/chrome", True),
+    ("Failed to launch: profile appears to be in use by another process", False),
+    ("Target page, context or browser has been closed", False),
+])
+def test_only_a_missing_browser_falls_back_on_your_profile(message, falls_back):
+    """Audit: any launch error switched browsers on a logged-in profile."""
+    from recrute.browser.runtime import _NOT_INSTALLED
+
+    assert bool(_NOT_INSTALLED.search(message)) is falls_back

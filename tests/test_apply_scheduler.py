@@ -238,8 +238,11 @@ class FakeRunner:
 
     def __call__(self, job, packet, **kw):
         self.calls.append({"job_id": job.id, "mode": kw["mode"], "packet": packet, **kw})
+        # (like the real runner: a filled form left open for you holds its slot)
+        open_ = self.status == "needs_human" and kw["mode"] == "fill_and_pause"
         details = {"mode": kw["mode"], "effective_mode": kw["mode"],
-                   "attempted_at": kw["now"].isoformat()}
+                   "attempted_at": kw["now"].isoformat(), "page_left_open": open_,
+                   "handoff_reservation": open_}
         return ApplyOutcome(status=self.status, reason=self.reason, details=details,
                             receipt_dir="/tmp/r")
 
@@ -964,3 +967,111 @@ def test_late_finalize_keeps_a_newer_request_and_submission_evidence(session):
     assert app.outcome["assist_requested"] == "tok9"  # the newer request survives
     assert app.outcome["details"]["submit_attempted"] is True  # never downgraded
     assert app.outcome["late_attempts"][-1]["reason"] == "error after submit was clicked"
+
+
+# --------------------------------------------------------------------------- full audit, Nov 2026
+
+
+def test_form_left_open_after_an_error_is_never_retried(session, paths):
+    """Audit: back in the drip queue, you could finish it by hand and it could still be sent."""
+    graduate(session, n=4)
+    app, job = add_app(session, 1)
+
+    class ErrorWithFormOpen(FakeRunner):
+        def __call__(self, job_, packet, **kw):
+            out = super().__call__(job_, packet, **kw)
+            out.details.update(page_left_open=True, handoff_reservation=True)
+            return out
+
+    res = due(session, paths, ErrorWithFormOpen(status="failed", reason="error before submit: x"))
+    assert res.mode == "fill_and_pause"
+    session.refresh(job)
+    assert job.status == JobStatus.NEEDS_HUMAN
+
+
+def _no_browser(job_, packet, **kw):
+    from recrute.errors import BrowserUnavailableError
+
+    raise BrowserUnavailableError("profile is locked")
+
+
+def test_browser_outage_uses_up_nothing(session, paths):
+    """Audit: it was recorded as 'may have been sent': a cap slot, a company cooldown, an attempt
+    and the job's place, for each job in the queue in turn."""
+    from recrute.apply.state import suspension
+
+    graduate(session)
+    app, job = add_app(session, 1)
+    res = due(session, paths, _no_browser)
+    assert res.outcome.status == "failed" and res.outcome.details["browser_unavailable"]
+    session.refresh(app)
+    session.refresh(job)
+    assert job.status == JobStatus.APPROVED and app.attempts == 0
+    assert app.submitted_at is None and not (app.outcome or {})["details"]["submit_attempted"]
+    assert day_counts(session, at(12, 30)).by_channel == {}
+    # the channel waits, rather than failing the next job the same way
+    assert suspension(session, "greenhouse", at(12, 30)) is not None
+    assert suspension(session, "greenhouse", at(14)) is None
+
+
+def test_early_exit_in_trial_mode_has_no_open_form_and_holds_no_slot(session, paths):
+    """Audit: 'the form is open for 30 minutes' with nothing open, holding a cap slot and a
+    company cooldown for an application that was never filled."""
+    from recrute.applying import left_open
+
+    out = ApplyOutcome(status="needs_human", reason="approved files changed",
+                       details={"effective_mode": "fill_and_pause", "page_left_open": False,
+                                "handoff_reservation": False})
+    assert not left_open(out)
+    graduate(session, n=4)
+    app, job = add_app(session, 1)
+
+    class EarlyExit(FakeRunner):
+        def __call__(self, job_, packet, **kw):
+            base = super().__call__(job_, packet, **kw)
+            base.details.update(page_left_open=False, handoff_reservation=False)
+            return base
+
+    due(session, paths, EarlyExit(status="needs_human", reason="approved files changed"))
+    assert day_counts(session, at(12, 30)).by_channel == {}
+
+
+def test_security_block_suspends_even_if_recording_the_attempt_fails(session, paths, monkeypatch):
+    """Audit: the kill switch ran after finalize, so a database error skipped it."""
+    from sqlalchemy.exc import OperationalError
+
+    from recrute.apply import scheduler
+    from recrute.apply.state import suspension
+
+    graduate(session)
+    add_app(session, 1)
+
+    class Checkpoint(FakeRunner):
+        def __call__(self, job_, packet, **kw):
+            out = super().__call__(job_, packet, **kw)
+            out.details["account_security"] = True
+            return out
+
+    def locked(*a, **kw):
+        raise OperationalError("UPDATE", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(scheduler, "finalize", locked)
+    monkeypatch.setattr(scheduler.time_mod, "sleep", lambda s: None)
+    with pytest.raises(OperationalError):
+        due(session, paths, Checkpoint(status="needs_human", reason="blocker: checkpoint"))
+    session.rollback()
+    assert suspension(session, "greenhouse", at(12, 30)) is not None
+
+
+def test_lock_stamp_survives_the_database_with_its_timezone(engine):
+    """Both auditors expected a naive value back, which would make every lease look lost; it's
+    SQLModel's UTCDateTime column that keeps this working, so an upgrade must not change it."""
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.apply.state import LOCK_KEY, acquire_lock
+    from recrute.models import Setting
+
+    with Session(engine) as s:
+        stamp = acquire_lock(s, "me", datetime.now(UTC), timedelta(minutes=5))
+    with Session(engine) as s:
+        assert s.get(Setting, LOCK_KEY).updated_at == stamp

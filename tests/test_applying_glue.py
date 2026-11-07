@@ -249,3 +249,30 @@ def test_finishing_an_assist_keeps_a_newer_request(engine):
                                             details={"submit_attempted": False}))
     with Session(engine) as s:
         assert s.exec(select(Application)).one().outcome["assist_requested"] == "tok2"
+
+
+def test_closing_the_form_tab_ends_the_handoff_despite_the_blank_tab(tmp_path, monkeypatch):
+    """Audit: a persistent context's initial blank tab kept the apply thread waiting 30 minutes."""
+    import threading
+    from types import SimpleNamespace
+
+    from recrute import applying, live
+
+    class Tab:
+        url = "about:blank"
+
+        def is_closed(self):
+            return False
+
+    monkeypatch.setattr(live, "start_session", lambda p: None)
+    monkeypatch.setattr(live, "clear", lambda p: None)
+    browser = applying.LazyBrowser(SimpleNamespace(paths=tmp_path, stop=threading.Event()))
+    browser.context = SimpleNamespace(pages=[Tab()])
+    done = threading.Event()
+
+    def wait():
+        browser.wait_for_human(timeout=30)
+        done.set()
+
+    threading.Thread(target=wait, daemon=True).start()
+    assert done.wait(3)

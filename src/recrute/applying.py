@@ -70,7 +70,10 @@ class LazyBrowser:
         live.start_session(self.ctx.paths)
         try:
             while time.monotonic() < deadline and not self.ctx.stop.is_set():
-                pages = [p for p in self.context.pages if not p.is_closed()]
+                # (a persistent context keeps its initial blank tab: closing the form's tab
+                # still means you're done)
+                pages = [p for p in self.context.pages
+                         if not p.is_closed() and p.url != "about:blank"]
                 if not pages:
                     return
                 page = pages[-1]
@@ -116,10 +119,24 @@ def notify_handoff(ctx, job_id: int | None, reason: str) -> None:
         log.warning("CP3 notification failed: %s", e.__class__.__name__)
 
 
+def notify_browser_down(ctx, reason: str) -> None:
+    from recrute.tasks import notify
+
+    try:
+        with ctx.session() as s:
+            notify(s, "Recrute can't open the browser",
+                   f"{reason}. Submissions are paused for an hour; nothing was sent. Check that "
+                   "Chrome is installed and that `recrute browser login` isn't still running.",
+                   priority="high")
+    except Exception as e:  # a failed notification must not break the worker
+        log.warning("browser notification failed: %s", e.__class__.__name__)
+
+
 def left_open(outcome) -> bool:
     details = outcome.details or {}
-    return bool(details.get("page_left_open")) or (
-        outcome.status == "needs_human" and details.get("effective_mode") == "fill_and_pause")
+    if "page_left_open" in details:
+        return bool(details["page_left_open"])
+    return outcome.status == "needs_human" and details.get("effective_mode") == "fill_and_pause"
 
 
 def run_due_task(ctx) -> dict:
@@ -150,6 +167,8 @@ def run_due_task(ctx) -> dict:
                              company_cooldown=timedelta(
                                  days=int(get_setting(s, "company_cooldown_days"))))
         mode = result.mode
+        if result.ran and result.outcome and result.outcome.details.get("browser_unavailable"):
+            notify_browser_down(ctx, result.outcome.reason)
         if result.ran and result.outcome and left_open(result.outcome):
             notify_handoff(ctx, result.job_id, result.outcome.reason)
             browser.wait_for_human()  # a filled form is waiting for you (CP3), in any mode
@@ -230,9 +249,19 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
             lease.release()
         files = {k: v for k, v in (("resume", app.resume_path),
                                    ("cover_letter", app.cover_letter_path)) if v}
-        outcome = apply_job(job, Packet.model_validate(app.packet), mode="fill_and_pause",
-                            page_factory=browser, paths=ctx.paths, adapter=adapter,
-                            router=ctx.router, files=files or None)
+        from recrute.errors import BrowserUnavailableError
+        from recrute.schemas import ApplyOutcome
+
+        try:
+            outcome = apply_job(job, Packet.model_validate(app.packet), mode="fill_and_pause",
+                                page_factory=browser, paths=ctx.paths, adapter=adapter,
+                                router=ctx.router, files=files or None)
+        except BrowserUnavailableError as e:
+            # the request was consumed but no form exists: nothing holds a cap slot
+            outcome = ApplyOutcome(status="needs_human", reason=f"the browser didn't start: {e}",
+                                   details={"submit_attempted": False, "page_left_open": False,
+                                            "handoff_reservation": False,
+                                            "browser_unavailable": True})
         _record_assist(session, app, outcome)
         if left_open(outcome):
             notify_handoff(ctx, job.id, outcome.reason)

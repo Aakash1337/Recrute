@@ -72,6 +72,8 @@ def filter_new(session: Session, criteria: Criteria,
             session.add(StatusEvent(job_id=job.id, status=JobStatus.FILTERED_OUT,
                                     note=result.reason))
             dropped += 1
+        if (kept + dropped) % 100 == 0:
+            session.commit()  # (never hold the shared database's write lock for a whole run)
     session.commit()
     session.expire_all()
     out = {"kept": kept, "dropped": dropped}

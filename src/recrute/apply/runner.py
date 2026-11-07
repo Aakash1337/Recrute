@@ -111,8 +111,10 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
     adapter = adapter or adapter_for(job, router=router)
     human = human or Human()
     effective: str = mode if (adapter.can_submit or mode == "dry_run") else "fill_and_pause"
+    # (explicit until a page exists: a return before that has nothing open for you)
     details: dict[str, Any] = {"mode": mode, "effective_mode": effective, "adapter": adapter.name,
-                               "attempted_at": now.isoformat(), "submit_attempted": False}
+                               "attempted_at": now.isoformat(), "submit_attempted": False,
+                               "page_left_open": False, "handoff_reservation": False}
 
     if packet.job_id != job.id:
         return ApplyOutcome(status="failed", reason="packet belongs to a different job",
@@ -138,7 +140,12 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
     receipt.copy_files(file_map)
     details["files"] = {k: str(v) for k, v in file_map.items()}
 
-    page = _new_page(page_factory)
+    try:
+        page = _new_page(page_factory)
+    except Exception as e:  # noqa: BLE001 - whatever it was, no page exists yet
+        from recrute.errors import BrowserUnavailableError, safe_error
+
+        raise BrowserUnavailableError(safe_error(e)[:300]) from e
     keep_open = False
     clicked_submit = False
     report: FillReport | None = None
@@ -310,7 +317,10 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
             keep_open = True
             return done("needs_human", "error after submit was clicked (verify manually): "
                         f"{safe_error(e)}"[:300])
-        keep_open = mode == "fill_and_pause"
+        if mode == "fill_and_pause":
+            # the form stays open for you, and you may finish it: never retried on its own
+            keep_open = True
+            return done("needs_human", f"error before submit: {safe_error(e)}"[:300])
         return done("failed", f"error before submit: {safe_error(e)}"[:300])
     finally:
         if not keep_open:

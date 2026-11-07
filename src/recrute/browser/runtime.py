@@ -10,6 +10,7 @@ Following patchright's guidance for the least detectable setup: headed, real Goo
 """
 
 import logging
+import re
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -24,6 +25,7 @@ log = logging.getLogger(__name__)
 # One Chrome profile can only be open once: discovery (LinkedIn session) and the apply worker
 # take turns. Re-entrant so nested helpers in one thread don't deadlock.
 BROWSER_LOCK = threading.RLock()
+_NOT_INSTALLED = re.compile(r"is not found at|executable doesn't exist|is not installed", re.I)
 
 
 @contextmanager
@@ -37,9 +39,12 @@ def open_context(cfg: BrowserConfig, paths: Paths,
         try:
             ctx = p.chromium.launch_persistent_context(channel=cfg.channel or None, **kwargs)
         except Error as e:
-            if not cfg.channel:
+            # Only when that browser isn't installed. Any other failure (a locked profile, a
+            # crash) must not switch browsers on your logged-in profile: another fingerprint,
+            # and it can lose your sessions.
+            if not cfg.channel or not _NOT_INSTALLED.search(str(e)):
                 raise
-            log.warning("browser channel %r unavailable (%s); falling back to bundled Chromium. "
+            log.warning("browser channel %r not installed (%s); falling back to bundled Chromium. "
                         "Install Google Chrome for a better fingerprint.", cfg.channel,
                         str(e).splitlines()[0])
             ctx = p.chromium.launch_persistent_context(**kwargs)

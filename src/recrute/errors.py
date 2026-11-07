@@ -5,6 +5,10 @@ from __future__ import annotations
 import traceback
 
 
+class BrowserUnavailableError(Exception):
+    """The browser couldn't open a page: no form was touched, so nothing can have been sent."""
+
+
 def safe_error(e: BaseException) -> str:
     """Error text for logs/UI without echoing data. Validation errors (e.g. a malformed profile)
     carry the offending input values, so only their field paths are kept."""
