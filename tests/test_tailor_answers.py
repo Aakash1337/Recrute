@@ -2018,7 +2018,8 @@ def test_flagged_answer_you_let_through_is_not_banked(paths, monkeypatch):
 
     packet = Packet(job_id=1, questions=[q("Kubernetes experience", "textarea", id="f"),
                                          q("Preferred work style", "textarea", id="b")],
-                    answers=[FormAnswer(question_id="f", value="Ran many clusters", source="llm_new"),
+                    answers=[FormAnswer(question_id="f", value="Ran many clusters",
+                                        source="llm_new"),
                              FormAnswer(question_id="b", value="Written first.", source="llm_new")],
                     flags=[VerifierFlag(where="answer:f", text="x", reason="y", severity="block")])
     assert _banked(paths, monkeypatch, packet) == ["Written first."]
