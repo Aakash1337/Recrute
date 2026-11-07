@@ -1,5 +1,6 @@
 """Packets (CP2), applications (CP3/tracking), inbox, companies, profile, capture API, files."""
 
+import json
 import threading
 import time
 from datetime import UTC, datetime
@@ -217,12 +218,19 @@ def _save_packet_edit(job_id: int, form, answers: dict) -> HTMLResponse:
     with session_scope() as s:
         try:
             new_rev = packets.edit(s, job_id, rev, answers, form.get("cover_letter"))
-            if form.get("then_approve") == "1":
-                packets.approve(s, job_id, new_rev,
-                                override_blocks=form.get("override") == "on")
-                return _msg("Saved and approved.")
         except packets.PacketError as e:
             return _msg(str(e), False, 409)
+        if form.get("then_approve") == "1":
+            try:
+                packets.approve(s, job_id, new_rev,
+                                override_blocks=form.get("override") == "on")
+            except packets.PacketError as e:
+                # your edits were saved, so the page's revision is out of date: without the new
+                # one, ticking the box and pressing again would say the packet changed
+                resp = _msg(f"Saved, but not approved: {e}", False, 409)
+                resp.headers["HX-Trigger"] = json.dumps({"packetRev": new_rev})
+                return resp
+            return _msg("Saved and approved.")
     resp = _msg("Saved.")
     # re-render the page so every form carries the new revision, flags and file links
     resp.headers["HX-Refresh"] = "true"

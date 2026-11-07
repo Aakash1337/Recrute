@@ -210,6 +210,10 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
         if urlsplit(start_url).scheme.lower() not in ("http", "https"):
             return done("needs_human", "the job's link isn't a web address", check_blockers=False)
         response = page.goto(start_url, wait_until="domcontentloaded")
+        refused = getattr(response, "status", None)
+        if refused in (403, 429):  # the site is turning us away: never just retried
+            keep_open = mode != "dry_run"
+            return blocked(f"the site refused the page (HTTP {refused})")
         adapter.wait_ready(page, ready_timeout)
         details["start_url"] = page.url
 

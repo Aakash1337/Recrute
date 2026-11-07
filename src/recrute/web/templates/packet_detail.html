@@ -51,7 +51,7 @@
               {% for o in q.options %}<option value="{{ o }}" {{ 'selected' if a and (a.value == o or (a.value is iterable and a.value is not string and o in a.value)) }}>{{ o }}</option>{% endfor %}
             </select>
           {% elif q.type == 'textarea' %}<textarea name="q__{{ q.id }}">{{ a.value if a and a.value is not none else '' }}</textarea>
-          {% else %}<input name="q__{{ q.id }}" value="{{ a.value if a and a.value is not none else '' }}" style="width:100%">
+          {% else %}<input name="q__{{ q.id }}" value="{{ '' if not a or a.value is none else (a.value | join(', ') if a.value is iterable and a.value is not string else a.value) }}" style="width:100%">
           {% endif %}
           </td>
         </tr>
@@ -80,4 +80,11 @@
     <p id="result"></p>
   </div>
 </div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.body.addEventListener('packetRev', e => {
+  document.querySelectorAll('input[name=rev]').forEach(i => { i.value = e.detail.value; });
+});
+</script>
 {% endblock %}

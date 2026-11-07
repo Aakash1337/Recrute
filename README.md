@@ -87,7 +87,8 @@ you're viewing into Recrute (read-only; no automation on the site).
   or a login wall hands the form to you (CP3), with a notification.
 - **The first 5 submissions per site are fill-and-pause** (trial period). Daily, per-site and
   per-company caps apply, and submissions only happen during your active hours.
-- **Any security check on LinkedIn pauses both browsing and Easy Apply** until you resume them.
+- **Any security check on LinkedIn pauses both browsing and Easy Apply** for days. You can
+  resume sooner on the Applications page, once you've checked the account.
 
 ## Running on a LAN server (e.g. an old Windows laptop)
 

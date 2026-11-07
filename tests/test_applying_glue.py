@@ -568,3 +568,41 @@ def test_resolving_the_job_ends_the_handoff(engine, paths, monkeypatch):
 
     threading.Thread(target=wait, daemon=True).start()
     assert done.wait(3)
+
+
+def test_assisted_fill_at_a_captcha_records_the_suspension_and_outcome(engine, paths, monkeypatch):
+    """Both re-audits: the suspension was written while this session held the write lock, so it
+    waited on itself, the outcome was lost, and the open form closed. Real file-backed SQLite."""
+    import time
+
+    from recrute import applying
+    from recrute.apply.state import suspension
+    from recrute.models import Application
+    from recrute.schemas import ApplyOutcome
+
+    app_id = _assist_row(engine, details={"handoff_reservation": False})
+    captcha = ApplyOutcome(status="needs_human", reason="blocker: captcha",
+                           details={"account_security": True, "blocker": "captcha",
+                                    "page_left_open": False, "handoff_reservation": False})
+    monkeypatch.setattr("recrute.apply.runner.apply_job", lambda *a, **kw: captcha)
+    started = time.monotonic()
+    with Session(engine) as s:
+        assert applying._run_assist_request(_assist_ctx(engine, paths), s, object())
+    assert time.monotonic() - started < 10  # no waiting out the database's busy timeout
+    from datetime import UTC, datetime
+
+    with Session(engine) as s:
+        assert suspension(s, "greenhouse", datetime.now(UTC)) is not None
+        assert s.get(Application, app_id).outcome["reason"] == "blocker: captcha"
+
+
+def test_a_failed_lease_release_keeps_the_result():
+    from sqlalchemy.exc import OperationalError
+
+    from recrute.apply.scheduler import release_quietly
+
+    class Stuck:
+        def release(self):
+            raise OperationalError("DELETE", {}, Exception("database is locked"))
+
+    release_quietly(Stuck())  # (raising here would replace run_due's result, and close the form)

@@ -235,6 +235,8 @@ def _set_answer(packet: Packet, qid: str, value) -> None:
         packet.answers.append(FormAnswer(question_id=qid, value=value, source="user",
                                          confidence=1.0, needs_review=False))
         return
+    if isinstance(a.value, list) and isinstance(value, str):  # (a one-box multiselect)
+        value = [value] if value.strip() else []
     value = _as_submitted(a.value, value)
     q = next((x for x in packet.questions if x.id == qid), None)
     if not _same_answer(a.value, value, single_line=q is not None and not q.options
@@ -359,6 +361,16 @@ def request_assist(session: Session, job_id: int) -> None:
                           "and approve it first")
     import uuid
 
+    # under the row's write lock, re-read: the worker may have just recorded an outcome
+    session.commit()
+    session.execute(update(Application).where(Application.id == app.id).values(id=Application.id)
+                    .execution_options(synchronize_session=False))
+    session.refresh(app)
+    session.refresh(job)
+    if (job.status != JobStatus.NEEDS_HUMAN or app.approved_at is None or not app.packet
+            or app.submitted_at is not None):
+        session.rollback()
+        raise PacketError("this job changed since you opened the page: reload")
     # a unique token: the worker consumes exactly this request, once
     outcome = {k: v for k, v in (app.outcome or {}).items() if k != "assist_expired"}
     app.outcome = {**outcome, "assist_requested": uuid.uuid4().hex,

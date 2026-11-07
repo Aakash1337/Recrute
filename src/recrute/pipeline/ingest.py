@@ -3,12 +3,13 @@
 import ipaddress
 import logging
 import socket
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from urllib.parse import urlsplit
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, col, select
 
 from recrute.models import Company, Job, JobSource, JobStatus, StatusEvent, utcnow
@@ -360,13 +361,23 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
         # Savepoint per posting: if a concurrent writer (web capture, another discovery run)
         # inserted the same job/company/source between our lookup and insert, the uniqueness
         # conflict is retried once, which then finds and merges the winner's row.
-        for attempt in (1, 2):
+        for attempt in (1, 2, 3):
             snap = (stats.new, stats.updated, stats.merged, len(stats.new_job_ids),
                     len(stats.job_ids))
             try:
                 with session.begin_nested():
                     _ingest_one(session, raw, stats, now)
                 break
+            except OperationalError as e:
+                # another connection committed between this posting's read and its write:
+                # SQLite refuses that at once, however long the busy timeout is
+                session.rollback()
+                if "locked" not in str(e).lower() or attempt == 3:
+                    raise
+                stats.new, stats.updated, stats.merged = snap[:3]
+                del stats.new_job_ids[snap[3]:]
+                del stats.job_ids[snap[4]:]
+                time.sleep(0.2 * attempt)
             except IntegrityError:
                 stats.new, stats.updated, stats.merged = snap[:3]
                 del stats.new_job_ids[snap[3]:]

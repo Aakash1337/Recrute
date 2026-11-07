@@ -254,6 +254,8 @@ def main() -> None:
     if sections:
         combined = "\n\n".join(sections)
         (AUDIT_DIR / "latest.md").write_text(combined, encoding="utf-8")
+        if hasattr(sys.stdout, "reconfigure"):  # (a piped Windows console can't print all of it)
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         print(combined)
     if failed:
         sys.exit(1)

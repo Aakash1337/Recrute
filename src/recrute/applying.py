@@ -326,7 +326,12 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
             continue  # the account kill switch applies to assisted fills too; request kept
         # Caps apply to assisted fills too. Check + reservation happen under the scheduler
         # lease, so no scheduled run can take the same slot in between.
-        from recrute.apply.scheduler import DEFAULT_LEASE_TTL, cap_block_reason, default_owner
+        from recrute.apply.scheduler import (
+            DEFAULT_LEASE_TTL,
+            cap_block_reason,
+            default_owner,
+            release_quietly,
+        )
         from recrute.apply.state import Lease
 
         lease = Lease(session.get_bind(), default_owner(), DEFAULT_LEASE_TTL,
@@ -375,7 +380,7 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
             session.commit()
         finally:
             session.rollback()  # (releasing needs the write lock this session may still hold)
-            lease.release()
+            release_quietly(lease)
         files = {k: v for k, v in (("resume", app.resume_path),
                                    ("cover_letter", app.cover_letter_path)) if v}
         from recrute.errors import BrowserUnavailableError, safe_error
@@ -429,24 +434,27 @@ def _record_assist(session: Session, app: Application, outcome) -> None:
     from recrute.apply.state import suspend
 
     details = outcome.details or {}
+    # first, in its own session and before this one takes the write lock it would wait for:
+    # bookkeeping that fails must not lose the kill switch
+    session.commit()
+    if details.get("account_security"):
+        from recrute.apply.scheduler import _keep_trying
+
+        channel, job_id = app.channel, app.job_id
+
+        def stop_channel() -> None:
+            with Session(session.get_bind()) as s:
+                suspend(s, channel, datetime.now(UTC),
+                        f"{outcome.reason} (assisted fill, job {job_id})")
+
+        _keep_trying(stop_channel)
     # merge into the CURRENT row, under its write lock: a new "Open & pre-fill" request (or
     # any other change) made while this fill ran must survive
-    session.commit()
     session.execute(update(Application).where(Application.id == app.id)
                     .values(id=Application.id).execution_options(synchronize_session=False))
     session.refresh(app)
     prior = dict(app.outcome or {})
     new = outcome.model_dump(mode="json")
-    # first, in its own session: bookkeeping that fails must not lose the kill switch
-    if details.get("account_security"):
-        from recrute.apply.scheduler import _keep_trying
-
-        def stop_channel() -> None:
-            with Session(session.get_bind()) as s:
-                suspend(s, app.channel, datetime.now(UTC),
-                        f"{outcome.reason} (assisted fill, job {app.job_id})")
-
-        _keep_trying(stop_channel)
     history = list(prior.get("assist_history", []))[-9:] + [
         {"at": datetime.now(UTC).isoformat(), "status": new.get("status"),
          "reason": new.get("reason")}]

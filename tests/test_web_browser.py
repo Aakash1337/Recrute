@@ -117,3 +117,29 @@ def test_long_form_options_do_not_widen_the_packet_page(ui):
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     answers = page.locator("table.answers").inner_text()
     assert "not attached" in answers and "None" not in answers
+
+
+def test_ticking_the_override_after_a_refusal_works_first_time(ui):
+    """Re-audit: saving changed the revision, so the second press said the packet had changed."""
+    from test_integration_web import _seed_packet
+
+    page, base = ui
+    job_id = _seed_packet(flags=[{"where": "answer:q1", "text": "x", "reason": "y",
+                                  "severity": "block"}])
+    page.goto(f"{base}/packets/{job_id}")
+    page.click("button:has-text('Save & Go ahead')")
+    page.wait_for_selector("#result .bad")
+    assert "not approved" in page.locator("#result").inner_text()
+    page.check("input[name=override]")
+    page.click("button:has-text('Save & Go ahead')")
+    page.wait_for_selector("#result .ok")
+    assert "approved" in page.locator("#result").inner_text()
+
+
+def test_live_input_that_could_not_be_sent_says_so_and_keeps_your_text(ui):
+    page, base = ui
+    page.goto(f"{base}/live")
+    page.fill("#live-text", "my text")
+    page.click("button:has-text('Type')")
+    assert "Not sent" in page.locator("#live-feedback").inner_text()
+    assert page.input_value("#live-text") == "my text"

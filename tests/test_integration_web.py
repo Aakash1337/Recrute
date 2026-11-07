@@ -1059,3 +1059,42 @@ def test_flagged_answer_you_let_through_is_not_banked(client, monkeypatch):
         flags=[VerifierFlag(where="answer:f", text="40", reason="x", severity="block")])
     _save_to_bank(Job(title="t", apply_url="u", canonical_url="u"), packet)
     assert "Ran 40 clusters" not in saved
+
+
+def test_assist_request_rechecks_under_the_lock(client):
+    """Re-audit: it wrote back what it read earlier, over what the worker had just recorded."""
+    import pytest as _pytest
+
+    from recrute.db import get_engine
+    from recrute.models import Application, JobStatus, utcnow
+    from recrute.packets import PacketError, request_assist
+
+    job_id = _seed_packet(status=JobStatus.NEEDS_HUMAN)
+    with Session(get_engine()) as s:
+        app = s.exec(select(Application).where(Application.job_id == job_id)).one()
+        app.approved_at = utcnow()
+        app.outcome = {"reason": "the worker's newest result"}
+        s.add(app)
+        s.commit()
+        request_assist(s, job_id)
+        s.refresh(app)
+        assert app.outcome["reason"] == "the worker's newest result"
+        assert app.outcome["assist_requested"]
+        app.submitted_at = utcnow()
+        s.add(app)
+        s.commit()
+        with _pytest.raises(PacketError):
+            request_assist(s, job_id)
+
+
+def test_a_one_box_multiselect_survives_being_saved(client):
+    """Re-audit: it came back as the text "['United States']", and matched nothing at fill."""
+    from recrute.packets import _set_answer
+    from recrute.schemas import FormAnswer, FormQuestion, Packet
+
+    packet = Packet(job_id=1, questions=[FormQuestion(id="m", label="Country", type="multiselect")],
+                    answers=[FormAnswer(question_id="m", value=["United States"],
+                                        source="answer_bank", needs_review=False)])
+    _set_answer(packet, "m", "United States")
+    answer = packet.answer_for("m")
+    assert answer.value == ["United States"] and answer.source == "answer_bank"

@@ -659,6 +659,15 @@ def _keep_trying(step: Callable[[], Any], rollback: Callable[[], None] = lambda:
     return None
 
 
+def release_quietly(lease: Lease) -> None:
+    """Failing to release only leaves the lock row until its time runs out: never worth losing
+    the attempt's result, or the form left open for you."""
+    try:
+        lease.release()
+    except OperationalError as e:
+        log.warning("couldn't release the scheduler lease: %s", e.__class__.__name__)
+
+
 def default_owner() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
@@ -708,7 +717,7 @@ def run_due(session: Session, *, page_factory: Any, paths: Paths,
         try:
             session.rollback()
         finally:
-            lease.release()
+            release_quietly(lease)
 
 
 def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: datetime,

@@ -962,3 +962,28 @@ def test_a_link_into_your_own_network_is_never_ingested(engine, url):
         ingest(session, [RawJob(source="x", source_job_id="1", title="Analyst", company="Acme",
                                 url=url)])
         assert session.exec(select(Job)).all() == []
+
+
+def test_a_posting_retries_when_another_connection_commits_mid_write(engine, monkeypatch):
+    """Re-audit: SQLite refuses a read-then-write at once then, whatever the busy timeout."""
+    from sqlalchemy.exc import OperationalError
+
+    from recrute.models import Job
+    from recrute.pipeline import ingest as ingest_module
+    from recrute.schemas import RawJob
+
+    real, calls = ingest_module._ingest_one, []
+
+    def busy_once(session, raw, stats, now):
+        calls.append(raw.title)
+        if len(calls) == 1:
+            raise OperationalError("INSERT", {}, Exception("database is locked"))
+        return real(session, raw, stats, now)
+
+    monkeypatch.setattr(ingest_module, "_ingest_one", busy_once)
+    monkeypatch.setattr(ingest_module.time, "sleep", lambda s: None)
+    with Session(engine) as session:
+        stats = ingest_module.ingest(session, [RawJob(
+            source="x", source_job_id="1", title="Analyst", company="Acme",
+            url="https://acme.example/jobs/1")])
+        assert len(calls) == 2 and stats.new == 1 and len(session.exec(select(Job)).all()) == 1
