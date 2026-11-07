@@ -151,6 +151,9 @@ def write_cover_letter(profile: Profile, selection: ResumeSelection, job: JobCon
                        router: Completer, *, paths: Paths | None = None, user_note: str = "",
                        max_words: int = MAX_WORDS) -> CoverLetter:
     voice = load_voice_samples(paths) if paths is not None else ""
+    for part in (profile.name or "").split():  # (a letter's sign-off: only the voice is needed)
+        if len(part) > 1:
+            voice = re.sub(rf"\b{re.escape(part)}\b", "[removed]", voice, flags=re.IGNORECASE)
     note = f"USER NOTE (follow it): {user_note.strip()}\n" if user_note.strip() else ""
     prompt = COVER_PROMPT.format(
         max_words=max_words - 30, note=note, title=job.title,

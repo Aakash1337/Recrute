@@ -29,6 +29,7 @@ FIX = Path(__file__).parent / "fixtures" / "apply"
 GET_ROUTES: list[tuple[str, str, int]] = [
     (r"^/greenhouse/acme/jobs/999$", "not_found.html", 404),
     (r"^/greenhouse/acme/jobs/403$", "not_found.html", 403),
+    (r"^/success$", "not_found.html", 200),
     (r"^/greenhouse/acme/jobs/429$", "not_found.html", 429),
     (r"/confirmation$", "greenhouse_confirmation.html", 200),
     (r"^/greenhouse/acme/jobs/\d+$", "greenhouse.html", 200),
@@ -1610,3 +1611,41 @@ def test_a_file_type_hint_is_not_an_attached_file(context):
     fields = extract_fields(page, scope="form", include_hidden=True)
     page.close()
     assert [f.current for f in fields if f.id == "r"] == [None]
+
+
+def test_a_third_party_frame_cannot_confirm_a_submission(srv, context):
+    """Re-audit: an analytics frame loading /success made a rejected form 'submitted', and the
+    application silently never reached the employer."""
+    from recrute.apply.adapters.greenhouse import GreenhouseAdapter
+
+    adapter = GreenhouseAdapter()
+    third_party = srv.url.replace("127.0.0.1", "localhost") + "/success"
+    page = context.new_page()
+    page.goto(f"{srv.url}/greenhouse/acme/jobs/1001")
+    baseline = adapter.confirmation_baseline(page)
+    page.evaluate("""url => new Promise(done => {
+        const f = document.createElement('iframe');
+        f.src = url; f.onload = () => done(); document.body.appendChild(f);
+    })""", third_party)
+    assert len(page.frames) > 1 and not adapter.is_confirmed(page, baseline)
+    page.close()
+
+
+@pytest.mark.parametrize("html,expected", [
+    ('<button class="_active_1a">Yes</button><button class="_btn_1b">No</button>', "Yes"),
+    ('<button class="selected">Yes</button><button>No</button>', "Yes"),
+    ('<button aria-checked="true">Yes</button><button>No</button>', "Yes"),
+    ('<button class="inactive">Yes</button><button class="unselected">No</button>', None),
+    ('<button class="active">Yes</button><button class="active">No</button>', "Yes and No"),
+])
+def test_yes_no_state_is_read_however_it_is_shown(context, html, expected):
+    """Re-audit: only aria-pressed was read, so a class-only pre-selection you never approved
+    looked empty, and a correct fill looked unfilled."""
+    from recrute.apply.dom import extract_fields
+
+    page = context.new_page()
+    page.set_content(f'<form><div class="yesno" id="w"><label>Authorized?</label>{html}</div>'
+                     '</form>')
+    fields = [f for f in extract_fields(page, scope="form") if f.widget == "yesno"]
+    page.close()
+    assert len(fields) == 1 and fields[0].current == expected

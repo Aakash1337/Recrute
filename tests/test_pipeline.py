@@ -951,6 +951,7 @@ def test_a_link_that_is_not_a_web_address_is_never_ingested(engine):
     "http://192.168.1.1/admin", "http://169.254.169.254/latest", "http://printer.local/",
     "http://127.1:8765/settings", "http://2130706433:8765/settings",
     "http://0x7f000001:8765/settings", "http://0x7f.0.0.1/", "http://[::ffff:127.0.0.1]/",
+    "http://%31%32%37.0.0.1:8765/settings", "http://local%68ost:8765/settings",
 ])
 def test_a_link_into_your_own_network_is_never_ingested(engine, url):
     """Re-audit: this server trusts local requests, and the browser is logged in."""

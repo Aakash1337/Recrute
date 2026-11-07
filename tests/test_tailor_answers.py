@@ -1984,3 +1984,54 @@ def test_a_saved_multi_line_answer_fits_a_single_line_field():
     assert hit.value == "First line. Second line."
     hit = match_question(q("Describe your work", "textarea"), bank)
     assert hit.value == "First line.\nSecond line."
+
+
+def test_voice_samples_lose_your_name_before_the_llm(paths):
+    from test_tailor_support import FakeRouter, make_job, make_profile
+
+    from recrute.schemas import ResumeSelection
+    from recrute.tailor.cover_letter import write_cover_letter
+
+    profile = make_profile()
+    (paths.resources / "writing" / "note.txt").write_text(
+        f"I write short sentences. Sincerely, {profile.name}", encoding="utf-8")
+    router = FakeRouter({"cover": {"paragraphs": ["Body."], "cited_ids": []}})
+    write_cover_letter(profile, ResumeSelection(), make_job(), router, paths=paths)
+    prompt = router.calls[0][1]
+    assert "I write short sentences." in prompt
+    assert "Sincerely, [removed] [removed]" in prompt and profile.name not in prompt
+
+
+def _banked(paths, monkeypatch, packet, **kw):
+    from recrute import packets
+    from recrute.models import Job
+    from recrute.tailor.answers import load_answer_bank
+
+    monkeypatch.setattr("recrute.paths.get_paths", lambda: paths)
+    packets._save_to_bank(Job(id=1, title="Analyst", url="u"), packet, **kw)
+    return list(load_answer_bank(paths).common.values())
+
+
+def test_flagged_answer_you_let_through_is_not_banked(paths, monkeypatch):
+    """Re-audit: one click made a flagged claim trusted evidence for every later packet."""
+    from recrute.schemas import FormAnswer, Packet, VerifierFlag
+
+    packet = Packet(job_id=1, questions=[q("Kubernetes experience", "textarea", id="f"),
+                                         q("Preferred work style", "textarea", id="b")],
+                    answers=[FormAnswer(question_id="f", value="Ran many clusters",
+                                        source="llm_new"),
+                             FormAnswer(question_id="b", value="Written first.", source="llm_new")],
+                    flags=[VerifierFlag(where="answer:f", text="x", reason="y", severity="block")])
+    assert _banked(paths, monkeypatch, packet) == ["Written first."]
+
+
+def test_answer_naming_the_employer_is_not_reused(paths, monkeypatch):
+    """Re-audit: it would go to the next employer, unhighlighted."""
+    from recrute.schemas import FormAnswer, Packet
+
+    packet = Packet(job_id=1, questions=[q("Anything else to share", "textarea", id="a"),
+                                         q("Preferred work style", "textarea", id="b")],
+                    answers=[FormAnswer(question_id="a", value="I'd love to join acme's team",
+                                        source="user"),
+                             FormAnswer(question_id="b", value="Written first.", source="user")])
+    assert _banked(paths, monkeypatch, packet, company="Acme") == ["Written first."]

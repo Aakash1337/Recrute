@@ -560,3 +560,17 @@ def test_hn_shared_header_link_still_applies_to_every_role():
     rows = {"jobs": [{"comment_id": 93, "company": "Acme", "title": t, "apply_url": link}
                      for t in ("Security Engineer", "Data Analyst")]}
     assert {j.apply_url for j in jobs_from_extraction(rows, [c])} == {link}
+
+
+def test_hn_all_roles_clause_leaves_another_roles_requirements_alone():
+    """Re-audit: my fix took the whole line, so one role's limits spread to the others."""
+    from recrute.badges.sponsorship import eligibility_flags
+    from recrute.sources.hn import role_sections
+
+    titles = ["Security Engineer", "Security Analyst"]
+    text = ("Acme | Security Engineer (8+ years; US citizenship required), Security Analyst | "
+            "All roles remote (US)\nSecurity Engineer: detections.\nSecurity Analyst: triage.")
+    secs = role_sections(text, titles)
+    assert "citizenship_required" in eligibility_flags(secs["Security Engineer"])
+    assert "citizenship_required" not in eligibility_flags(secs["Security Analyst"])
+    assert "All roles remote" in secs["Security Analyst"]

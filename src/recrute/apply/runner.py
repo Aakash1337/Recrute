@@ -213,6 +213,11 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
         refused = getattr(response, "status", None)
         if refused in (403, 429):  # the site is turning us away: never just retried
             keep_open = mode != "dry_run"
+            if refused == 429:  # (and the next job there would be turned away too)
+                from recrute.http import parse_retry_after
+
+                details["rate_limited_for"] = parse_retry_after(
+                    response.headers.get("retry-after")) or 3600
             return blocked(f"the site refused the page (HTTP {refused})")
         adapter.wait_ready(page, ready_timeout)
         details["start_url"] = page.url

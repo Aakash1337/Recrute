@@ -246,12 +246,11 @@ def role_sections(text: str, titles: list[str]) -> dict[str, str]:
 
     shared_lines = []
     for line in header.splitlines():
-        if _ALL_ROLES.search(line):  # "All roles (including Security Engineer) require ...":
-            shared_lines.append(line)  # about every role, even when it names one of them
-            continue
         kept = []
         for segment in re.split(r"\s+[|•·]\s+", line):
-            if not any(lt in segment.lower() for _, lt in low):
+            # "All roles (including Security Engineer) require ...": about every role, even when
+            # it names one. Only that clause: another segment can still belong to one role.
+            if _ALL_ROLES.search(segment) or not any(lt in segment.lower() for _, lt in low):
                 kept.append(segment)
                 continue
             for item in items(segment):

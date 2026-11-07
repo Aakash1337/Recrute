@@ -104,7 +104,8 @@ def approve(session: Session, job_id: int, rev: str, *, override_blocks: bool = 
                          reason="acknowledged blocking flags" if blocks else None))
     session.add(StatusEvent(job_id=job_id, status=JobStatus.APPROVED, note="CP2 go ahead"))
     session.commit()
-    _save_to_bank(job, packet)
+    company = session.get(Company, job.company_id) if job.company_id else None
+    _save_to_bank(job, packet, company.name if company else "")
 
 
 _JOB_SPECIFIC = re.compile(
@@ -112,9 +113,10 @@ _JOB_SPECIFIC = re.compile(
     r"this (role|position|company|job|team)|cover letter)\b", re.IGNORECASE)
 
 
-def _save_to_bank(job: Job, packet: Packet) -> None:
+def _save_to_bank(job: Job, packet: Packet, company: str = "") -> None:
     """PLAN 3.6: newly drafted answers you approved become reusable answer-bank entries.
-    Job-specific prose ("why us?", cover letters) is not reused."""
+    Job-specific prose ("why us?", cover letters, anything naming this employer) is not reused:
+    a banked answer goes to the next employer unhighlighted."""
     from recrute.paths import get_paths
     from recrute.tailor import add_answer
 
@@ -131,7 +133,9 @@ def _save_to_bank(job: Job, packet: Packet) -> None:
             continue
         # job-specific wording may sit in the help text: judge the FULL question
         if _JOB_SPECIFIC.search(f"{q.label} {q.description}") or (
-                job.title and job.title.lower() in a.value.lower()):
+                job.title and job.title.lower() in a.value.lower()) or (
+                company.strip() and re.search(rf"\b{re.escape(company.strip())}\b", a.value,
+                                              re.IGNORECASE)):
             continue
         from recrute.tailor.answers import is_sensitive_question, is_sensitive_text
 

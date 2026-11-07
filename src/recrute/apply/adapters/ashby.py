@@ -49,8 +49,11 @@ def ashby_ids(job: Job) -> tuple[str | None, str | None]:
 
 def parse_form(data: dict[str, Any]) -> list[FormQuestion]:
     """GraphQL ApiJobPosting response -> FormQuestions keyed by field path."""
-    posting = (data.get("data") or {}).get("jobPosting") or {}
-    form = posting.get("applicationForm") or {}
+    # (GraphQL reports failures with HTTP 200: that isn't a form with no questions)
+    posting = (data.get("data") or {}).get("jobPosting")
+    form = (posting or {}).get("applicationForm")
+    if data.get("errors") or not form or form.get("sections") is None:
+        raise ValueError("Ashby returned no application form")
     out: list[FormQuestion] = []
     for section in form.get("sections") or []:
         for entry in section.get("fieldEntries") or []:

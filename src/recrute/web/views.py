@@ -47,7 +47,8 @@ def login(request: Request, token: Annotated[str, Form()], next: Annotated[str, 
 
     if not token_matches(token.strip(), access_token()):
         return page(request, "login.html", {"next": next, "error": "wrong token"})
-    resp = RedirectResponse(next if next.startswith("/") and not next.startswith("//") else "/",
+    safe = next.startswith("/") and not next.startswith("//") and "\\" not in next
+    resp = RedirectResponse(next if safe else "/",
                             status_code=303)
     resp.set_cookie(COOKIE, access_token(), httponly=True, samesite="strict",
                     secure=request.url.scheme == "https", max_age=60 * 60 * 24 * 90)

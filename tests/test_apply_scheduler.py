@@ -1235,3 +1235,21 @@ def test_trial_counts_only_clean_fills(session):
         session.add(app)
     session.commit()
     assert supervised_success_count(session, "greenhouse") == 1
+
+
+def test_rate_limit_pauses_the_channel_for_what_the_site_asked(session, paths):
+    """Re-audit: only that job stopped; the next one on the channel went straight back."""
+    from recrute.apply.state import suspension
+
+    graduate(session)
+    add_app(session, 1)
+
+    class RateLimited(FakeRunner):
+        def __call__(self, job_, packet, **kw):
+            out = super().__call__(job_, packet, **kw)
+            out.details["rate_limited_for"] = 7200.0
+            return out
+
+    due(session, paths, RateLimited(status="needs_human", reason="blocker: HTTP 429"))
+    assert suspension(session, "greenhouse", at(13)) is not None
+    assert suspension(session, "greenhouse", at(15)) is None

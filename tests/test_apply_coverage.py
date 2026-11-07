@@ -505,3 +505,16 @@ def test_lever_eeo_in_li_blocks_keeps_its_description():
                      options=["Asian", "White"],
                      description="AsianA person having origins in the Far East.")
     assert same_question(race, live)
+
+
+@pytest.mark.parametrize("data", [
+    {"errors": [{"message": "boom"}], "data": None},
+    {"data": {"jobPosting": None}},
+    {"data": {"jobPosting": {"applicationForm": None}}},
+])
+def test_ashby_error_is_a_failed_fetch_not_a_form_without_questions(data):
+    """Re-audit: GraphQL reports failures with HTTP 200, so review showed an empty form."""
+    from recrute.apply.adapters.ashby import parse_form
+
+    with pytest.raises(ValueError):
+        parse_form(data)

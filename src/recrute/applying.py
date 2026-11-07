@@ -53,6 +53,7 @@ class LazyBrowser:
         self.ctx = ctx
         self._cm = None
         self.context = None
+        self._opened: list = []  # tabs opened for this work (blank only if their load failed)
 
     def __call__(self):
         if self.context is None:
@@ -60,7 +61,9 @@ class LazyBrowser:
 
             self._cm = open_context(self.ctx.config.browser, self.ctx.paths)
             self.context = self._cm.__enter__()
-        return self.context.new_page()
+        page = self.context.new_page()
+        self._opened.append(page)
+        return page
 
     def wait_for_human(self, timeout: float = PAUSE_WAIT_SECONDS,
                        job_id: int | None = None) -> None:
@@ -77,9 +80,9 @@ class LazyBrowser:
         try:
             while time.monotonic() < deadline and not self.ctx.stop.is_set():
                 # (a persistent context keeps its initial blank tab: closing the form's tab
-                # still means you're done)
-                pages = [p for p in self.context.pages
-                         if not p.is_closed() and p.url != "about:blank"]
+                # still means you're done. One of ours that failed to load is still yours.)
+                pages = [p for p in self.context.pages if not p.is_closed()
+                         and (p.url != "about:blank" or any(p is o for o in self._opened))]
                 if not pages:
                     return
                 page = pages[-1]

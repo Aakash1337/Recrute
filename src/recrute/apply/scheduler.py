@@ -841,10 +841,14 @@ def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: d
 
         _keep_trying(stop_channel)
         log.warning("channel %s suspended: %s", channel, outcome.reason)
-    elif outcome.details.get("browser_unavailable"):
+    elif outcome.details.get("browser_unavailable") or outcome.details.get("rate_limited_for"):
+        wait = BROWSER_DOWN_WAIT
+        if asked := outcome.details.get("rate_limited_for"):
+            wait = timedelta(seconds=min(float(asked), 86400.0))  # (a day at most: you can resume)
+
         def pause_channel() -> None:
             with Session(session.get_bind()) as s:
-                suspend(s, channel, now, outcome.reason, BROWSER_DOWN_WAIT)
+                suspend(s, channel, now, outcome.reason, wait)
 
         _keep_trying(pause_channel)
     base.finalized = _keep_trying(
