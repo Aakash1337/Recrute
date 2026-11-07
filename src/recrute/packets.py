@@ -13,7 +13,7 @@ import re
 from sqlalchemy import exists, update
 from sqlmodel import Session, col, select
 
-from recrute.models import Application, Decision, Job, JobStatus, StatusEvent, utcnow
+from recrute.models import Application, Company, Decision, Job, JobStatus, StatusEvent, utcnow
 from recrute.schemas import FormAnswer, Packet
 
 log = logging.getLogger(__name__)
@@ -178,7 +178,8 @@ def edit(session: Session, job_id: int, rev: str, answers: dict[str, str | list[
                     raise PacketError(f"{q.label}: the cover letter is longer than the field's "
                                       f"{q.max_length} characters")
                 _set_answer(packet, q.id, text)
-        packet = _rerender_cover_letter(job, packet)
+        company = session.get(Company, job.company_id) if job.company_id else None
+        packet = _rerender_cover_letter(job, packet, company.name if company else "")
     new_rev = _store(session, app, packet, rev)
     session.add(Decision(job_id=job_id, checkpoint="CP2", action="edit"))
     session.commit()
@@ -230,7 +231,7 @@ def _set_answer(packet: Packet, qid: str, value) -> None:
         a.needs_review = False  # reviewed as-is
 
 
-def _rerender_cover_letter(job: Job, packet: Packet) -> Packet:
+def _rerender_cover_letter(job: Job, packet: Packet, company: str = "") -> Packet:
     """Edited letters get a NEW, uniquely named file (never overwriting a file an earlier or
     concurrent revision points to), and the packet's artifact fingerprints are updated."""
     import uuid
@@ -248,7 +249,8 @@ def _rerender_cover_letter(job: Job, packet: Packet) -> Packet:
     stem = old.stem.split("_edited_")[0]
     new = old.with_name(f"{stem}_edited_{uuid.uuid4().hex[:12]}{old.suffix}")
     paragraphs = [p.strip() for p in packet.cover_letter.split("\n\n") if p.strip()]
-    render_cover_letter(load_profile(paths), paragraphs, new, job_title=job.title, paths=paths)
+    render_cover_letter(load_profile(paths), paragraphs, new, company=company,
+                        job_title=job.title, paths=paths)
     rel = new.relative_to(paths.data).as_posix()
     for a in packet.answers:  # file-upload answers that pointed at the old letter
         if a.value == old_rel:
@@ -260,7 +262,10 @@ def _rerender_cover_letter(job: Job, packet: Packet) -> Packet:
 
 
 def regenerate(session: Session, job_id: int, rev: str, note: str) -> None:
-    """Back to the packet builder with a steering note ("emphasize the Kafka work")."""
+    """Back to the packet builder with a steering note ("emphasize the Kafka work"). The note is
+    required: the same prompt returns the same cached draft."""
+    if not note.strip():
+        raise PacketError("say what to change: without a note you'd get the same draft back")
     job, app, packet = load(session, job_id)
     _transition(session, job_id, [JobStatus.PACKET_READY], JobStatus.SHORTLISTED, rev)
     packet.user_note = note.strip()

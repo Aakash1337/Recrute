@@ -22,10 +22,14 @@ def channel_for(job: Job) -> str:
     return adapter_for(job).name
 
 
+class QuestionsUnavailableError(Exception):
+    """The form's questions couldn't be read (as opposed to a form that has none)."""
+
+
 def fetch_questions(job: Job, paths: Paths, session: Session | None = None) -> list[FormQuestion]:
     """The live form's questions, fetched BEFORE CP2 so you approve exactly what gets sent.
     Unknown forms/LinkedIn may return [] here; their fields are handled at fill time (from your
-    answer bank) or handed to you."""
+    answer bank) or handed to you. A failed fetch raises QuestionsUnavailableError."""
     adapter = adapter_for(job)
     kwargs = {}
     if adapter.name == "greenhouse" and session is not None and job.company_id:
@@ -37,7 +41,7 @@ def fetch_questions(job: Job, paths: Paths, session: Session | None = None) -> l
         return adapter.fetch_questions(job, http, **kwargs)
     except (HttpError, ValueError) as e:
         log.warning("could not pre-fetch questions for job %s (%s): %s", job.id, adapter.name, e)
-        return []
+        raise QuestionsUnavailableError(adapter.name) from e
     finally:
         http.close()
 

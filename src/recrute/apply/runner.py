@@ -24,6 +24,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlsplit
 
 from recrute.apply.adapters import adapter_for
 from recrute.apply.base import Adapter, BlockedError, FillReport, blocker_kind
@@ -199,7 +200,10 @@ def apply_job(job: Job, packet: Packet, *, mode: Mode,
         return ", ".join(labels.get(i, i) for i in ids)
 
     try:
-        response = page.goto(adapter.start_url(job), wait_until="domcontentloaded")
+        start_url = adapter.start_url(job)
+        if urlsplit(start_url).scheme.lower() not in ("http", "https"):
+            return done("needs_human", "the job's link isn't a web address", check_blockers=False)
+        response = page.goto(start_url, wait_until="domcontentloaded")
         adapter.wait_ready(page, ready_timeout)
         details["start_url"] = page.url
 

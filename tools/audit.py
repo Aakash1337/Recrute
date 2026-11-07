@@ -122,7 +122,16 @@ def run_sol(scope: str, model: str, effort: str, timeout: int) -> dict:
         proc = run_cli_audit(args, audit_prompt(scope), timeout)
         if proc.returncode != 0 or not out_file.exists():
             raise AuditError(f"exit {proc.returncode}:\n{proc.stderr[-3000:]}")
-        return json.loads(out_file.read_text(encoding="utf-8"))
+        return parse_sol(out_file.read_text(encoding="utf-8"))
+
+
+def parse_sol(text: str) -> dict:
+    from recrute.llm.base import LLMError, parse_structured
+
+    try:
+        return parse_structured("codex", text, FINDINGS_SCHEMA)
+    except LLMError as e:
+        raise AuditError(str(e)) from e
 
 
 def opus_args(claude: str, model: str, effort: str) -> list[str]:
@@ -143,6 +152,8 @@ def parse_opus(stdout: str, stderr: str, returncode: int) -> dict:
         envelope = json.loads(stdout)
     except json.JSONDecodeError as e:
         raise AuditError(f"exit {returncode}, not JSON:\n{stderr[-3000:]}") from e
+    if not isinstance(envelope, dict):
+        raise AuditError(f"exit {returncode}, unexpected output: {type(envelope).__name__}")
     if returncode != 0 or envelope.get("is_error") or envelope.get("subtype") != "success":
         raise AuditError(f"exit {returncode}, {envelope.get('subtype')}: "
                          f"{str(envelope.get('result'))[-1500:]}\n{stderr[-1500:]}")
@@ -226,7 +237,7 @@ def main() -> None:
     for name, job in jobs.items():
         try:
             report = job.result()
-        except AuditError as e:
+        except Exception as e:  # noqa: BLE001 - whatever it was, the other's findings are kept
             failed.append(name)
             print(f"audit by {name} failed: {e}", file=sys.stderr)
             continue

@@ -1528,3 +1528,27 @@ def test_unapproved_lever_location_never_passes(srv, context, paths, human, resu
     problems = adapter.presubmit_problems(page, packet, {"resume": resume})
     assert "location" in problems
     page.close()
+
+
+def test_link_that_is_not_a_web_address_never_reaches_the_browser(srv, context, paths, human,
+                                                                  resume):
+    j = job("file:///etc/passwd", "greenhouse")
+    out = run(j, gh_packet(resume), context, paths, human)
+    assert out.status == "needs_human" and "web address" in out.reason
+    assert out.details["page_left_open"] is False
+    assert out.details.get("final_url", "") in ("about:blank", "")
+
+
+def test_error_in_fill_and_pause_hands_over_instead_of_failing(srv, context, paths, human, resume,
+                                                               monkeypatch):
+    """Audit: 'failed' put it back in the drip queue while the form stayed open for you."""
+    from recrute.apply.adapters.greenhouse import GreenhouseAdapter
+
+    def boom(*a, **kw):
+        raise RuntimeError("selector gone")
+
+    monkeypatch.setattr(GreenhouseAdapter, "wait_ready", boom)
+    out = run(job(f"{srv.url}/greenhouse/acme/jobs/1001", "greenhouse"), gh_packet(resume),
+              context, paths, human, mode="fill_and_pause")
+    assert out.status == "needs_human" and out.details["page_left_open"] is True
+    assert srv.posts == []

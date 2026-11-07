@@ -4,12 +4,14 @@
 <p class="muted">The automation browser runs on the Recrute server. When it hands a form to you
 (CP3) or you open it below, it appears here: click on the picture to click in the browser, type
 in the box to type. Press <b>Done</b> when you've finished (e.g. after submitting).</p>
+{% if exposed %}<p class="warn">This connection isn't encrypted: what you type here, passwords included, and the pictures of the page can be read by anyone able to watch your network. Set up HTTPS (see the README) before using this for passwords.</p>{% endif %}
 <p id="live-status" hx-get="/live/status" hx-trigger="load, every 3s"></p>
 <div style="position:relative;display:inline-block;border:1px solid var(--line)">
   <img id="live-frame" alt="" style="max-width:100%;min-height:200px;cursor:crosshair">
 </div>
 <p>
-  <input id="live-text" placeholder="text to type into the focused field" size="50">
+  <input id="live-text" placeholder="text to type into the focused field" size="50" autocomplete="off">
+  <label class="muted"><input type="checkbox" onchange="document.getElementById('live-text').type = this.checked ? 'password' : 'text'"> hide</label>
   <button onclick="liveSend({type:'type', text: document.getElementById('live-text').value}); document.getElementById('live-text').value='';">Type</button>
   {% for k in ['Enter', 'Tab', 'Backspace', 'Escape', 'ArrowDown', 'ArrowUp'] %}
   <button onclick="liveSend({type:'key', key:'{{ k }}'})">{{ k }}</button>{% endfor %}

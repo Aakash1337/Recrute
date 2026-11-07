@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from recrute.paths import Paths
 from recrute.schemas import FormQuestion, Profile, ResumeSelection
+from recrute.tailor.answers import _ADDRESS_VALUE_RE, _EMAIL_VALUE_RE, _PHONE_IN_TEXT_RE
 from recrute.tailor.common import (
     STRS,
     Completer,
@@ -61,13 +62,28 @@ def load_voice_samples(paths: Paths, *, per_file: int = 1200, budget: int = 3000
             if not p.is_file() or p.suffix.lower() not in RESUME_SUFFIXES \
                     or p.name.startswith("."):
                 continue
-            text = " ".join(extract_text(p).split())
+            text = _voice_text(extract_text(p))
             if not text:
                 continue
             excerpt = truncate(text, min(per_file, budget - used))
-            chunks.append(f"--- {p.name}\n{excerpt}")
+            # (not the file's name: it can be personal)
+            chunks.append(f"--- sample {len(chunks) + 1}\n{excerpt}")
             used += len(excerpt)
     return "\n".join(chunks)
+
+
+_SALUTATION = re.compile(r"\b(?:dear|hello|hi|greetings|to whom)\b[^:,;]{0,80}[,:;]", re.I)
+
+
+def _voice_text(raw: str) -> str:
+    """Your writing, without what heads a letter (name, address, phone, recipient) or any contact
+    detail left in the body: only the voice is needed, and these never go to the LLM."""
+    text = " ".join(raw.split())
+    if (m := _SALUTATION.search(text[:1500])) is not None:
+        text = text[m.end():].strip()
+    for rx in (_EMAIL_VALUE_RE, _PHONE_IN_TEXT_RE, _ADDRESS_VALUE_RE):
+        text = rx.sub("[removed]", text)
+    return re.sub(r"\S*(?:https?://|www\.|linkedin\.com|github\.com)\S*", "[removed]", text)
 
 
 COVER_SCHEMA = obj(paragraphs=STRS, cited_ids=STRS)

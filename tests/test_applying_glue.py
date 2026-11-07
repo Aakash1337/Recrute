@@ -16,7 +16,9 @@ def test_channel_for_known_and_unknown():
     assert channel_for(other) == "generic"
 
 
-def test_fetch_questions_failure_is_empty(paths, monkeypatch):
+def test_failed_question_fetch_says_so(paths, monkeypatch):
+    """Audit: it looked like a form with no questions, and could even be auto-approved."""
+    from recrute.applying import QuestionsUnavailableError
     from recrute.http import HttpError
 
     def boom(self, url, **kw):
@@ -26,7 +28,8 @@ def test_fetch_questions_failure_is_empty(paths, monkeypatch):
     monkeypatch.setattr("recrute.http.Http.get_text", boom)
     job = Job(title="t", apply_url="https://job-boards.greenhouse.io/acme/jobs/1",
               canonical_url="c", ats="greenhouse")
-    assert fetch_questions(job, paths) == []
+    with pytest.raises(QuestionsUnavailableError):
+        fetch_questions(job, paths)
 
 
 def test_run_due_task_does_not_open_browser_when_idle(engine, paths):

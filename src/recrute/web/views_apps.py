@@ -2,6 +2,7 @@
 
 import threading
 import time
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -14,6 +15,7 @@ from recrute.db import session_scope
 from recrute.models import Application, Company, EmailEvent, Job, JobStatus
 from recrute.paths import get_paths
 from recrute.schemas import Packet
+from recrute.web.security import _is_loopback_ip, token_matches
 from recrute.web.views import page
 
 router = APIRouter()
@@ -67,7 +69,10 @@ def live_page(request: Request):
     from recrute import live
 
     with session_scope() as s:
-        return page(request, "live.html", {"info": live.frame_info(get_paths())}, s)
+        client = request.client.host if request.client else None
+        exposed = request.url.scheme != "https" and not _is_loopback_ip(client)
+        return page(request, "live.html", {"info": live.frame_info(get_paths()),
+                                           "exposed": exposed}, s)
 
 
 @router.get("/live/frame")
@@ -264,11 +269,16 @@ def applications_page(request: Request):
             groups[job.status.value].append((job, company, app))
         reminders = reminders_from_db(s, follow_up_days=get_setting(s, "follow_up_days"),
                                       ghost_days=get_setting(s, "ghost_days"))
+        from recrute.apply.state import suspension
         from recrute.models import Setting
 
-        suspended = [(r.key.removeprefix("state:suspend:"), r.value)
-                     for r in s.exec(select(Setting).where(
-                         col(Setting.key).startswith("state:suspend:"))).all() if r.value]
+        now = datetime.now(UTC)
+        suspended = []  # (what the scheduler actually enforces: an expired one is over)
+        for r in s.exec(select(Setting).where(
+                col(Setting.key).startswith("state:suspend:"))).all():
+            channel = r.key.removeprefix("state:suspend:")
+            if (active := suspension(s, channel, now)) is not None:
+                suspended.append((channel, active))
         return page(request, "applications.html", {"groups": groups, "reminders": reminders,
                                                    "suspended": suspended}, s)
 
@@ -276,9 +286,15 @@ def applications_page(request: Request):
 @router.post("/channels/{channel}/resume", response_class=HTMLResponse)
 def channel_resume(channel: str):
     from recrute.apply.state import clear_suspension
+    from recrute.settings import get_state, set_state
 
     with session_scope() as s:
         clear_suspension(s, channel)
+        if channel == "linkedin_easy_apply":  # (a security check pauses browsing too)
+            state = dict(get_state(s, "linkedin_session") or {})
+            if state.pop("blocked_until", None):
+                state.pop("block_reason", None)
+                set_state(s, "linkedin_session", state)
         s.commit()
     return _msg(f"{channel} resumed.")
 
@@ -475,14 +491,12 @@ def profile_accept(digest: Annotated[str, Form()] = "",
 async def api_capture(request: Request):
     """Browser extension endpoint. Auth: X-Recrute-Token (checked by the access middleware;
     this route additionally requires it even for local requests)."""
-    import hmac
-
     from recrute.capture.page import raw_job_from_capture
     from recrute.pipeline.ingest import ingest
     from recrute.web.app import access_token
 
     token = request.headers.get("x-recrute-token", "")
-    if not token or not hmac.compare_digest(token, access_token()):
+    if not token or not token_matches(token, access_token()):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     body = await request.body()
     if len(body) > MAX_CAPTURE_BYTES:

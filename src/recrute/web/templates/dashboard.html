@@ -31,13 +31,5 @@
 <p>{% for p, n in llm.items() %}<span class="badge">{{ p }}: {{ n }}</span> {% else %}<span class="muted">none yet</span>{% endfor %}</p>
 
 <h2>System checks</h2>
-<table>
-  {% for c in checks %}
-  <tr>
-    <td class="{{ 'ok' if c.ok else ('bad' if c.required else 'warn') }}">{{ '✔' if c.ok else ('✖' if c.required else '!') }}</td>
-    <td>{{ c.name }}</td>
-    <td class="muted">{{ c.detail }}</td>
-  </tr>
-  {% endfor %}
-</table>
+<div hx-get="/system-checks" hx-trigger="load"><p class="muted">Checking…</p></div>
 {% endblock %}

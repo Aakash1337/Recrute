@@ -870,3 +870,122 @@ def test_inbox_cursor_is_per_server(engine):
                        connect=lambda c: new)
         assert r["messages"] == 1  # UID 5 on the new server is not skipped
         assert get_state(s, "imap:me@example.com@imap.new.example:993:INBOX")["uid"] == 5
+
+
+# --------------------------------------------------------------------------- full audit, Nov 2026
+
+
+def test_failed_question_fetch_is_flagged_at_cp2(engine, monkeypatch, paths):
+    from types import SimpleNamespace
+
+    from recrute import tasks
+    from recrute.applying import QuestionsUnavailableError
+    from recrute.models import Application, Job, JobStatus
+    from recrute.schemas import Packet
+
+    def failed(job, p, s=None):
+        raise QuestionsUnavailableError("greenhouse")
+
+    monkeypatch.setattr("recrute.applying.fetch_questions", failed)
+    ctx = SimpleNamespace(paths=paths, router=None)
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://x", canonical_url="c",
+                  status=JobStatus.SHORTLISTED)
+        s.add(job)
+        s.commit()
+        tasks.build_packet_for(ctx, s, job, None, None,
+                               lambda job, questions, **kw: Packet(job_id=job.id))
+        app = s.exec(select(Application).where(Application.job_id == job.id)).one()
+        flags = Packet.model_validate(app.packet).flags
+    assert [f.where for f in flags] == ["form"] and flags[0].severity == "warn"
+
+
+def test_regenerate_needs_a_note(client):
+    """Audit: the same prompt returns the same cached draft, after you waited for a rebuild."""
+    job_id = _seed_packet()
+    r = client.post(f"/packets/{job_id}/regenerate", data={"note": " ", "rev": _rev(job_id)},
+                    headers=HX)
+    assert r.status_code == 409 and "say what to change" in r.text
+    assert _status(job_id) == "packet_ready"
+
+
+def test_editing_a_cover_letter_keeps_its_company(client, monkeypatch):
+    """Audit: any edit turned 'Dear Acme Hiring Team' into 'Dear Hiring Manager'."""
+    from recrute import packets
+    from recrute.db import get_engine
+    from recrute.models import Job
+
+    seen = {}
+    monkeypatch.setattr(packets, "_rerender_cover_letter",
+                        lambda job, packet, company="": seen.update(company=company) or packet)
+    job_id = _seed_packet(flags=[])
+    with Session(get_engine()) as s:
+        job = s.get(Job, job_id)
+        app, packet = packets.load(s, job_id)[1:]
+        packet.cover_letter, packet.cover_letter_pdf = "Old.", "packets/x.pdf"
+        data = packet.model_dump(mode="json")
+        app.packet, app.packet_rev = data, packets.revision(data)
+        s.add(app)
+        s.commit()
+        assert job.company_id
+        rev = app.packet_rev
+    r = client.post(f"/packets/{job_id}/edit",
+                    data={"rev": rev, "cover_letter": "New.", "then_approve": "0"}, headers=HX)
+    assert r.status_code == 200 and seen["company"] == "Acme"
+
+
+def test_expired_suspension_is_not_shown_and_resume_clears_linkedin_browsing(client):
+    from datetime import UTC, datetime, timedelta
+
+    from recrute.apply.state import suspend
+    from recrute.db import get_engine
+    from recrute.settings import get_state, set_state
+
+    now = datetime.now(UTC)
+    with Session(get_engine()) as s:
+        suspend(s, "greenhouse", now - timedelta(days=2), "old", timedelta(hours=1))
+        suspend(s, "linkedin_easy_apply", now, "LinkedIn browsing: checkpoint", timedelta(days=3))
+        set_state(s, "linkedin_session", {"blocked_until": (now + timedelta(days=3)).isoformat(),
+                                          "block_reason": "checkpoint", "views": 3})
+        s.commit()
+    page = client.get("/applications").text
+    assert "linkedin_easy_apply submissions are paused" in page
+    assert "greenhouse submissions are paused" not in page
+    assert client.post("/channels/linkedin_easy_apply/resume", headers=HX).status_code == 200
+    with Session(get_engine()) as s:
+        assert get_state(s, "linkedin_session") == {"views": 3}
+
+
+def test_dashboard_renders_without_running_the_checks(client, monkeypatch):
+    """Audit: every load ran the CLIs: slow on the old laptop, and a hung one stalled the page."""
+    def forbidden(*a, **kw):
+        raise AssertionError("ran the checks during the page load")
+
+    monkeypatch.setattr("recrute.web.views.run_checks", forbidden)
+    page = client.get("/")
+    assert page.status_code == 200 and 'hx-get="/system-checks"' in page.text
+
+
+def test_system_checks_fragment(client):
+    assert "database" in client.get("/system-checks").text
+
+
+def test_non_ascii_token_is_refused_not_an_error(client):
+    """Audit: compare_digest raises on non-ASCII text, a 500 for any LAN client."""
+    r = client.post("/login", data={"token": "pässwörd", "next": "/"})
+    assert r.status_code == 200 and "wrong token" in r.text
+    r = client.get("/queue", headers={"Host": "evil.example",
+                                      "X-Recrute-Token": "p\xe4ss".encode("latin-1")},
+                   follow_redirects=False)
+    assert r.status_code == 303
+
+
+def test_login_cookie_is_secure_over_https(client):
+    from recrute.web.app import access_token
+
+    r = client.post("https://testserver/login", data={"token": access_token(), "next": "/"},
+                    follow_redirects=False)
+    assert "secure" in r.headers["set-cookie"].lower()
+    r = client.post("http://testserver/login", data={"token": access_token(), "next": "/"},
+                    follow_redirects=False)
+    assert "secure" not in r.headers["set-cookie"].lower()

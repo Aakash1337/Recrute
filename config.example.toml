@@ -3,6 +3,9 @@
 [server]
 host = "127.0.0.1"   # use "0.0.0.0" on the LAN server so other machines can reach the UI
 port = 8765
+# On a LAN, use HTTPS: the live browser view carries the passwords you type. Both, or neither:
+# ssl_certfile = "data/tls/cert.pem"
+# ssl_keyfile = "data/tls/key.pem"
 
 [browser]
 # "chrome" = your installed Google Chrome (recommended), "msedge", or "" for bundled Chromium

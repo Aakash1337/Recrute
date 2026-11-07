@@ -326,7 +326,9 @@ Details:
   type there (passwords, verification codes) and the screenshots (which can show it) are kept in
   memory only and never written to disk, so the live view needs the worker in the web server's
   process (`recrute serve --worker`). Input is bound to the exact tab shown: a popup or a
-  navigation since the picture you acted on drops it.
+  navigation since the picture you acted on drops it. "Never written to disk" says nothing about
+  the network: over plain HTTP on the LAN all of this travels unencrypted, so the page warns you
+  and `[server] ssl_certfile`/`ssl_keyfile` turn on HTTPS.
 
 ### Stack
 Decided on **Python**. It was switched from Go after you made "fewest problems, and best at

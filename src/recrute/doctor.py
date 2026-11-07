@@ -25,7 +25,8 @@ def _version(command: str) -> str | None:
     if not path:
         return None
     try:
-        out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=20)
+        out = subprocess.run([path, "--version"], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", timeout=20)
         return (out.stdout or out.stderr).strip().splitlines()[0]
     except (OSError, subprocess.TimeoutExpired, IndexError):
         return "installed (version unknown)"

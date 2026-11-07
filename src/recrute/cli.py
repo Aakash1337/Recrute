@@ -95,7 +95,9 @@ def serve(host: str | None = None, port: int | None = None,
 
         w.start()
     cfg = get_config().server
-    uvicorn.run("recrute.web.app:app", host=host or cfg.host, port=port or cfg.port)
+    tls = {"ssl_certfile": cfg.ssl_certfile, "ssl_keyfile": cfg.ssl_keyfile} \
+        if cfg.ssl_certfile and cfg.ssl_keyfile else {}
+    uvicorn.run("recrute.web.app:app", host=host or cfg.host, port=port or cfg.port, **tls)
 
 
 @app.command("worker")

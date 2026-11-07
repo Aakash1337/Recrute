@@ -132,7 +132,7 @@ def auto_approve_reason(job: Job, packet: Packet, rule: dict) -> str | None:
         return None
     if packet.generated_at is None or not packet.resume_pdf:
         return None  # never verified/rendered by the packet builder
-    if packet.flags:
+    if packet.flags or not packet.questions:  # (no questions: nothing you could have approved)
         return None
     # (your own, unchanged profile summary is not new wording; older packets lacking the
     # provenance flag default to "generated")

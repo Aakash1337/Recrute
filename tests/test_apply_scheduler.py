@@ -1075,3 +1075,48 @@ def test_lock_stamp_survives_the_database_with_its_timezone(engine):
         stamp = acquire_lock(s, "me", datetime.now(UTC), timedelta(minutes=5))
     with Session(engine) as s:
         assert s.get(Setting, LOCK_KEY).updated_at == stamp
+
+
+def test_finalize_holding_the_write_lock_does_not_wait_for_a_renewal(engine):
+    """Found by raising the busy timeout: finalize held the write lock and asked held(), which
+    wanted the mutex; the heartbeat held the mutex, waiting for the write lock."""
+    import threading
+    import time as _time
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import update
+
+    from recrute.apply.state import Lease
+    from recrute.models import Setting
+
+    lease = Lease(engine, "me", timedelta(minutes=5), lambda: datetime.now(UTC))
+    assert lease.acquire()
+    result = {}
+    with Session(engine) as writer:  # (what finalize does before it asks)
+        writer.execute(update(Setting).values(key=Setting.key)
+                       .execution_options(synchronize_session=False))
+        thread = threading.Thread(target=lambda: result.update(renewed=lease.renew()))
+        thread.start()
+        _time.sleep(0.2)  # the renewal is now waiting for the write lock
+        started = _time.monotonic()
+        assert lease.held() is True
+        assert _time.monotonic() - started < 2
+        writer.commit()
+    thread.join(10)
+    assert result["renewed"] is True and lease.held() is True
+
+
+def test_a_renewal_that_lost_the_lock_leaves_the_lease_lost(engine):
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import delete
+
+    from recrute.apply.state import LOCK_KEY, Lease
+    from recrute.models import Setting
+
+    lease = Lease(engine, "me", timedelta(minutes=5), lambda: datetime.now(UTC))
+    assert lease.acquire()
+    with Session(engine) as s:
+        s.execute(delete(Setting).where(Setting.key == LOCK_KEY))
+        s.commit()
+    assert lease.renew() is False and lease.stamp is None and lease.held() is False

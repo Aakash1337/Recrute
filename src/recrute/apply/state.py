@@ -126,6 +126,7 @@ class Lease:
     def __init__(self, bind: Any, owner: str, ttl: timedelta, clock: Callable[[], datetime]):
         self.bind, self.owner, self.ttl, self.clock = bind, owner, ttl, clock
         self.stamp: datetime | None = None
+        self._renewing: datetime | None = None  # the stamp a renewal in flight is writing
         self.renewals = 0
         self._mu = threading.Lock()
         self._stop = threading.Event()
@@ -137,36 +138,53 @@ class Lease:
         return self.stamp is not None
 
     def renew(self) -> bool:
+        # The mutex is never held while waiting on the database: finalize calls held() while it
+        # holds the write lock, and each would wait for the other until the busy timeout.
         with self._mu:
-            if self.stamp is None:
+            current = self.stamp
+            if current is None:
                 return False
             new = _utc(self.clock())
-            if new <= self.stamp:
-                new = self.stamp + timedelta(microseconds=1)
+            if new <= current:
+                new = current + timedelta(microseconds=1)
+            self._renewing = new
+        renewed = False
+        try:
             with Session(self.bind) as s:
                 res = s.execute(
                     update(Setting).where(Setting.key == LOCK_KEY,  # type: ignore[arg-type]
-                                          Setting.updated_at == self.stamp)
+                                          Setting.updated_at == current)
                     .values(updated_at=new, value={"owner": self.owner, "at": new.isoformat()})
                     .execution_options(synchronize_session=False))
-                if res.rowcount == 1:  # type: ignore[attr-defined]
+                renewed = res.rowcount == 1  # type: ignore[attr-defined]
+                if renewed:
                     s.commit()
-                    self.stamp = new
-                    self.renewals += 1
-                    return True
-                s.rollback()
-            self.stamp = None  # somebody else holds it now
-            return False
+                else:
+                    s.rollback()
+        except Exception:
+            with self._mu:
+                self._renewing = None
+            raise
+        with self._mu:
+            self._renewing = None
+            if not renewed:
+                self.stamp = None  # somebody else holds it now
+                return False
+            self.stamp = new
+            self.renewals += 1
+            return True
 
     def held(self) -> bool:
         """Still ours and not expired (a stale holder must not act even if nobody took over
         yet: another worker may do so at any moment)."""
         with self._mu:
-            if self.stamp is None or self.clock() - self.stamp >= self.ttl:
-                return False
-            with Session(self.bind) as s:
-                row = s.get(Setting, LOCK_KEY)
-                return row is not None and row.updated_at == self.stamp
+            stamp, renewing = self.stamp, self._renewing
+        if stamp is None or self.clock() - stamp >= self.ttl:
+            return False
+        with Session(self.bind) as s:
+            row = s.get(Setting, LOCK_KEY)
+            # (a renewal may have committed just before it got to update self.stamp)
+            return row is not None and row.updated_at in (stamp, renewing)
 
     def start_heartbeat(self, interval: float) -> None:
         def beat() -> None:

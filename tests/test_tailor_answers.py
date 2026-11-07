@@ -1882,3 +1882,28 @@ def test_hispanic_question_polarity(label, description, value, options, expected
     from recrute.tailor.answers import match_eeo_option
 
     assert match_eeo_option("eeo_hispanic", value, options, label, description) == expected
+
+
+def test_voice_samples_keep_the_writing_but_no_contact_details(paths):
+    """Audit: a letter's start is its letterhead, and that went to the LLM with the file's name."""
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    folder = paths.resources / "cover_letters"
+    (folder / "Ada_Lovelace_Acme.txt").write_text(
+        "Ada Lovelace\n12 Main Street, Austin, TX 78701\nada@example.com | (415) 555-0177\n"
+        "linkedin.com/in/ada\n\nDear Ms. Byron,\n\nI like plain sentences. Reach me at "
+        "ada2@example.com or https://ada.example/me about the work.\n", encoding="utf-8")
+    samples = load_voice_samples(paths)
+    assert "I like plain sentences." in samples and "about the work" in samples
+    for private in ("12 Main Street", "78701", "ada@example.com", "ada2@example.com", "555-0177",
+                    "linkedin.com", "ada.example", "Ada_Lovelace", "Lovelace", "Byron"):
+        assert private not in samples, private
+
+
+def test_voice_sample_without_a_salutation_still_loses_contact_details(paths):
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    (paths.resources / "writing" / "essay.txt").write_text(
+        "I write short. Email me at ada@example.com.", encoding="utf-8")
+    samples = load_voice_samples(paths)
+    assert "I write short." in samples and "ada@example.com" not in samples

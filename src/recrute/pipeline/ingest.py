@@ -1,8 +1,10 @@
 """Upsert RawJobs into the DB with deduplication and company-registry maintenance."""
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, col, select
@@ -16,6 +18,8 @@ from recrute.pipeline.normalize import (
     normalize_company,
 )
 from recrute.schemas import RawJob
+
+log = logging.getLogger(__name__)
 
 # A fuzzy (company+title) match only merges with jobs seen this recently; older ones are
 # treated as a new opening (reposts are common).
@@ -236,6 +240,10 @@ def _retarget_unsent_application(session: Session, job: Job) -> None:
 def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
     """Upsert one posting (runs inside a savepoint; see ingest)."""
     target, canon = job_canonical(raw)
+    if urlsplit(target).scheme.lower() not in ("http", "https"):
+        # scraped data: the logged-in browser must only ever be sent to a web page
+        log.warning("skipping a posting from %s: its link isn't a web address", raw.source)
+        return
     fkey = fuzzy_key(raw.company, raw.title, raw.locations)
     desc = description_markdown(raw.description_html, raw.description_text)
     job = _find_existing(session, raw, canon, fkey)

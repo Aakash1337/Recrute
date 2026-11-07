@@ -104,6 +104,11 @@ you're viewing into Recrute (read-only; no automation on the site).
 Access control: requests from the machine itself need no login. LAN clients need the token.
 Every state-changing request is CSRF-protected.
 
+**Use HTTPS on a LAN.** Plain HTTP sends the token, and anything you type in the Live browser
+page, passwords included, unencrypted across your network. Make a certificate on the laptop
+(`mkcert` or `openssl`), then set `ssl_certfile` and `ssl_keyfile` under `[server]` in
+`recrute.toml`. Until you do, that page warns you.
+
 ## Development
 
 ```sh

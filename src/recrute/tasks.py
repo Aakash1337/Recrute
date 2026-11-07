@@ -10,6 +10,7 @@ from recrute.models import Application, Company, Job, JobStatus, StatusEvent, ut
 from recrute.pipeline.score import score_pending
 from recrute.pipeline.stages import filter_new
 from recrute.review import unsnooze_due
+from recrute.schemas import VerifierFlag
 from recrute.settings import get_setting, get_state, set_state
 
 log = logging.getLogger("recrute.tasks")
@@ -71,8 +72,15 @@ def refresh_job_badges(session) -> int:
 
 
 def filter_jobs(ctx) -> dict:
+    from recrute.apply.scheduler import blocked_companies, company_events
+
     with ctx.session() as s:
-        return filter_new(s, ctx.criteria, badge_fn=make_badge_fn(ctx.paths))
+        # applied there recently: no LLM or review time until the cooldown ends
+        waiting = blocked_companies(
+            company_events(s), datetime.now(UTC), cap=int(get_setting(s, "company_cap")),
+            cooldown=timedelta(days=int(get_setting(s, "company_cooldown_days"))))
+        return filter_new(s, ctx.criteria, badge_fn=make_badge_fn(ctx.paths),
+                          waiting_companies=waiting)
 
 
 def score_jobs(ctx) -> dict:
@@ -236,7 +244,7 @@ def build_packet_for(ctx, session, job: Job, profile, bank, build_packet, user_n
     therefore never overwrite a newer decision."""
     from sqlalchemy import update
 
-    from recrute.applying import fetch_questions
+    from recrute.applying import QuestionsUnavailableError, fetch_questions
     from recrute.insights import auto_approve_reason
     from recrute.packets import revision
 
@@ -244,10 +252,18 @@ def build_packet_for(ctx, session, job: Job, profile, bank, build_packet, user_n
     # the target this build is FOR: publication requires it to be unchanged
     target = (job.apply_url, job.ats, job.ats_job_id)
     company = session.get(Company, job.company_id) if job.company_id else None
-    questions = fetch_questions(job, ctx.paths, session)
+    try:
+        questions, fetch_failed = fetch_questions(job, ctx.paths, session), False
+    except QuestionsUnavailableError:
+        questions, fetch_failed = [], True
     packet = build_packet(job, questions, profile=profile, bank=bank, router=ctx.router,
                           paths=ctx.paths, user_note=user_note,
                           company=company.name if company else "")
+    if fetch_failed:  # (a flag also keeps it from being auto-approved)
+        packet.flags.append(VerifierFlag(
+            where="form", text="questions not read", severity="warn",
+            reason="the form's questions couldn't be fetched, so none are answered here. "
+                   "Regenerate to try again; otherwise it will likely come back to you"))
     session.commit()  # nothing held across the slow build
     reason = auto_approve_reason(job, packet, get_setting(session, "auto_approve"))
     status = JobStatus.APPROVED if reason else JobStatus.PACKET_READY

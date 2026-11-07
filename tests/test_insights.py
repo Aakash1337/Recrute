@@ -11,7 +11,7 @@ from recrute.models import (
     JobStatus,
     Priority,
 )
-from recrute.schemas import FormAnswer, Packet, VerifierFlag
+from recrute.schemas import FormAnswer, FormQuestion, Packet, VerifierFlag
 
 
 def _job(s, i, **kw):
@@ -62,6 +62,7 @@ def test_auto_approve_rules():
     from datetime import UTC, datetime
 
     clean = Packet(job_id=1, resume_pdf="packets/1/r.pdf", generated_at=datetime.now(UTC),
+                   questions=[FormQuestion(id="q", label="Q")],
                    answers=[FormAnswer(question_id="q", value="x", source="answer_bank",
                                        needs_review=False)])
     rule = {"enabled": True, "min_score": 85, "priorities": ["P0", "P1"]}
@@ -107,7 +108,11 @@ def test_unchanged_profile_summary_keeps_auto_approval():
     assert sel.summary == prof.summary and sel.summary_generated is False
     job = Job(title="t", apply_url="u", canonical_url="u", priority=Priority.P1, score=95)
     rule = {"enabled": True, "min_score": 85, "priorities": ["P1"]}
-    base = dict(job_id=1, resume_pdf="p.pdf", generated_at=datetime.now(UTC))
+    base = dict(job_id=1, resume_pdf="p.pdf", generated_at=datetime.now(UTC),
+                questions=[FormQuestion(id="q", label="Q")])
     assert auto_approve_reason(job, Packet(**base, resume=sel), rule) is not None
+    # no questions on it: nothing you could have approved (a failed fetch looks like this)
+    no_form = {k: v for k, v in base.items() if k != "questions"}
+    assert auto_approve_reason(job, Packet(**no_form, resume=sel), rule) is None
     fresh = ResumeSelection(summary="Brand-new wording.")
     assert auto_approve_reason(job, Packet(**base, resume=fresh), rule) is None

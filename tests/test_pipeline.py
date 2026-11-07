@@ -901,3 +901,46 @@ def test_retarget_after_handoff_revokes_approval_and_blocks_assist(engine):
             packets.request_assist(s, job.id)  # no assisted fill of the old packet
         packets.rebuild(s, job.id)  # recovery: a fresh packet for the new form
         assert s.get(Job, job.id).status == JobStatus.SHORTLISTED
+
+
+# --- full audit, Nov 2026 -------------------------------------------------------------------
+
+
+def test_jobs_at_a_company_in_cooldown_wait_without_using_the_llm(engine):
+    """PLAN 3.4: 'already applied to this company in the last N days' is a hard filter, before
+    any LLM call. They wait rather than being dropped: the cooldown ends."""
+    from recrute.criteria import Criteria
+    from recrute.models import Company, Job, JobStatus
+    from recrute.pipeline.stages import filter_new
+
+    session = Session(engine)
+    waiting, other = Company(name="Waiting"), Company(name="Other")
+    session.add_all([waiting, other])
+    session.flush()
+    for name, cid in (("a", waiting.id), ("b", other.id), ("c", None)):
+        session.add(Job(title="Security Analyst", apply_url=name, canonical_url=name,
+                        company_id=cid, description_md="x"))
+    session.commit()
+    filter_new(session, Criteria(), waiting_companies={waiting.id})
+    jobs = {j.canonical_url: j for j in session.exec(select(Job)).all()}
+    assert jobs["a"].priority is None and jobs["a"].status == JobStatus.DISCOVERED
+    assert jobs["b"].priority is not None and jobs["c"].priority is not None
+    filter_new(session, Criteria())  # the cooldown ended
+    session.refresh(jobs["a"])
+    assert jobs["a"].priority is not None
+
+
+def test_a_link_that_is_not_a_web_address_is_never_ingested(engine):
+    """Audit: scraped data decides where the logged-in browser goes."""
+    from recrute.models import Job
+    from recrute.pipeline.ingest import ingest
+    from recrute.schemas import RawJob
+
+    session = Session(engine)
+    for i, url in enumerate(("file:///etc/passwd", "javascript:alert(1)")):
+        ingest(session, [RawJob(source="x", source_job_id=str(i), title="Analyst", company="Acme",
+                                url=url)])
+    ingest(session, [RawJob(source="x", source_job_id="ok", title="Analyst", company="Acme",
+                            url="https://acme.example/jobs/1")])
+    assert [j.apply_url for j in session.exec(select(Job)).all()] == [
+        "https://acme.example/jobs/1"]

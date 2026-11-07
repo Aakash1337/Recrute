@@ -62,3 +62,22 @@ def test_one_auditor_failing_keeps_the_others_findings(monkeypatch, tmp_path, ca
     assert e.value.code == 1
     assert (tmp_path / "latest-opus.md").exists() and not (tmp_path / "latest-sol.md").exists()
     assert "usage limit" in capsys.readouterr().err
+
+
+def test_a_malformed_reply_keeps_the_others_findings(monkeypatch, tmp_path):
+    def garbage(*a):
+        return audit.parse_sol("not json")
+
+    monkeypatch.setattr(audit, "AUDIT_DIR", tmp_path)
+    monkeypatch.setitem(audit.RUNNERS, "sol", garbage)
+    monkeypatch.setitem(audit.RUNNERS, "opus", lambda *a: REPORT)
+    monkeypatch.setattr("sys.argv", ["audit.py"])
+    with pytest.raises(SystemExit):
+        audit.main()
+    assert (tmp_path / "latest-opus.md").exists()
+
+
+def test_sol_reply_is_checked_against_the_schema():
+    with pytest.raises(audit.AuditError):
+        audit.parse_sol(json.dumps({"summary": "no findings key"}))
+    assert audit.parse_sol(json.dumps(REPORT)) == REPORT
