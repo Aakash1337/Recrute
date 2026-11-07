@@ -23,11 +23,14 @@ discover → dedup → rules → LLM triage → 🧑 CP1 review → packet (resu
 
 ```sh
 uv sync
-uv run recrute init            # creates recrute.toml, data/, resources/, database
-uv run recrute doctor          # checks CLIs (and subscription auth), browser, resources
+uv run recrute init            # creates recrute.toml, data/, resources/ (answers + criteria), database
+uv run recrute doctor          # checks CLIs (and subscription auth), browser, your files
 uv run recrute llm test        # round-trips a prompt through claude and codex
 uv run recrute browser login   # log into LinkedIn/Google/etc. once in the dedicated profile
 uv run recrute browser probe   # shows what bot-detection scripts can see
+# add your resume and answers (below), then:
+uv run recrute profile ingest  # your resume -> data/profile.proposed.yaml, for you to review
+uv run recrute profile accept  # (or use the Profile page)
 uv run recrute serve --worker  # web UI at http://127.0.0.1:8765 + background worker
 ```
 
@@ -36,8 +39,8 @@ uv run recrute serve --worker  # web UI at http://127.0.0.1:8765 + background wo
 | File | Purpose |
 |---|---|
 | `resources/resume/*` | Your **mega resume**: everything you've done (md/docx/pdf/txt). `recrute profile ingest` structures it into `data/profile.yaml` for you to review. |
-| `resources/answers.yaml` | Answer bank for application forms (copy `answers.example.yaml`). |
-| `resources/criteria.yaml` | Tracks, filters, and thresholds (copy `criteria.example.yaml`). |
+| `resources/answers.yaml` | Answer bank for application forms (`recrute init` creates it from `answers.example.yaml`). Blank answers are asked at review. |
+| `resources/criteria.yaml` | Tracks, filters, and thresholds (`recrute init` creates it from `criteria.example.yaml`). |
 | `resources/cover_letters/`, `resources/writing/` | Voice/style samples. |
 
 The system never invents facts. Every claim it writes comes from these files, and a verifier
