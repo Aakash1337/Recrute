@@ -67,6 +67,7 @@ class SourceContext:
     # Filled by sources: "<ats>:<token>" (or "<source>") -> error message. Lets the caller set
     # Company.poll_error without one bad board aborting the whole run.
     errors: dict[str, str] = field(default_factory=dict)
+    retry_after: float | None = None  # seconds the site asked us to wait, if a block said so
     # Boards ("<ats>:<token>") whose listing was cut short (e.g. page cap). Their results are
     # not a full snapshot, so missing postings must NOT be treated as closed.
     incomplete: set[str] = field(default_factory=set)

@@ -1786,3 +1786,99 @@ def test_education_fields_come_from_one_entry():
     for label in ("School", "Major", "GPA"):
         a = profile_answer(FormQuestion(id="x", label=label), p)
         assert a is None or a.value in (None, ""), label  # two of the same level: ambiguous
+
+
+def _two_degrees():
+    from recrute.schemas import Education, Profile
+
+    return Profile(name="Ada", education=[
+        Education(id="m", school="Tech U", degree="Master of Science", end="2025",
+                  field="Security", gpa="3.9"),
+        Education(id="b", school="State U", degree="Bachelor of Science", end="2021",
+                  field="Physics", gpa="3.5")])
+
+
+def _value(label, profile, description=""):
+    from recrute.tailor.answer_questions import profile_answer
+
+    a = profile_answer(FormQuestion(id="x", label=label, description=description), profile)
+    return a.value if a else None
+
+
+@pytest.mark.parametrize("label,description,expected", [
+    # Audit: degrees named in the help text are examples, not a limit on "highest"
+    ("Highest degree", "Include bachelor's and master's degrees.", "Master of Science"),
+    ("Highest degree", "", "Master of Science"),
+    ("Degree", "Your highest completed degree, e.g. bachelor's", "Master of Science"),
+    # a label that limits it still does; levels in conflict are yours to answer
+    ("Degree (undergraduate)", "", "Bachelor of Science"),
+    ("Degree (Bachelor's)", "Do not list your master's here.", "Bachelor of Science"),
+    ("Degree", "Include bachelor's and master's degrees.", None),
+])
+def test_degree_questions_scope(label, description, expected):
+    assert _value(label, _two_degrees(), description) == expected
+
+
+def test_incidental_degree_in_help_text_does_not_change_highest_degree_fields():
+    p = _two_degrees()
+    assert _value("Major", p, "Of your highest degree (for example a bachelor's)") == "Security"
+    assert _value("School", p, "Your highest degree, e.g. bachelor's or master's") == "Tech U"
+
+
+def test_undergraduate_label_ignores_a_graduate_mention_in_its_help_text():
+    assert _value("Undergraduate GPA", _two_degrees(),
+                  "Do not include graduate coursework.") == "3.5"
+
+
+@pytest.mark.parametrize("label", ["GPA (Bachelor's degree)", "School (Bachelor's degree)",
+                                   "Major (Bachelor's degree)", "Bachelor's degree"])
+def test_bachelor_questions_never_take_an_associate_degree(label):
+    """Audit: 'GPA (Bachelor's degree)' got the GPA of an associate degree."""
+    from recrute.schemas import Education, Profile
+
+    p = Profile(name="Ada", education=[
+        Education(id="a", school="City College", degree="Associate of Science", end="2021",
+                  field="IT", gpa="3.9")])
+    assert _value(label, p) is None
+
+
+def test_undergraduate_questions_still_accept_an_associate_degree():
+    from recrute.schemas import Education, Profile
+
+    p = Profile(name="Ada", education=[
+        Education(id="a", school="City College", degree="Associate of Science", end="2021",
+                  field="IT", gpa="3.9")])
+    assert _value("Undergraduate GPA", p) == "3.9"
+    assert _value("GPA (associate or bachelor's degree)", p) == "3.9"
+
+
+def test_associate_and_doctorate_questions_only_take_that_level():
+    from recrute.schemas import Education, Profile
+
+    p = Profile(name="Ada", education=[
+        Education(id="b", school="State U", degree="Bachelor of Science", end="2021",
+                  field="Physics", gpa="3.5")])
+    assert _value("GPA (associate degree)", p) is None
+    assert _value("Degree (doctorate)", p) is None
+
+
+@pytest.mark.parametrize("label,description,value,options,expected", [
+    # Audit: "Yes" here would say the opposite of the saved status
+    ("Are you non-Hispanic?", "", "Hispanic or Latino", ["Yes", "No"], None),
+    ("Are you not Hispanic or Latino?", "", "Hispanic or Latino", ["Yes", "No"], None),
+    ("Are you not Hispanic or Latino?", "", "Non-Hispanic", ["Yes", "No"], None),
+    ("Hispanic/Latino", "Answer Yes if you are NOT Hispanic.", "Hispanic or Latino",
+     ["Yes", "No"], None),
+    # the plain questions
+    ("Are you Hispanic/Latino?", "", "Hispanic or Latino", ["Yes", "No"], "Yes"),
+    ("Are you Hispanic or Latino?", "", "Non-Hispanic", ["Yes", "No"], "No"),
+    ("Are you of Hispanic or Latino origin?", "", "Non-Hispanic", ["Yes", "No"], "No"),
+    ("Hispanic/Latino", "", "Hispanic or Latino", ["Yes", "No", "Decline to answer"], "Yes"),
+    # options that state the fact themselves don't depend on how the question is worded
+    ("Are you non-Hispanic?", "", "Hispanic or Latino",
+     ["Hispanic or Latino", "Not Hispanic or Latino"], "Hispanic or Latino"),
+])
+def test_hispanic_question_polarity(label, description, value, options, expected):
+    from recrute.tailor.answers import match_eeo_option
+
+    assert match_eeo_option("eeo_hispanic", value, options, label, description) == expected

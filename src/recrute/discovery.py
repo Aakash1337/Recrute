@@ -193,7 +193,8 @@ def discover_search(ctx) -> dict:
                         ingested_ok = True  # (with nothing found there is nothing to lose)
                         msg = " ".join(sctx.errors.values())
                         limited = any(code in msg for code in ("429", "999", "403"))
-                        wait = 6 * 3600 if limited else 1800
+                        # (a longer wait the site asked for wins: never come back sooner)
+                        wait = max(6 * 3600 if limited else 1800, sctx.retry_after or 0)
                         state["backoff_until"] = (now + timedelta(seconds=wait)).isoformat()
                         out.setdefault(name, "failed: backing off")
                     else:

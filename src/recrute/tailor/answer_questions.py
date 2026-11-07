@@ -250,10 +250,51 @@ def _profile_value(kind: str, profile: Profile) -> str | None:
     return values.get(kind) or None
 
 
+_ASKS_HIGHEST = re.compile(r"\bhighest\b(?:[ -]\w+){0,3}? (?:degree|education|qualification)",
+                           re.I)
+
+
+def _levels_named(text: str) -> set[str]:
+    named = set()
+    if "undergrad" in text:
+        named.add("undergraduate")
+    if "bachelor" in text:
+        named.add("bachelor")
+    if re.search(r"\bassociate", text):
+        named.add("associate")
+    if re.search(r"\bgraduate\b|\bgrad school\b|master|ph\.?d|doctor", text):
+        named.add("graduate")
+    return named
+
+
+def _asks_highest(q: FormQuestion) -> bool:
+    """Explicitly THE highest degree: degrees named around it are only examples ("Highest
+    degree", "Include bachelor's and master's degrees")."""
+    return not _levels_named(q.label.lower()) and bool(
+        _ASKS_HIGHEST.search(f"{q.label} {q.description}"))
+
+
+def _asked_levels(q: FormQuestion) -> frozenset[int] | None:
+    """The degree ranks a question is limited to: None = no limit, empty = it names levels that
+    conflict (you answer it). The label decides; the help text only when the label is silent
+    ("Undergraduate GPA", "Do not include graduate coursework" is about the undergraduate one)."""
+    if _asks_highest(q):
+        return None
+    named = _levels_named(q.label.lower()) or _levels_named(q.description.lower())
+    if not named:
+        return None
+    if "graduate" in named:
+        return frozenset({4, 5}) if len(named) == 1 else frozenset()
+    if "associate" in named:  # (with "bachelor"/"undergraduate": either undergraduate degree)
+        return frozenset({2}) if len(named) == 1 else frozenset({2, 3})
+    return frozenset({3}) if "bachelor" in named else frozenset({2, 3})
+
+
 def education_for(q: FormQuestion, profile: Profile, need: str = ""):
     """The education entry a question is about: "undergraduate" -> bachelor's/associate,
-    "graduate"/master's/PhD -> graduate entries; otherwise the only entry (having `need`
-    filled in). Several candidates -> None (ambiguous: you answer it)."""
+    "bachelor's" -> bachelor's only, "graduate"/master's/PhD -> graduate entries; otherwise the
+    only entry (having `need` filled in). Several candidates -> None (ambiguous: you answer
+    it)."""
     import re
 
     text = f"{q.label} {q.description}".lower()
@@ -262,11 +303,10 @@ def education_for(q: FormQuestion, profile: Profile, need: str = ""):
     def level(ed) -> int:
         return next((r for rx, r in _DEGREE_RANK if re.search(rx, ed.degree or "", re.I)), 0)
 
-    if "undergrad" in text or "bachelor" in text:
-        hits = [ed for ed in entries if level(ed) in (2, 3)]
-    elif re.search(r"\bgraduate\b|\bgrad school\b|master|ph\.?d|doctoral", text):
-        hits = [ed for ed in entries if level(ed) >= 4]
-    elif re.search(r"most recent|current|latest", text):
+    levels = _asked_levels(q)
+    if levels is not None:
+        hits = [ed for ed in entries if level(ed) in levels]
+    elif not _asks_highest(q) and re.search(r"most recent|current|latest", text):
         hits = entries[:1]
     else:
         hits = entries
@@ -305,14 +345,14 @@ def _education_value(kind: str, q: FormQuestion, profile: Profile) -> str | None
     return value or None
 
 
-_DEGREE_QUALIFIER = re.compile(r"undergrad|bachelor|\bgraduate\b|grad school|master|ph\.?d|"
-                               r"doctor|most recent|current|latest", re.I)
+_DEGREE_QUALIFIER = re.compile(r"undergrad|bachelor|\bassociate|\bgraduate\b|grad school|master|"
+                               r"ph\.?d|doctor|most recent|current|latest", re.I)
 
 
 def _degree_value(q: FormQuestion, profile: Profile) -> str | None:
     """"Degree (undergraduate)" is about THAT entry; only an unqualified "Degree" / "Highest
     degree" means the highest degree actually earned."""
-    if _DEGREE_QUALIFIER.search(f"{q.label} {q.description}"):
+    if not _asks_highest(q) and _DEGREE_QUALIFIER.search(f"{q.label} {q.description}"):
         ed = education_for(q, profile, "degree")
         return ed.degree if ed is not None and _completed(ed) else None
     return highest_completed_degree(profile)

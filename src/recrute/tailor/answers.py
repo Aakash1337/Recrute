@@ -816,6 +816,28 @@ def _match_status(kind: str, value: str, options: list[str], question: str,
     return hits[0] if len(hits) == 1 else None
 
 
+# A bare Yes/No only means something against a plain question ("Are you non-Hispanic?" reverses it).
+_HISPANIC_QUESTION = re.compile(
+    r"(?:are you|do you identify as|do you consider yourself(?: to be)?)?\s*(?:of )?"
+    r"(?:hispanic(?:\s*(?:/|or)\s*latin[oax])?|latin[oax])"
+    r"(?: (?:origin|descent|ethnicity|heritage))?")
+
+
+def _match_hispanic(value: str, options: list[str], question: str,
+                    description: str) -> str | None:
+    want = _polarity("eeo_hispanic", value)
+    if want is None:
+        return None
+    hits = [o for o in options if _polarity("eeo_hispanic", o) == want]
+    if len(hits) != 1:
+        return None
+    if re.match(r"(?:yes|no)\b", _norm_eeo(hits[0])) and (
+            description.strip()
+            or not _HISPANIC_QUESTION.fullmatch(_strict(question).replace(",", ""))):
+        return None  # its meaning depends on a question that isn't the plain one: you answer
+    return hits[0]
+
+
 def match_eeo_option(kind: str, value: str, options: list[str],
                      question: str = "", description: str = "") -> str | None:
     """EEO answers: decline options, exact matches and explicit aliases only. Never fuzzy
@@ -839,9 +861,8 @@ def match_eeo_option(kind: str, value: str, options: list[str],
     if kind in _EEO_ALIASES:
         group = next((g for g in _EEO_ALIASES[kind] if low in g), {low})
         hits = [o for o in options if _norm_eeo(o) in group]
-    elif kind in _EEO_TOPIC:  # (Hispanic/Latino: veteran and disability are matched above)
-        want = _polarity(kind, value)
-        hits = [o for o in options if want is not None and _polarity(kind, o) == want]
+    elif kind == "eeo_hispanic":  # (veteran and disability are matched above)
+        return _match_hispanic(value, options, question, description)
     else:
         hits = []
     return hits[0] if len(hits) == 1 else None

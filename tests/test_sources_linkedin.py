@@ -719,3 +719,13 @@ def test_merged_job_closes_when_its_listings_close_in_separate_runs(engine, monk
             discovery._close_listings(s, "linkedin", known | closed_now)
             known |= closed_now
         assert s.exec(select(Job)).one().status == JobStatus.CLOSED
+
+
+def test_guest_block_keeps_the_wait_linkedin_asked_for():
+    from recrute.http import HttpError
+
+    blocked = HttpError("https://www.linkedin.com/x", 429, retry_after=86400.0)
+    src = guest(FakeHttp({"seeMoreJobPostings": blocked}))
+    ctx = SourceContext(http=FakeHttp(), criteria=many_queries())
+    list(src.fetch(ctx))
+    assert ctx.retry_after == 86400.0 and "blocked" in ctx.errors["linkedin_guest"]

@@ -140,5 +140,54 @@ def run_checks(config: Config, paths: Paths) -> list[Check]:
                     and p.name != ".gitkeep"] if (paths.resources / "resume").exists() else []
     checks.append(Check("resources:resume", bool(resume_files),
                         f"{len(resume_files)} file(s)" if resume_files
-                        else "empty (add your mega resume before M3)", required=False))
+                        else "empty: add your full resume here, then `recrute profile ingest`",
+                        required=False))
+    checks.extend(_personal_checks(paths))
     return checks
+
+
+def _personal_checks(paths: Paths) -> list[Check]:
+    """Your inputs: what's missing is only a warning, but a file that can't be read stops work."""
+    import yaml
+
+    from recrute.criteria import load_criteria
+    from recrute.tailor.answers import answers_path, load_answer_bank
+
+    checks = [Check("profile", (paths.data / "profile.yaml").exists(),
+                    "accepted" if (paths.data / "profile.yaml").exists()
+                    else "not accepted yet: `recrute profile ingest`, then `recrute profile "
+                    "accept` (no packets are built until then)", required=False)]
+    try:
+        load_criteria(paths)
+    except (yaml.YAMLError, ValueError, OSError) as e:
+        checks.append(Check("resources:criteria", False, f"can't be read: {_first_line(e)}"))
+    else:
+        found = (paths.resources / "criteria.yaml").exists()
+        checks.append(Check("resources:criteria", found, "ok" if found else
+                            "missing: using the built-in defaults (`recrute init` creates it)",
+                            required=False))
+    if not answers_path(paths).exists():
+        checks.append(Check("resources:answers", False, "missing: `recrute init` creates it; "
+                            "fill it in to avoid answering everything at review",
+                            required=False))
+        return checks
+    try:
+        bank = load_answer_bank(paths)
+    except (yaml.YAMLError, ValueError, OSError) as e:
+        checks.append(Check("resources:answers", False, f"can't be read: {_first_line(e)}"))
+        return checks
+    contact, auth = bank.contact, bank.work_authorization
+    blank = [name for name, value in (
+        ("full_name", contact.full_name), ("email", contact.email), ("phone", contact.phone),
+        ("current_city", contact.current_city),
+        ("authorized_to_work_in_us", auth.authorized_to_work_in_us),
+        ("requires_sponsorship_now", auth.requires_sponsorship_now),
+        ("requires_sponsorship_future", auth.requires_sponsorship_future))
+        if value in (None, "")]
+    checks.append(Check("resources:answers", not blank, "ok" if not blank else
+                        f"blank, so asked at review: {', '.join(blank)}", required=False))
+    return checks
+
+
+def _first_line(error: Exception) -> str:
+    return (str(error).splitlines() or [type(error).__name__])[0]

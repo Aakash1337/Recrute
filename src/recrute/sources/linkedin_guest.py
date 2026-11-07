@@ -52,7 +52,9 @@ _TITLE_PREFIX =re.compile(r"^\s*job posting title\s*", re.I)  # seen live in Sep
 
 
 class GuestBlocked(Exception):  # noqa: N818
-    pass
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after  # seconds LinkedIn asked us to stay away, if it said
 
 
 @dataclass
@@ -265,7 +267,7 @@ class LinkedInGuestSource:
             resp = http.request("GET", url)
         except HttpError as e:
             if e.status in BLOCK_STATUSES or e.status is None:
-                raise GuestBlocked(f"HTTP {e.status}") from e
+                raise GuestBlocked(f"HTTP {e.status}", e.retry_after) from e
             raise
         text = resp.text
         check_page(str(getattr(resp, "url", url)), text)
@@ -387,5 +389,6 @@ class LinkedInGuestSource:
     def _blocked(self, ctx: SourceContext, e: Exception) -> None:
         self.stats["blocked"] = str(e)
         ctx.errors["linkedin_guest"] = f"blocked: {e}"
+        ctx.retry_after = getattr(e, "retry_after", None)
         log.warning("linkedin_guest: stopping early (%s); searches=%d details=%d", e,
                     self.stats["searches"], self.stats["details"])

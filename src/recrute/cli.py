@@ -51,9 +51,16 @@ def init() -> None:
         if example.exists():
             shutil.copy(example, paths.config_file)
             typer.echo(f"created {paths.config_file}")
+    for name in ("answers", "criteria"):  # (never overwrites your own)
+        example = PROJECT_ROOT / "resources" / f"{name}.example.yaml"
+        target = paths.resources / f"{name}.yaml"
+        if example.exists() and not target.exists():
+            shutil.copy(example, target)
+            typer.echo(f"created {target}: review and fill it in")
     init_db()
     typer.echo(f"database ready at {paths.db_file}")
-    typer.echo("next: `recrute doctor`, then `recrute browser login`")
+    typer.echo("next: add your resume to resources/resume/, fill in resources/answers.yaml, "
+               "then `recrute doctor`")
 
 
 @app.command()
@@ -224,7 +231,11 @@ def profile_ingest() -> None:
     from recrute.tailor import ingest_resume
 
     init_db()
-    result = ingest_resume(get_paths(), _router(), apply=False)
+    try:
+        result = ingest_resume(get_paths(), _router(), apply=False)
+    except FileNotFoundError as e:
+        typer.echo(f"{e}: add your resume there first", err=True)
+        raise typer.Exit(1) from e
     typer.echo(f"proposal written from {len(result.sources)} file(s)")
     for f in result.flags:
         typer.echo(f"  [{f.severity}] {f.where}: {f.text} ({f.reason})")
@@ -245,6 +256,9 @@ def profile_accept(force: bool = typer.Option(False, help="accept despite blocki
         for f in e.flags:
             typer.echo(f"  [{f.severity}] {f.where}: {f.text} ({f.reason})", err=True)
         typer.echo("blocking flags: fix the proposal or pass --force", err=True)
+        raise typer.Exit(1) from e
+    except FileNotFoundError as e:
+        typer.echo(f"{e}: run `recrute profile ingest` first", err=True)
         raise typer.Exit(1) from e
     typer.echo("profile updated")
 

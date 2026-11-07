@@ -246,6 +246,9 @@ def role_sections(text: str, titles: list[str]) -> dict[str, str]:
 
     shared_lines = []
     for line in header.splitlines():
+        if _ALL_ROLES.search(line):  # "All roles (including Security Engineer) require ...":
+            shared_lines.append(line)  # about every role, even when it names one of them
+            continue
         kept = []
         for segment in re.split(r"\s+[|•·]\s+", line):
             if not any(lt in segment.lower() for _, lt in low):
@@ -345,11 +348,13 @@ def jobs_from_extraction(result: Any, batch: list[dict[str, Any]]) -> list[RawJo
             role_text = role_sections(comment_text(c), titles).get(j["title"].strip())
             shared, sections = _split_roles(comment_text(c), titles)
             link_text = sections.get(j["title"].strip(), "")
-            # an explicit link the model gave must not belong to ANOTHER role's section (it
-            # would send this role's application to that requisition)
-            if apply_url and apply_url not in link_text and apply_url not in shared and any(
-                    apply_url in sec for t, sec in sections.items()
-                    if t != j["title"].strip()):
+            # an explicit link the model gave must not belong to ANOTHER role, in its section
+            # or in a header item naming it (it would send this application to that requisition)
+            mine = j["title"].strip()
+            elsewhere = any(apply_url in sec for t, sec in sections.items() if t != mine) \
+                if apply_url else False
+            if apply_url and apply_url not in (role_text or "") and (
+                    elsewhere or apply_url in shared):
                 apply_url = None
         rj = _rawjob(c, j["company"], j["title"], j.get("locations") or [],
                      j.get("remote"), apply_url, j.get("employment_type"),
