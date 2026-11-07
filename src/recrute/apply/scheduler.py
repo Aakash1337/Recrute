@@ -587,6 +587,10 @@ def finalize(session: Session, *, app_id: int, job_id: int, attempt_id: str, lea
         target, note = JobStatus.NEEDS_HUMAN, outcome.reason
     elif outcome.status == "dry_run":
         target, note = JobStatus.APPROVED, "dry run"
+    elif outcome.details.get("browser_unavailable"):
+        # no page existed: not an attempt at all, so it can't use up the job's retries
+        target, note = JobStatus.APPROVED, outcome.reason
+        app.attempts = max(0, (app.attempts or 0) - 1)
     elif outcome.details.get("page_left_open"):
         # a form open for you may get submitted by you: retrying could apply twice
         target, note = JobStatus.NEEDS_HUMAN, outcome.reason
@@ -816,17 +820,16 @@ def _run_due_locked(session: Session, *, page_factory: Any, paths: Paths, now: d
         _keep_trying(stop_channel)
         log.warning("channel %s suspended: %s", channel, outcome.reason)
     elif outcome.details.get("browser_unavailable"):
-        suspend(session, channel, now, outcome.reason, BROWSER_DOWN_WAIT)
+        def pause_channel() -> None:
+            with Session(session.get_bind()) as s:
+                suspend(s, channel, now, outcome.reason, BROWSER_DOWN_WAIT)
+
+        _keep_trying(pause_channel)
     base.finalized = _keep_trying(
         lambda: finalize(session, app_id=app_id, job_id=job_id,  # type: ignore[arg-type]
                          attempt_id=attempt_id, lease=lease, outcome=outcome,
                          adapter_name=adapter.name, max_attempts=max_attempts, now=clock()),
         session.rollback)
-    if outcome.details.get("browser_unavailable"):
-        session.execute(update(Application).where(Application.id == app_id)
-                        .values(attempts=Application.attempts - 1)
-                        .execution_options(synchronize_session=False))
-        session.commit()
     base.ran, base.reason, base.mode, base.outcome = True, outcome.reason, mode, outcome
     return base
 

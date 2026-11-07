@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
+from recrute.llm.base import LLMError
 from recrute.paths import Paths
 from recrute.schemas import FormQuestion, Profile, ResumeSelection
 from recrute.tailor.answers import _ADDRESS_VALUE_RE, _EMAIL_VALUE_RE, _PHONE_IN_TEXT_RE
@@ -154,11 +155,14 @@ def write_cover_letter(profile: Profile, selection: ResumeSelection, job: JobCon
     prompt = COVER_PROMPT.format(
         max_words=max_words - 30, note=note, title=job.title,
         company=f" @ {job.company}" if job.company else "",
-        description=truncate(job.description, 2500), background=background_facts(profile),
+        description=truncate(job.description, 2500),
+        background=background_facts(profile, name=False),
         items="\n".join(item_lines(profile, selected_ids(selection))),
         voice=f"\nVOICE SAMPLES\n{voice}" if voice else "")
     raw = parse_llm(_Cover, router.complete("tailor", prompt, schema=COVER_SCHEMA,
                                             system=COVER_SYSTEM), "cover letter")
+    if not any(p.strip() for p in raw.paragraphs):
+        raise LLMError("cover letter: the LLM returned no text")  # never a blank PDF
     known = set(profile.all_items()) | {e.id for e in profile.experience} \
         | {p.id for p in profile.projects}
     return CoverLetter(paragraphs=limit_words(raw.paragraphs, max_words),

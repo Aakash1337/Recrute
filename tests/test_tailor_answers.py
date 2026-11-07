@@ -1907,3 +1907,58 @@ def test_voice_sample_without_a_salutation_still_loses_contact_details(paths):
         "I write short. Email me at ada@example.com.", encoding="utf-8")
     samples = load_voice_samples(paths)
     assert "I write short." in samples and "ada@example.com" not in samples
+
+
+@pytest.mark.parametrize("degree,label,expected", [
+    # Re-audit: "graduate" covered both, so a doctoral question took a master's facts
+    ("Master of Science", "GPA (doctoral degree)", None),
+    ("Master of Science", "GPA (PhD)", None),
+    ("Doctor of Philosophy", "GPA (Master's degree)", None),
+    ("Master of Science", "GPA (Master's degree)", "3.9"),
+    ("Doctor of Philosophy", "GPA (PhD)", "3.9"),
+    ("Master of Science", "Graduate GPA", "3.9"),
+    ("Doctor of Philosophy", "Graduate GPA", "3.9"),
+    ("Master of Science", "GPA (Master's or PhD)", "3.9"),
+])
+def test_masters_and_doctoral_questions_keep_to_their_level(degree, label, expected):
+    from recrute.schemas import Education, Profile
+
+    p = Profile(name="Ada", education=[Education(id="e", school="Tech U", degree=degree,
+                                                 end="2023", field="Security", gpa="3.9")])
+    assert _value(label, p) == expected
+
+
+def test_a_single_line_field_gets_one_line_everywhere():
+    """Re-audit: a multi-line answer could never verify: the fill collapses it, the approved
+    value didn't, so it always went to CP3 and CP2 showed something other than what was sent."""
+    from recrute.tailor.answer_questions import _coerce
+    from recrute.tailor.answers import format_value
+
+    text = q("Why us?", "text")
+    assert _coerce(text, "First line.\nSecond line.") == "First line. Second line."
+    assert format_value(text, "First line.\r\n  Second line.") == "First line. Second line."
+    area = q("Why us?", "textarea")
+    assert _coerce(area, "First line.\nSecond line.") == "First line.\nSecond line."
+    assert format_value(area, "First line.\nSecond line.") == "First line.\nSecond line."
+
+
+def test_empty_llm_cover_letter_is_a_failure_not_a_blank_pdf():
+    from test_tailor_support import FakeRouter, make_job, make_profile
+
+    from recrute.llm.base import LLMError
+    from recrute.schemas import ResumeSelection
+    from recrute.tailor.cover_letter import write_cover_letter
+
+    router = FakeRouter({"cover": {"paragraphs": [" "], "cited_ids": []}})
+    with pytest.raises(LLMError):
+        write_cover_letter(make_profile(), ResumeSelection(), make_job(), router)
+
+
+def test_your_name_stays_out_of_llm_background():
+    from test_tailor_support import make_profile
+
+    from recrute.tailor.common import background_facts
+
+    profile = make_profile()
+    assert profile.name in background_facts(profile)  # (the local check still knows it)
+    assert profile.name not in background_facts(profile, name=False)

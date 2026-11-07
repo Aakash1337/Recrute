@@ -279,3 +279,102 @@ def test_closing_the_form_tab_ends_the_handoff_despite_the_blank_tab(tmp_path, m
 
     threading.Thread(target=wait, daemon=True).start()
     assert done.wait(3)
+
+
+def _assist_row(engine, **outcome):
+    from datetime import UTC, datetime
+
+    from recrute.models import Application, JobStatus
+
+    with Session(engine) as s:
+        job = Job(title="t", apply_url="https://job-boards.greenhouse.io/acme/jobs/1",
+                  canonical_url="c", ats="greenhouse", status=JobStatus.NEEDS_HUMAN)
+        s.add(job)
+        s.flush()
+        app = Application(job_id=job.id, channel="greenhouse", approved_at=datetime.now(UTC),
+                          packet={"job_id": job.id}, outcome={"assist_requested": "tok", **outcome})
+        s.add(app)
+        s.commit()
+        return app.id
+
+
+def _assist_ctx(engine, paths):
+    return SimpleNamespace(session=lambda: Session(engine), paths=paths, router=None)
+
+
+def test_assist_that_never_got_a_browser_holds_no_slot(engine, paths, monkeypatch):
+    """Both re-audits: its own provisional reservation was taken for an earlier attempt's."""
+    from recrute import applying
+    from recrute.apply.scheduler import may_have_been_sent
+    from recrute.errors import BrowserUnavailableError
+    from recrute.models import Application, JobStatus
+
+    def no_browser(*a, **kw):
+        raise BrowserUnavailableError("profile is locked")
+
+    notified = []
+    monkeypatch.setattr("recrute.apply.runner.apply_job", no_browser)
+    monkeypatch.setattr(applying, "notify_browser_down", lambda ctx, why: notified.append(why))
+    monkeypatch.setattr(applying, "left_open", lambda o: False)
+    app_id = _assist_row(engine, details={"handoff_reservation": False})
+    with Session(engine) as s:
+        assert applying._run_assist_request(_assist_ctx(engine, paths), s, object())
+    with Session(engine) as s:
+        app = s.get(Application, app_id)
+        assert not app.outcome["details"]["handoff_reservation"]
+        assert not may_have_been_sent(app, JobStatus.NEEDS_HUMAN)
+    assert notified
+
+
+def test_assist_failure_keeps_an_earlier_attempts_slot(engine, paths, monkeypatch):
+    from recrute import applying
+    from recrute.errors import BrowserUnavailableError
+    from recrute.models import Application
+
+    def no_browser(*a, **kw):
+        raise BrowserUnavailableError("profile is locked")
+
+    monkeypatch.setattr("recrute.apply.runner.apply_job", no_browser)
+    monkeypatch.setattr(applying, "notify_browser_down", lambda ctx, why: None)
+    app_id = _assist_row(engine, details={"handoff_reservation": True})
+    with Session(engine) as s:
+        applying._run_assist_request(_assist_ctx(engine, paths), s, object())
+    with Session(engine) as s:
+        assert s.get(Application, app_id).outcome["details"]["handoff_reservation"] is True
+
+
+def test_old_assist_request_expires_instead_of_running_unattended(engine, paths, monkeypatch):
+    """Re-audit: a kept request fired whenever a suspension ended or a cap reset, at any hour."""
+    from datetime import UTC, datetime, timedelta
+
+    from recrute import applying
+    from recrute.models import Application
+
+    def forbidden(*a, **kw):
+        raise AssertionError("filled a form nobody asked for just now")
+
+    monkeypatch.setattr("recrute.apply.runner.apply_job", forbidden)
+    old = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+    app_id = _assist_row(engine, assist_requested_at=old)
+    with Session(engine) as s:
+        assert applying._run_assist_request(_assist_ctx(engine, paths), s, object()) is None
+    with Session(engine) as s:
+        outcome = s.get(Application, app_id).outcome
+    assert "assist_requested" not in outcome and "press it again" in outcome["assist_expired"]
+
+
+def test_browser_failure_on_a_live_open_request_is_reported(paths, monkeypatch):
+    from recrute import applying, live
+
+    live.request_open(paths, "https://www.linkedin.com/login")
+    notified = []
+    monkeypatch.setattr(applying, "notify_browser_down", lambda ctx, why: notified.append(why))
+
+    class Broken(applying.LazyBrowser):
+        def __call__(self):
+            raise RuntimeError("profile is locked")
+
+    monkeypatch.setattr(applying, "LazyBrowser", Broken)
+    ctx = SimpleNamespace(paths=paths, stop=threading.Event())
+    assert applying.run_due_task(ctx) == {"live_session_failed": "https://www.linkedin.com/login"}
+    assert notified

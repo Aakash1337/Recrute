@@ -1120,3 +1120,16 @@ def test_a_renewal_that_lost_the_lock_leaves_the_lease_lost(engine):
         s.execute(delete(Setting).where(Setting.key == LOCK_KEY))
         s.commit()
     assert lease.renew() is False and lease.stamp is None and lease.held() is False
+
+
+def test_browser_outage_on_the_last_retry_keeps_the_job_queued(session, paths):
+    """Re-audit: the limit was checked before the attempt was refunded."""
+    graduate(session)
+    app, job = add_app(session, 1)
+    app.attempts = 2  # two real failures: the claim makes this 3 of 3
+    session.add(app)
+    session.commit()
+    due(session, paths, _no_browser, max_attempts=3)
+    session.refresh(app)
+    session.refresh(job)
+    assert job.status == JobStatus.APPROVED and app.attempts == 2

@@ -320,3 +320,14 @@ def test_navigation_during_typing_discards_the_rest(paths, monkeypatch):
     assert live.apply_inputs(paths, page) is False
     assert "".join(typed) == "user\n"  # nothing after the navigation
     live.clear(paths)
+
+
+def test_old_open_request_is_dropped(paths):
+    import json
+
+    from recrute import live
+
+    live.request_open(paths, "https://www.linkedin.com/login")
+    f = live.live_dir(paths) / "open.json"
+    f.write_text(json.dumps({"url": "https://x.example", "at": time.time() - 7200}))
+    assert live.take_open_request(paths) is None and not f.exists()

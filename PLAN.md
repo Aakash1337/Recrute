@@ -461,7 +461,7 @@ automated.
 | LLM invents experience                           | Truthfulness verifier plus CP2; profile-grounded generation only |
 | Low-quality mass applying hurts your reputation  | Score threshold, per-company caps, daily caps                |
 | PII leakage                                      | Local-first, secrets in the keyring, receipts dir gitignored, minimal data sent to the LLM |
-| Hitting subscription usage limits                | Rules before LLM calls, batched scoring, caching by JD hash, pause/resume queues, failover between Claude and Codex, reserve setting |
+| Hitting subscription usage limits                | Rules before LLM calls, batched scoring, caching by JD hash, pause/resume queues, failover between Claude and Codex |
 | Double-applying / applying to closed jobs        | Dedup by canonical URL and ATS job ID; re-check the posting is live before filling |
 
 ---

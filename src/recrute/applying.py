@@ -129,8 +129,9 @@ def notify_browser_down(ctx, reason: str) -> None:
     try:
         with ctx.session() as s:
             notify(s, "Recrute can't open the browser",
-                   f"{reason}. Submissions are paused for an hour; nothing was sent. Check that "
-                   "Chrome is installed and that `recrute browser login` isn't still running.",
+                   f"{reason}. Nothing was sent, and scheduled submissions wait an hour. Check "
+                   "that Chrome is installed and that `recrute browser login` isn't still "
+                   "running.",
                    priority="high")
     except Exception as e:  # a failed notification must not break the worker
         log.warning("browser notification failed: %s", e.__class__.__name__)
@@ -152,7 +153,13 @@ def run_due_task(ctx) -> dict:
     try:
         if url := live.take_open_request(ctx.paths):
             # "Open automation browser" from the UI (e.g. to log into a site on the server)
-            page = browser()
+            try:
+                page = browser()
+            except Exception as e:  # noqa: BLE001 - you were told it opens: say why it didn't
+                from recrute.errors import safe_error
+
+                notify_browser_down(ctx, f"the browser didn't start: {safe_error(e)}"[:300])
+                return {"live_session_failed": url}
             try:
                 page.goto(url, wait_until="domcontentloaded")
             except Exception as e:  # still hand over the window: you can navigate yourself
@@ -186,6 +193,20 @@ def run_due_task(ctx) -> dict:
         browser.close()
 
 
+ASSIST_REQUEST_MAX_AGE_SECONDS = 600
+
+
+def _assist_expired(outcome: dict, now) -> bool:
+    from datetime import datetime
+
+    at = outcome.get("assist_requested_at")
+    try:
+        return bool(at) and (now - datetime.fromisoformat(at)).total_seconds() \
+            > ASSIST_REQUEST_MAX_AGE_SECONDS
+    except (TypeError, ValueError):
+        return True  # unreadable: never act on it
+
+
 def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | None:
     """"Open & pre-fill" from the Applications page: fill_and_pause on a NEEDS_HUMAN job."""
     from recrute.apply.runner import apply_job
@@ -200,6 +221,16 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
     for app, job in rows:
         token = (app.outcome or {}).get("assist_requested")
         if not token or not app.packet:
+            continue
+        if _assist_expired(app.outcome, datetime.now(UTC)):
+            # a fill starts from you being there: not hours later, after a cap reset or at the
+            # end of an account suspension, with nobody watching
+            kept = {k: v for k, v in app.outcome.items()
+                    if k not in ("assist_requested", "assist_requested_at", "assist_deferred")}
+            kept["assist_expired"] = "The pre-fill wasn't started in time: press it again."
+            app.outcome = kept
+            session.add(app)
+            session.commit()
             continue
         adapter = get_adapter(app.channel, router=ctx.router) if app.channel != "manual" \
             else adapter_for(job, router=ctx.router)
@@ -240,16 +271,21 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
             # hand-off holds today's cap slots even if the worker dies mid-fill
             now_iso = datetime.now(UTC).isoformat()
             outcome_now = {k: v for k, v in app.outcome.items()
-                           if k not in ("assist_requested", "assist_deferred")}
+                           if k not in ("assist_requested", "assist_requested_at",
+                                        "assist_deferred")}
             prior = outcome_now.get("details") or {}
+            # (kept apart: only an EARLIER attempt's reservation outlives this one)
             outcome_now["details"] = {**prior, "last_attempt_at": now_iso,
                                       "attempt_started_at": prior.get("attempt_started_at")
-                                      or now_iso, "handoff_reservation": True}
+                                      or now_iso, "handoff_reservation": True,
+                                      "reserved_before_assist": bool(
+                                          prior.get("handoff_reservation"))}
             app.outcome = outcome_now
             app.attempts = (app.attempts or 0) + 1
             session.add(app)
             session.commit()
         finally:
+            session.rollback()  # (releasing needs the write lock this session may still hold)
             lease.release()
         files = {k: v for k, v in (("resume", app.resume_path),
                                    ("cover_letter", app.cover_letter_path)) if v}
@@ -266,6 +302,7 @@ def _run_assist_request(ctx, session: Session, browser: LazyBrowser) -> dict | N
                                    details={"submit_attempted": False, "page_left_open": False,
                                             "handoff_reservation": False,
                                             "browser_unavailable": True})
+            notify_browser_down(ctx, outcome.reason)
         _record_assist(session, app, outcome)
         if left_open(outcome):
             notify_handoff(ctx, job.id, outcome.reason)
@@ -299,7 +336,9 @@ def _record_assist(session: Session, app: Application, outcome) -> None:
     # evidence that an earlier attempt may already have reached the employer is never erased by
     # a later assisted attempt: it keeps counting toward caps/cooldowns until you resolve it
     prior_details = prior.get("details") or {}
-    if prior_details.get("submit_attempted") or prior_details.get("handoff_reservation"):
+    earlier = prior_details.get("reserved_before_assist",
+                                prior_details.get("handoff_reservation"))
+    if prior_details.get("submit_attempted") or earlier:
         merged["details"] = {**prior_details, **(new.get("details") or {}),
                              "submit_attempted": bool(prior_details.get("submit_attempted")
                                                       or details.get("submit_attempted")),

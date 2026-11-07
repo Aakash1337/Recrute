@@ -147,3 +147,31 @@ def test_only_a_missing_browser_falls_back_on_your_profile(message, falls_back):
     from recrute.browser.runtime import _NOT_INSTALLED
 
     assert bool(_NOT_INSTALLED.search(message)) is falls_back
+
+
+def test_half_configured_tls_is_an_error_and_paths_are_from_the_project(tmp_path):
+    from types import SimpleNamespace
+
+    from recrute.cli import _tls_options
+
+    with pytest.raises(ValueError):
+        _tls_options(SimpleNamespace(ssl_certfile="c.pem", ssl_keyfile=""), tmp_path)
+    assert _tls_options(SimpleNamespace(ssl_certfile="", ssl_keyfile=""), tmp_path) == {}
+    assert _tls_options(SimpleNamespace(ssl_certfile="data/c.pem", ssl_keyfile="/abs/k.pem"),
+                        tmp_path) == {"ssl_certfile": str(tmp_path / "data/c.pem"),
+                                      "ssl_keyfile": str(tmp_path / "/abs/k.pem")}
+
+
+def test_raising_a_protected_cap_warns(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from recrute import db
+    from recrute.cli import app
+
+    monkeypatch.setenv("RECRUTE_HOME", str(tmp_path))
+    db.get_engine.cache_clear()
+    high = CliRunner().invoke(app, ["set", "site_caps", '{"linkedin_easy_apply": 40}'])
+    assert high.exit_code == 0 and "warning" in high.output
+    low = CliRunner().invoke(app, ["set", "site_caps", '{"linkedin_easy_apply": 10}'])
+    assert low.exit_code == 0 and "warning" not in low.output
+    db.get_engine.cache_clear()

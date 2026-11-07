@@ -153,10 +153,14 @@ def enqueue(paths: Paths | None, event: dict[str, Any]) -> None:
         queue.append(clean)
 
 
+OPEN_REQUEST_MAX_AGE = 600  # seconds
+
+
 def request_open(paths: Paths, url: str) -> None:
     if not url.lower().startswith(("http://", "https://")):
         raise ValueError("only http(s) URLs")
-    _atomic_write(live_dir(paths) / "open.json", json.dumps({"url": url}).encode())
+    _atomic_write(live_dir(paths) / "open.json",
+                  json.dumps({"url": url, "at": time.time()}).encode())
 
 
 # ------------------------------------------------------------------------------ worker side
@@ -165,11 +169,13 @@ def request_open(paths: Paths, url: str) -> None:
 def take_open_request(paths: Paths) -> str | None:
     f = live_dir(paths) / "open.json"
     try:
-        url = json.loads(f.read_text(encoding="utf-8"))["url"]
+        request = json.loads(f.read_text(encoding="utf-8"))
+        url = request["url"]
     except (OSError, ValueError, KeyError):
         return None
     f.unlink(missing_ok=True)
-    return url
+    # (you asked to see a window: hours later, nobody is there)
+    return None if time.time() - float(request.get("at", 0)) > OPEN_REQUEST_MAX_AGE else url
 
 
 def start_session(paths: Paths) -> str:

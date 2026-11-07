@@ -989,3 +989,54 @@ def test_login_cookie_is_secure_over_https(client):
     r = client.post("http://testserver/login", data={"token": access_token(), "next": "/"},
                     follow_redirects=False)
     assert "secure" not in r.headers["set-cookie"].lower()
+
+
+def test_untouched_multi_line_answer_keeps_its_blocking_flag(client):
+    """Re-audit: an input drops newlines, which looked like an edit: that cleared the blocking
+    flag, so an unsupported claim could be approved without the override."""
+    from recrute.packets import _set_answer
+    from recrute.schemas import FormAnswer, FormQuestion, Packet, VerifierFlag
+
+    packet = Packet(job_id=1, questions=[FormQuestion(id="q", label="Why?", type="text")],
+                    answers=[FormAnswer(question_id="q", value="a\nb", source="llm_new")],
+                    flags=[VerifierFlag(where="answer:q", text="b", reason="x", severity="block")])
+    _set_answer(packet, "q", "ab")  # what the browser posts back, untouched
+    assert packet.answer_for("q").source == "llm_new" and packet.blocking_flags()
+    _set_answer(packet, "q", "a real edit")
+    assert packet.answer_for("q").source == "user" and not packet.blocking_flags()
+
+
+def test_two_quick_ingest_clicks_start_one_run(client, monkeypatch):
+    import threading
+
+    from recrute.web import views_apps
+
+    started = []
+    monkeypatch.setattr(threading, "Thread",
+                        lambda target, daemon=True: type("T", (), {
+                            "start": lambda self: started.append(target)})())
+    monkeypatch.setitem(views_apps._ingest_state, "running", False)
+    assert client.post("/profile/ingest", headers=HX).status_code == 200
+    assert client.post("/profile/ingest", headers=HX).status_code == 409
+    assert len(started) == 1
+
+
+def test_assist_request_is_timestamped_and_clears_an_expired_note(client):
+    from datetime import datetime
+
+    from recrute.db import get_engine
+    from recrute.models import Application, JobStatus, utcnow
+    from recrute.packets import request_assist
+
+    job_id = _seed_packet(status=JobStatus.NEEDS_HUMAN)
+    with Session(get_engine()) as s:
+        app = s.exec(select(Application).where(Application.job_id == job_id)).one()
+        app.approved_at = utcnow()
+        app.outcome = {"assist_expired": "The pre-fill wasn't started in time: press it again."}
+        s.add(app)
+        s.commit()
+        request_assist(s, job_id)
+        s.refresh(app)
+        assert app.outcome["assist_requested"] and "assist_expired" not in app.outcome
+        assert (utcnow() - datetime.fromisoformat(app.outcome["assist_requested_at"])
+                ).total_seconds() < 60

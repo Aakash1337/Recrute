@@ -868,6 +868,11 @@ def match_eeo_option(kind: str, value: str, options: list[str],
     return hits[0] if len(hits) == 1 else None
 
 
+def one_line(text: str) -> str:
+    """What a single-line field can hold: the same at CP2, at fill time and at verification."""
+    return re.sub(r"\s*\n\s*", " ", text).strip()
+
+
 def format_value(q: FormQuestion, value: bool | str | int | None) -> Any:
     """Shape a raw answer for the question type; None when it can't be expressed faithfully."""
     if value is None or value == "":
@@ -897,6 +902,8 @@ def format_value(q: FormQuestion, value: bool | str | int | None) -> Any:
         if not re.fullmatch(r"-?\d+(?:\.\d+)?", num):
             return None  # "3.9/4.0", "3,9": can't go into a number field faithfully: you answer
         text = num
+    if q.type != "textarea":
+        text = one_line(text)
     if q.max_length and len(text) > q.max_length:
         return None  # a bank answer is never silently cut; let the user shorten it
     return text

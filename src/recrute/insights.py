@@ -141,6 +141,6 @@ def auto_approve_reason(job: Job, packet: Packet, rule: dict) -> str | None:
         return None  # generated wording on the resume: a human reads it first
     if any(a.needs_review or a.source == "llm_new" for a in packet.answers):
         return None
-    if packet.cover_letter:  # free-form prose always gets a human look
+    if packet.cover_letter is not None or packet.cover_letter_pdf:  # prose: a human looks
         return None
     return f"auto-approved: {job.priority.value} score {job.score}, no new claims"

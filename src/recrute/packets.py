@@ -179,7 +179,12 @@ def edit(session: Session, job_id: int, rev: str, answers: dict[str, str | list[
                                       f"{q.max_length} characters")
                 _set_answer(packet, q.id, text)
         company = session.get(Company, job.company_id) if job.company_id else None
-        packet = _rerender_cover_letter(job, packet, company.name if company else "")
+        try:
+            packet = _rerender_cover_letter(job, packet, company.name if company else "")
+        except Exception as e:  # a PDF that won't render must not look like nothing happened
+            from recrute.errors import safe_error
+
+            raise PacketError(f"the cover letter PDF couldn't be rendered: {safe_error(e)}") from e
     new_rev = _store(session, app, packet, rev)
     session.add(Decision(job_id=job_id, checkpoint="CP2", action="edit"))
     session.commit()
@@ -206,9 +211,12 @@ def _as_list(v) -> list[str]:
     return sorted(str(x).strip() for x in items if str(x).strip())
 
 
-def _same_answer(old, new) -> bool:
-    """Semantically unchanged (serialization differences are not an edit)."""
+def _same_answer(old, new, *, single_line: bool = False) -> bool:
+    """Semantically unchanged (serialization differences are not an edit). A single-line input
+    drops an older answer's newlines before you've touched it: that clears nothing."""
     new = _as_submitted(old, new)
+    if single_line and isinstance(old, str) and isinstance(new, str):
+        old = old.replace("\r", "").replace("\n", "")
     if isinstance(old, list | tuple) or isinstance(new, list | tuple):
         return _as_list(old) == _as_list(new)
     if isinstance(old, bool) or isinstance(new, bool):
@@ -224,7 +232,9 @@ def _set_answer(packet: Packet, qid: str, value) -> None:
                                          confidence=1.0, needs_review=False))
         return
     value = _as_submitted(a.value, value)
-    if not _same_answer(a.value, value):
+    q = next((x for x in packet.questions if x.id == qid), None)
+    if not _same_answer(a.value, value, single_line=q is not None and not q.options
+                        and q.type != "textarea"):
         a.value, a.source, a.confidence, a.needs_review = value, "user", 1.0, False
         packet.flags = [f for f in packet.flags if f.where != f"answer:{qid}"]
     else:
@@ -346,6 +356,8 @@ def request_assist(session: Session, job_id: int) -> None:
     import uuid
 
     # a unique token: the worker consumes exactly this request, once
-    app.outcome = {**(app.outcome or {}), "assist_requested": uuid.uuid4().hex}
+    outcome = {k: v for k, v in (app.outcome or {}).items() if k != "assist_expired"}
+    app.outcome = {**outcome, "assist_requested": uuid.uuid4().hex,
+                   "assist_requested_at": utcnow().isoformat()}
     session.add(app)
     session.commit()

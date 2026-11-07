@@ -29,8 +29,11 @@ def test_opus_args_are_read_only_and_isolated():
     assert args[args.index("--tools") + 1] == "Read,Grep,Glob"
     assert args[args.index("--permission-mode") + 1] == "dontAsk"
     assert args[args.index("--model") + 1] == "claude-opus-5-5"
-    assert "--strict-mcp-config" in args and "Read(./data/**)" in args[
-        args.index("--disallowedTools") + 1]
+    denied = args[args.index("--disallowedTools") + 1]
+    assert "--strict-mcp-config" in args and "Read(./data/**)" in denied
+    assert "Read(./resources/answers.yaml)" in denied and "Read(./resources/resume/**)" in denied
+    # the prompt allows these two, and a --changed scope can list them
+    assert "Read(./resources/**)" not in denied
     assert "bypassPermissions" not in args
 
 

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from markupsafe import escape
 from sqlmodel import col, select
@@ -207,6 +208,11 @@ async def packet_edit(request: Request, job_id: int):
         elif key.startswith("q__") and f"present__{key[3:]}" not in form:
             vals = form.getlist(key)
             answers[key[3:]] = vals if len(vals) > 1 else vals[0]
+    # (database waits and a PDF render: not on the event loop, which serves the live view)
+    return await run_in_threadpool(_save_packet_edit, job_id, form, answers)
+
+
+def _save_packet_edit(job_id: int, form, answers: dict) -> HTMLResponse:
     rev = str(form.get("rev") or "")
     with session_scope() as s:
         try:
@@ -389,6 +395,7 @@ def companies_toggle(company_id: int):
 # ------------------------------------------------------------------------------ profile
 
 
+_INGEST_LOCK = threading.Lock()
 _ingest_state: dict = {"running": False, "error": None}
 
 
@@ -433,8 +440,10 @@ def profile_page(request: Request):
 
 @router.post("/profile/ingest", response_class=HTMLResponse)
 def profile_ingest():
-    if _ingest_state["running"]:
-        return _msg("already running", False, 409)
+    with _INGEST_LOCK:  # (two quick clicks must not start two LLM runs)
+        if _ingest_state["running"]:
+            return _msg("already running", False, 409)
+        _ingest_state.update(running=True, error=None)
 
     def run():
         from sqlmodel import Session
@@ -444,7 +453,6 @@ def profile_ingest():
         from recrute.llm.router import LLMRouter, build_providers
         from recrute.tailor import ingest_resume
 
-        _ingest_state.update(running=True, error=None)
         try:
             paths = get_paths()
             router = LLMRouter(get_config(), build_providers(get_config(), paths),

@@ -134,13 +134,19 @@ def parse_sol(text: str) -> dict:
         raise AuditError(str(e)) from e
 
 
+# (the prompt allows the rest of resources/: its README and templates)
+PERSONAL_DATA_RULES = ",".join(f"Read(./{p})" for p in (
+    "data/**", "resources/resume/**", "resources/cover_letters/**", "resources/writing/**",
+    "resources/answers.yaml", "resources/criteria.yaml"))
+
+
 def opus_args(claude: str, model: str, effort: str) -> list[str]:
     """Read-only: only these tools exist, nothing is asked (anything else is refused), and no
     MCP servers, settings, hooks or skills are loaded. Your personal data is refused too."""
     return [claude, "-p", "--output-format", "json", "--no-session-persistence",
             "--model", model, "--effort", effort,
             "--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk",
-            "--disallowedTools", "Read(./data/**),Read(./resources/**)",
+            "--disallowedTools", PERSONAL_DATA_RULES,
             "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands",
             "--json-schema", json.dumps(FINDINGS_SCHEMA, separators=(",", ":"))]
 

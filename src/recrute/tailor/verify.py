@@ -287,7 +287,8 @@ def llm_flags(profile: Profile, claims: list[Claim], router: Completer,
         cites = f" cites {','.join(c.cited_ids)}" if c.cited_ids else ""
         claim_lines.append(f"[{c.where}]{q}{cites}: {c.text}")
     evidence = _saved_evidence(claims, saved)
-    prompt = VERIFY_PROMPT.format(background=background_facts(profile), saved=evidence,
+    prompt = VERIFY_PROMPT.format(background=background_facts(profile, name=False),
+                                  saved=evidence,
                                   saved_rule=_SAVED_RULE if evidence else "",
                                   sources="\n".join(item_lines(profile, cited)) or "(none)",
                                   claims="\n".join(claim_lines))

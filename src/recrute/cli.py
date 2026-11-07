@@ -81,6 +81,17 @@ def _setup_logging() -> None:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
+def _tls_options(cfg, home: Path) -> dict[str, str]:
+    """uvicorn's TLS options. One file without the other is a mistake, not plain HTTP (the live
+    view carries passwords); relative paths are from the project, wherever this was started."""
+    if bool(cfg.ssl_certfile) != bool(cfg.ssl_keyfile):
+        raise ValueError("[server] needs both ssl_certfile and ssl_keyfile, or neither")
+    if not cfg.ssl_certfile:
+        return {}
+    return {"ssl_certfile": str(home / cfg.ssl_certfile),
+            "ssl_keyfile": str(home / cfg.ssl_keyfile)}
+
+
 @app.command()
 def serve(host: str | None = None, port: int | None = None,
           worker: Annotated[bool, typer.Option(help="also run the background worker")] = False
@@ -90,14 +101,25 @@ def serve(host: str | None = None, port: int | None = None,
 
     _setup_logging()
     init_db()
+    cfg = get_config().server
+    try:
+        tls = _tls_options(cfg, get_paths().home)
+    except ValueError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from e
+    running = None
     if worker:
         from recrute import worker as w
 
-        w.start()
-    cfg = get_config().server
-    tls = {"ssl_certfile": cfg.ssl_certfile, "ssl_keyfile": cfg.ssl_keyfile} \
-        if cfg.ssl_certfile and cfg.ssl_keyfile else {}
-    uvicorn.run("recrute.web.app:app", host=host or cfg.host, port=port or cfg.port, **tls)
+        running = w.start()
+    try:
+        uvicorn.run("recrute.web.app:app", host=host or cfg.host, port=port or cfg.port, **tls)
+    finally:
+        if running is not None:  # let an attempt in progress finish instead of killing it
+            ctx, threads = running
+            ctx.stop.set()
+            for thread in threads:
+                thread.join(timeout=30)
 
 
 @app.command("worker")
@@ -166,6 +188,13 @@ def set_cmd(key: str, value: str) -> None:
             typer.echo(f"error: {e}", err=True)
             raise typer.Exit(1) from e
     typer.echo(f"{key} = {json.dumps(parsed)}")
+    if key == "site_caps" and isinstance(parsed, dict):
+        from recrute.settings import PROTECTED_CAPS
+
+        for site, cap in PROTECTED_CAPS.items():
+            if int(parsed.get(site, cap)) > cap:
+                typer.echo(f"warning: {site} above {cap}/day raises the risk to that account",
+                           err=True)
 
 
 @browser_app.command("login")

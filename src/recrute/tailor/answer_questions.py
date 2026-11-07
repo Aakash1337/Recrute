@@ -27,6 +27,7 @@ from recrute.tailor.answers import (
     is_sensitive_question,
     match_option,
     match_question,
+    one_line,
     phone_country,
     state_from_city,
 )
@@ -262,8 +263,12 @@ def _levels_named(text: str) -> set[str]:
         named.add("bachelor")
     if re.search(r"\bassociate", text):
         named.add("associate")
-    if re.search(r"\bgraduate\b|\bgrad school\b|master|ph\.?d|doctor", text):
+    if re.search(r"\bgraduate\b|\bgrad school\b", text):
         named.add("graduate")
+    if "master" in text:
+        named.add("master")
+    if re.search(r"ph\.?d|doctor", text):
+        named.add("doctorate")
     return named
 
 
@@ -283,8 +288,13 @@ def _asked_levels(q: FormQuestion) -> frozenset[int] | None:
     named = _levels_named(q.label.lower()) or _levels_named(q.description.lower())
     if not named:
         return None
-    if "graduate" in named:
-        return frozenset({4, 5}) if len(named) == 1 else frozenset()
+    specific = named & {"master", "doctorate"}
+    if specific or "graduate" in named:
+        if named & {"undergraduate", "bachelor", "associate"}:
+            return frozenset()  # conflicting levels
+        if len(specific) == 1:  # (a master's GPA is never a doctorate's, nor the reverse)
+            return frozenset({4}) if "master" in specific else frozenset({5})
+        return frozenset({4, 5})
     if "associate" in named:  # (with "bachelor"/"undergraduate": either undergraduate degree)
         return frozenset({2}) if len(named) == 1 else frozenset({2, 3})
     return frozenset({3}) if "bachelor" in named else frozenset({2, 3})
@@ -473,7 +483,7 @@ def _coerce(q: FormQuestion, text: str) -> str | list[str] | bool | None:
     if q.type == "number":
         m = re.search(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
         return m.group(0) if m else None
-    return _fit_length(text, q.max_length)
+    return _fit_length(text if q.type == "textarea" else one_line(text), q.max_length)
 
 
 def _llm_answers(pending: list[FormQuestion], *, profile: Profile, bank: AnswerBank,
@@ -488,7 +498,7 @@ def _llm_answers(pending: list[FormQuestion], *, profile: Profile, bank: AnswerB
     prompt = ANSWER_PROMPT.format(
         note=note, title=job.title if job else "", company=f" @ {job.company}" if job and
         job.company else "", description=truncate(job.description, 1500) if job else "",
-        background=background_facts(profile), items="\n".join(item_lines(profile, ids)),
+        background=background_facts(profile, name=False), items="\n".join(item_lines(profile, ids)),
         common=f"PREVIOUSLY APPROVED ANSWERS (reuse if relevant)\n{common}\n" if common else "",
         questions="\n".join(_question_line(q) for q in pending))
     raw = parse_llm(_Answers, router.complete("answers", prompt, schema=ANSWER_SCHEMA,

@@ -334,9 +334,10 @@ def item_lines(profile: Profile, ids: Iterable[str], *, ctx_chars: int = 300) ->
     return out
 
 
-def background_facts(profile: Profile) -> str:
-    """Compact non-bullet facts: roles, education, certifications, skills."""
-    lines = [f"Name: {profile.name}"] if profile.name else []
+def background_facts(profile: Profile, *, name: bool = True) -> str:
+    """Compact non-bullet facts: roles, education, certifications, skills. `name=False` for what
+    goes to the LLM, which has no use for it (a letter's body has no greeting or sign-off)."""
+    lines = [f"Name: {profile.name}"] if profile.name and name else []
     if profile.headline:
         lines.append(f"Headline: {profile.headline}")
     if profile.location:
