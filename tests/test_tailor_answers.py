@@ -2035,3 +2035,85 @@ def test_answer_naming_the_employer_is_not_reused(paths, monkeypatch):
                                         source="user"),
                              FormAnswer(question_id="b", value="Written first.", source="user")])
     assert _banked(paths, monkeypatch, packet, company="Acme") == ["Written first."]
+
+
+def test_voice_sample_prose_survives_the_address_filter(paths):
+    """Final audit: on one long line the field-value pattern ran from '3 engineers' to the last
+    'way', deleting most of the letter."""
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    (paths.resources / "writing" / "w.txt").write_text(
+        "Ada Lovelace\n12 Main Street, Austin, TX 78701\n\nDear team,\n\nI led 3 engineers on the "
+        "rollout. We cut alerts by 40% along the way. That is the way I work, and the place I "
+        "want to drive it next.\n", encoding="utf-8")
+    samples = load_voice_samples(paths)
+    for kept in ("I led 3 engineers on the rollout.", "40% along the way",
+                 "That is the way I work", "the place I want to drive it next"):
+        assert kept in samples, kept
+
+
+def test_an_unreadable_writing_sample_is_skipped_not_fatal(paths):
+    """Final audit: one corrupt PDF failed every packet that needed a cover letter."""
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    (paths.resources / "cover_letters" / "broken.pdf").write_bytes(b"not a pdf at all")
+    (paths.resources / "writing" / "ok.txt").write_text("I write short.", encoding="utf-8")
+    assert "I write short." in load_voice_samples(paths)
+
+
+@pytest.mark.parametrize("address", ["123 5th Avenue", "12 MAIN STREET", "12 main street",
+                                     "40 Oak Tree Lane", "7 Elm St.", "TX 78701",
+                                     "12 main st", "Austin 78701", "P.O. Box 44",
+                                     "Apt 5, Riverside", "12 main drive", "9 oak court"])
+def test_voice_sample_addresses_are_removed_however_written(paths, address):
+    """Re-audit: the tighter pattern let numbered, uppercase and lowercase streets through.
+    (A city on its own isn't an address: "Austin" stays, its ZIP doesn't.)"""
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    (paths.resources / "writing" / "w.txt").write_text(
+        f"{address}\nI write plainly and keep it short.", encoding="utf-8")
+    samples = load_voice_samples(paths)
+    assert "I write plainly" in samples and address not in samples
+
+
+def test_a_name_that_is_also_a_word_stays_in_the_writing(paths):
+    from test_tailor_support import FakeRouter, make_job, make_profile
+
+    from recrute.schemas import ResumeSelection
+    from recrute.tailor.cover_letter import write_cover_letter
+
+    profile = make_profile().model_copy(update={"name": "Will Rose"})
+    (paths.resources / "writing" / "w.txt").write_text(
+        "I will keep it short, and the rose garden helped. Sincerely, Will Rose",
+        encoding="utf-8")
+    router = FakeRouter({"cover": {"paragraphs": ["Body."], "cited_ids": []}})
+    write_cover_letter(profile, ResumeSelection(), make_job(), router, paths=paths)
+    prompt = router.calls[0][1]
+    assert "I will keep it short, and the rose garden helped" in prompt
+    assert "Will Rose" not in prompt
+
+
+def test_postal_details_inside_long_prose_are_removed(paths):
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    long = ("I have spent years writing plainly for busy readers, and I keep doing it here. " * 2
+            + "Write to P.O. Box 4411 or Suite 210, 78701-1234, any time.")
+    (paths.resources / "writing" / "w.txt").write_text(long, encoding="utf-8")
+    samples = load_voice_samples(paths)
+    assert "writing plainly" in samples
+    for private in ("4411", "Suite 210", "78701-1234"):
+        assert private not in samples, private
+
+
+def test_your_name_in_capitals_is_removed_too(paths):
+    from test_tailor_support import FakeRouter, make_job, make_profile
+
+    from recrute.schemas import ResumeSelection
+    from recrute.tailor.cover_letter import write_cover_letter
+
+    profile = make_profile()
+    (paths.resources / "writing" / "w.txt").write_text(
+        f"{profile.name.upper()}\nI write short.", encoding="utf-8")
+    router = FakeRouter({"cover": {"paragraphs": ["Body."], "cited_ids": []}})
+    write_cover_letter(profile, ResumeSelection(), make_job(), router, paths=paths)
+    assert profile.name.upper() not in router.calls[0][1]

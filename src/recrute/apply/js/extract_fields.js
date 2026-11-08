@@ -128,27 +128,10 @@
   const TRANSPORT_NAMES = new Set(['_token', 'token', '_method', 'gh_src', 'gh_jid',
     'session_redirect', 'redirect', 'redirect_url', 'return_to', 'timestamp', 'locale']);
   const transport = (args.transport || []).map(p => new RegExp(`^(?:${p})$`));
-  // A hidden input that stores the value of ONE visible picker (a location combobox's
-  // coordinates, a typeahead's selected id). Explicit association only: inside that control's
-  // own <label>, or the nearest wrapper holding exactly one visible control, and that control
-  // is a picker. A hidden input next to several fields, or next to a plain text box, is not.
-  const PICKER = '[role="combobox"], [aria-autocomplete], input[list], [class*="select" i], ' +
-    '[class*="autocomplete" i], [class*="typeahead" i], [class*="picker" i], [class*="location" i]';
-  const backsWidget = el => {
-    const lab = el.closest('label');
-    if (lab && lab.control && lab.control !== el && lab.control.type !== 'hidden' && visible(lab.control))
-      return true;
-    let cur = el.parentElement;
-    for (let d = 0; cur && d < 3 && cur !== document.body; d++, cur = cur.parentElement) {
-      const shown = [...cur.querySelectorAll('input, select, textarea, [role="combobox"]')]
-        .filter(o => o !== el && o.type !== 'hidden' && visible(o));
-      if (!shown.length) continue;
-      if (shown.length > 1) return false;
-      const w = shown[0];
-      return w.matches(PICKER) || !!w.closest(PICKER);
-    }
-    return false;
-  };
+  // A hidden input that backs a picker (a location's coordinates, a typeahead's id) is NOT
+  // guessed at: three heuristics for "it belongs to that picker" each let an unapproved answer
+  // through. Every hidden value is verified, unless its adapter names it (`transport`) because it
+  // checks that value itself (Lever's selectedLocation). On an unfamiliar form, it comes to you.
   const out = [];
   const used = new Set();
   // Help/description text attached to a field (aria-describedby, or hint text in its
@@ -259,7 +242,6 @@
       const words = el.name.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
         .split(/[^a-z0-9]+/).filter(Boolean);
       if (words.some(w => TRANSPORT_WORDS.has(w)) || TRANSPORT_NAMES.has(el.name.toLowerCase())) continue;
-      if (backsWidget(el)) continue;
       const lab = labelOf(el);
       push({key: keyOf(el), label: clean(lab.text) || el.name, required: false, selector: sel(el),
             options: [], option_selectors: [], current: v, visible: false, trigger: '',
@@ -282,9 +264,8 @@
       const v = isFile ? [...(el.files || [])].map(f => f.name).join(', ')
         : (el.tagName === 'SELECT' ? [...el.selectedOptions].filter(o => o.value !== '')
              .map(o => o.text.trim()).join(' | ') : el.value);
-      // native forms only submit NAMED controls; and a hidden input backing a visible widget in
-      // the same field (react-select, custom pickers) is checked through that widget
-      if (v && el.name && !backsWidget(el)) {
+      // native forms only submit NAMED controls
+      if (v && el.name && !transport.some(rx => rx.test(el.name))) {
         const lab = labelOf(el);
         push({key: keyOf(el), label: clean(lab.text) || el.name || el.id, required: false,
               selector: sel(el), options: [], option_selectors: [], current: v,

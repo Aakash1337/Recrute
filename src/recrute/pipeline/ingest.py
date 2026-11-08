@@ -96,14 +96,24 @@ def source_url(raw: RawJob) -> str:
 MULTI_ROLE_SOURCES = {"hn_whoshiring"}
 
 
+# Names that only mean something on your own network. (Not resolved here: a public name can
+# still point at a private address; the approvals at CP1 and CP2 stand in front of that.)
+_LOCAL_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home", ".home.arpa", ".corp",
+                   ".intranet", ".localdomain", ".private")
+
+
 def _public_web_address(url: str) -> bool:
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower().rstrip(".")
+    try:
+        parts = urlsplit(url)
+        # as a browser reads it: "１２７.０.０.１" and "127。0。0。1" are 127.0.0.1 to Chromium
+        host = (parts.hostname or "").encode("idna").decode("ascii").lower().rstrip(".")
+    except (ValueError, UnicodeError):  # "https://[bad/x": not somewhere a browser should go
+        return False
     if parts.scheme.lower() not in ("http", "https") or not host:
         return False
     if "%" in host or "\\" in url:  # browsers decode these into the real destination
         return False
-    if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
+    if host == "localhost" or host.endswith(_LOCAL_SUFFIXES):
         return False
     try:
         ip = ipaddress.ip_address(host)
@@ -111,7 +121,7 @@ def _public_web_address(url: str) -> bool:
         try:  # "127.1", "2130706433", "0x7f.0.0.1": browsers read these as addresses too
             ip = ipaddress.ip_address(socket.inet_aton(host))
         except (OSError, ValueError):
-            return True  # a name
+            return "." in host  # a name; a dotless one ("router", "nas") is your network's
     return ip.is_global
 
 
@@ -261,7 +271,11 @@ def _retarget_unsent_application(session: Session, job: Job) -> None:
 
 def _ingest_one(session: Session, raw: RawJob, stats: IngestStats, now) -> None:
     """Upsert one posting (runs inside a savepoint; see ingest)."""
-    target, canon = job_canonical(raw)
+    try:
+        target, canon = job_canonical(raw)
+    except ValueError:  # a malformed link: this posting, not the rest of the source
+        log.warning("skipping a posting from %s: its link can't be read", raw.source)
+        return
     if not _public_web_address(target):
         # scraped data: the logged-in browser (and this server, which trusts local requests)
         # must only ever be sent to a page on the web
@@ -384,7 +398,7 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
                 stats.new, stats.updated, stats.merged = snap[:3]
                 del stats.new_job_ids[snap[3]:]
                 del stats.job_ids[snap[4]:]
-                if attempt == 2:
+                if attempt >= 2:  # (retried once; after a lock retry too, never dropped silently)
                     raise
     session.commit()
     return stats

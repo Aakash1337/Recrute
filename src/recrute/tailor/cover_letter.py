@@ -6,6 +6,7 @@ or because the application form has a *required* cover-letter field.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 
@@ -14,7 +15,7 @@ from pydantic import BaseModel
 from recrute.llm.base import LLMError
 from recrute.paths import Paths
 from recrute.schemas import FormQuestion, Profile, ResumeSelection
-from recrute.tailor.answers import _ADDRESS_VALUE_RE, _EMAIL_VALUE_RE, _PHONE_IN_TEXT_RE
+from recrute.tailor.answers import _EMAIL_VALUE_RE, _PHONE_IN_TEXT_RE
 from recrute.tailor.common import (
     STRS,
     Completer,
@@ -27,6 +28,8 @@ from recrute.tailor.common import (
     word_count,
 )
 from recrute.tailor.ingest import RESUME_SUFFIXES, extract_text
+
+log = logging.getLogger(__name__)
 
 _CL_RE = re.compile(r"cover[\s_-]*letter|letter[\s_-]+of[\s_-]+(interest|motivation)|"
                     r"motivation(al)?[\s_-]*letter", re.IGNORECASE)
@@ -63,7 +66,12 @@ def load_voice_samples(paths: Paths, *, per_file: int = 1200, budget: int = 3000
             if not p.is_file() or p.suffix.lower() not in RESUME_SUFFIXES \
                     or p.name.startswith("."):
                 continue
-            text = _voice_text(extract_text(p))
+            try:
+                text = _voice_text(extract_text(p))
+            except Exception as e:  # noqa: BLE001 - optional styling: one bad file mustn't stop
+                # every cover letter (and its name can be personal: only the error's kind)
+                log.warning("skipping an unreadable writing sample (%s)", e.__class__.__name__)
+                continue
             if not text:
                 continue
             excerpt = truncate(text, min(per_file, budget - used))
@@ -73,16 +81,34 @@ def load_voice_samples(paths: Paths, *, per_file: int = 1200, budget: int = 3000
     return "\n".join(chunks)
 
 
+# A street address in prose, kept tight: the field-value pattern runs from the first "3 years" to
+# the last "way" in a whole letter. Either name words that start with a capital or a digit
+# ("12 Main Street", "123 5th Avenue", "12 MAIN STREET") before any street word, or at most two
+# lowercase ones before a word that's only ever a street ("12 main street"; not "along the way").
+_STREET = r"(?i:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|court|ct|place|pl|" \
+          r"way|hwy|highway|parkway|pkwy|terrace|ter|circle|cir|square|sq)"
+_ADDRESS_IN_PROSE = re.compile(
+    rf"\b\d+[A-Za-z]?\s+(?:[A-Z0-9][\w.'-]*\s+){{1,4}}?{_STREET}\b\.?|"
+    rf"\b\d+[A-Za-z]?\s+(?:[a-z][\w'-]*\s+){{1,2}}?{_STREET}\b\.?|"
+    r"(?i:\bp\.?\s?o\.?\s+box\s+\d+)|(?i:\b(?:apt|apartment|suite|ste|unit)\b\.?\s*#?\s*\d+\w?)|"
+    r"\b\d{5}-\d{4}\b|"
+    r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b")
+# A short line that looks like part of a postal address (a ZIP, a P.O. box, an apartment): the
+# letterhead, gone whole before the lines are joined
+_POSTAL_LINE = re.compile(r"\b\d{5}(?:-\d{4})?\b|(?i:\bp\.?\s?o\.?\s+box\b)|"
+                          r"(?i:\b(?:apt|apartment|suite|ste|unit)\b\.?\s*#?\s*\d)")
 _SALUTATION = re.compile(r"\b(?:dear|hello|hi|greetings|to whom)\b[^:,;]{0,80}[,:;]", re.I)
 
 
 def _voice_text(raw: str) -> str:
     """Your writing, without what heads a letter (name, address, phone, recipient) or any contact
     detail left in the body: only the voice is needed, and these never go to the LLM."""
-    text = " ".join(raw.split())
+    lines = [ln for ln in raw.splitlines() if not (
+        len(ln) <= 100 and (_POSTAL_LINE.search(ln) or _ADDRESS_IN_PROSE.search(ln)))]
+    text = " ".join(" ".join(lines).split())
     if (m := _SALUTATION.search(text[:1500])) is not None:
         text = text[m.end():].strip()
-    for rx in (_EMAIL_VALUE_RE, _PHONE_IN_TEXT_RE, _ADDRESS_VALUE_RE):
+    for rx in (_EMAIL_VALUE_RE, _PHONE_IN_TEXT_RE, _ADDRESS_IN_PROSE):
         text = rx.sub("[removed]", text)
     return re.sub(r"\S*(?:https?://|www\.|linkedin\.com|github\.com)\S*", "[removed]", text)
 
@@ -151,9 +177,12 @@ def write_cover_letter(profile: Profile, selection: ResumeSelection, job: JobCon
                        router: Completer, *, paths: Paths | None = None, user_note: str = "",
                        max_words: int = MAX_WORDS) -> CoverLetter:
     voice = load_voice_samples(paths) if paths is not None else ""
-    for part in (profile.name or "").split():  # (a letter's sign-off: only the voice is needed)
+    # (a letter's sign-off: only the voice is needed. As written or in capitals, so a name
+    # that's also a word, "Will" or "Rose", doesn't take that word out of the writing)
+    for part in (profile.name or "").split():
         if len(part) > 1:
-            voice = re.sub(rf"\b{re.escape(part)}\b", "[removed]", voice, flags=re.IGNORECASE)
+            voice = re.sub(rf"\b(?:{re.escape(part)}|{re.escape(part.upper())})\b", "[removed]",
+                           voice)
     note = f"USER NOTE (follow it): {user_note.strip()}\n" if user_note.strip() else ""
     prompt = COVER_PROMPT.format(
         max_words=max_words - 30, note=note, title=job.title,
