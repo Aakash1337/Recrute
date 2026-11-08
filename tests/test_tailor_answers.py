@@ -2117,3 +2117,51 @@ def test_your_name_in_capitals_is_removed_too(paths):
     router = FakeRouter({"cover": {"paragraphs": ["Body."], "cited_ids": []}})
     write_cover_letter(profile, ResumeSelection(), make_job(), router, paths=paths)
     assert profile.name.upper() not in router.calls[0][1]
+
+
+@pytest.mark.parametrize("sentence", ["I secured 12000 endpoints.",
+                                      "I wrote 3 scripts that drive better outcomes.",
+                                      "We shipped 2 releases this way."])
+def test_ordinary_sentences_are_not_taken_for_addresses(paths, sentence):
+    """Re-audit: my postal-line filter emptied short ordinary sentences."""
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    (paths.resources / "writing" / "w.txt").write_text(sentence, encoding="utf-8")
+    assert sentence in load_voice_samples(paths)
+
+
+def test_a_long_street_name_line_is_removed(paths):
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    (paths.resources / "writing" / "w.txt").write_text(
+        "123 W. Martin Luther King Jr. Blvd\nI write clearly.", encoding="utf-8")
+    samples = load_voice_samples(paths)
+    assert "I write clearly." in samples and "Martin Luther" not in samples
+
+
+@pytest.mark.parametrize("line", [
+    # re-audit: wrapped PDF lines and bullets have no final punctuation
+    "over 5 years I learned the hard way that small",
+    "I led 4 people to drive adoption across the", "we served 10000 users a day and",
+    "- I secured 12000 endpoints", "We shipped 2 releases this way",
+    "I wrote 3 scripts that drive better outcomes", "5 years of court reporting taught me",
+])
+def test_unpunctuated_writing_lines_are_kept(paths, line):
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    (paths.resources / "writing" / "w.txt").write_text(f"{line}\nmore of the same paragraph",
+                                                        encoding="utf-8")
+    assert line in load_voice_samples(paths)
+
+
+@pytest.mark.parametrize("line", ["12 main drive.", "Austin 78701.", "12 Main Street, Austin",
+                                  "Austin, TX 78701", "P.O. Box 44, Austin", "Apt 5, Riverside",
+                                  "123 W. Martin Luther King Jr. Blvd", "9 oak court"])
+def test_address_lines_are_removed_punctuated_or_not(paths, line):
+    """Re-audit: an address line ending in a period was taken for a sentence and kept."""
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    (paths.resources / "writing" / "w.txt").write_text(f"{line}\nI write clearly.",
+                                                        encoding="utf-8")
+    samples = load_voice_samples(paths)
+    assert "I write clearly." in samples and line.rstrip(".") not in samples

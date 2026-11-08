@@ -87,24 +87,42 @@ def load_voice_samples(paths: Paths, *, per_file: int = 1200, budget: int = 3000
 # lowercase ones before a word that's only ever a street ("12 main street"; not "along the way").
 _STREET = r"(?i:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|court|ct|place|pl|" \
           r"way|hwy|highway|parkway|pkwy|terrace|ter|circle|cir|square|sq)"
+# (in prose, lowercase, only words that are never anything but a street: "3 scripts that drive
+# better outcomes" and "along the way" are writing)
+_STREET_ONLY = r"(?:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|parkway|pkwy|highway|" \
+               r"hwy|terrace)"
 _ADDRESS_IN_PROSE = re.compile(
-    rf"\b\d+[A-Za-z]?\s+(?:[A-Z0-9][\w.'-]*\s+){{1,4}}?{_STREET}\b\.?|"
-    rf"\b\d+[A-Za-z]?\s+(?:[a-z][\w'-]*\s+){{1,2}}?{_STREET}\b\.?|"
+    rf"\b\d+[A-Za-z]?\s+(?:[A-Z0-9][\w.'-]*\s+){{1,6}}?{_STREET}\b\.?|"
+    rf"\b\d+[A-Za-z]?\s+(?:[a-z][\w'-]*\s+){{1,2}}?{_STREET_ONLY}\b\.?|"
     r"(?i:\bp\.?\s?o\.?\s+box\s+\d+)|(?i:\b(?:apt|apartment|suite|ste|unit)\b\.?\s*#?\s*\d+\w?)|"
     r"\b\d{5}-\d{4}\b|"
     r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b")
-# A short line that looks like part of a postal address (a ZIP, a P.O. box, an apartment): the
-# letterhead, gone whole before the lines are joined
-_POSTAL_LINE = re.compile(r"\b\d{5}(?:-\d{4})?\b|(?i:\bp\.?\s?o\.?\s+box\b)|"
-                          r"(?i:\b(?:apt|apartment|suite|ste|unit)\b\.?\s*#?\s*\d)")
 _SALUTATION = re.compile(r"\b(?:dear|hello|hi|greetings|to whom)\b[^:,;]{0,80}[,:;]", re.I)
+
+
+# A whole line that IS an address, start to end: "12 main drive.", "123 W. Martin Luther King Jr.
+# Blvd", "12 Main Street, Austin", "Austin, TX 78701", "P.O. Box 44", "Apt 5, Riverside". Writing
+# that merely holds a number ("I secured 12000 endpoints", "- we served 10000 users a day and", a
+# PDF line wrapped after "the hard way") is never one, punctuated or not.
+_ADDRESS_LINE = re.compile(
+    rf"^\d+[A-Za-z]?\s+(?:[\w.'-]+\s+){{0,6}}?{_STREET}\b\.?(?:[,\s]+(?:#\s*)?\w{{1,12}}\.?)?$|"
+    r"^[\w .,'-]{0,60}?\b(?:[A-Z]{2}\s+)?\d{5}(?:-\d{4})?\.?$|"
+    r"^p\.?\s?o\.?\s+box\s+\d+\w*\.?(?:[,\s]+[\w .,'-]{0,40})?$|"
+    r"^(?:apt|apartment|suite|ste|unit)\b\.?\s*#?\s*\d+\w*\.?(?:[,\s]+[\w .,'-]{0,40})?$",
+    re.IGNORECASE)
+
+
+def _address_line(line: str) -> bool:
+    """A letterhead line that is an address, dropped whole; anything else is writing, and only
+    its address parts are taken out (see _ADDRESS_IN_PROSE)."""
+    s = line.strip()
+    return bool(s) and len(s) <= 100 and bool(_ADDRESS_LINE.match(s))
 
 
 def _voice_text(raw: str) -> str:
     """Your writing, without what heads a letter (name, address, phone, recipient) or any contact
     detail left in the body: only the voice is needed, and these never go to the LLM."""
-    lines = [ln for ln in raw.splitlines() if not (
-        len(ln) <= 100 and (_POSTAL_LINE.search(ln) or _ADDRESS_IN_PROSE.search(ln)))]
+    lines = [ln for ln in raw.splitlines() if not _address_line(ln)]
     text = " ".join(" ".join(lines).split())
     if (m := _SALUTATION.search(text[:1500])) is not None:
         text = text[m.end():].strip()
