@@ -89,8 +89,9 @@ _STREET = r"(?i:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|cou
           r"way|hwy|highway|parkway|pkwy|terrace|ter|circle|cir|square|sq)"
 _ADDRESS_IN_PROSE = re.compile(
     rf"\b\d+[A-Za-z]?\s+(?:[A-Z0-9][\w.'-]*\s+){{1,4}}?{_STREET}\b\.?|"
-    r"\b\d+[A-Za-z]?\s+(?:[a-z][\w'-]*\s+){1,2}?(?:street|avenue|road|boulevard|lane|parkway|"
-    r"st|ave|rd|ln|blvd)\b\.?|"
+    rf"\b\d+[A-Za-z]?\s+(?:[a-z][\w'-]*\s+){{1,2}}?{_STREET}\b\.?|"
+    r"(?i:\bp\.?\s?o\.?\s+box\s+\d+)|(?i:\b(?:apt|apartment|suite|ste|unit)\b\.?\s*#?\s*\d+\w?)|"
+    r"\b\d{5}-\d{4}\b|"
     r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b")
 # A short line that looks like part of a postal address (a ZIP, a P.O. box, an apartment): the
 # letterhead, gone whole before the lines are joined
@@ -176,11 +177,12 @@ def write_cover_letter(profile: Profile, selection: ResumeSelection, job: JobCon
                        router: Completer, *, paths: Paths | None = None, user_note: str = "",
                        max_words: int = MAX_WORDS) -> CoverLetter:
     voice = load_voice_samples(paths) if paths is not None else ""
-    # (a letter's sign-off: only the voice is needed. As written, so a name that's also a word,
-    # "Will" or "Rose", doesn't take that word out of the writing)
+    # (a letter's sign-off: only the voice is needed. As written or in capitals, so a name
+    # that's also a word, "Will" or "Rose", doesn't take that word out of the writing)
     for part in (profile.name or "").split():
         if len(part) > 1:
-            voice = re.sub(rf"\b{re.escape(part)}\b", "[removed]", voice)
+            voice = re.sub(rf"\b(?:{re.escape(part)}|{re.escape(part.upper())})\b", "[removed]",
+                           voice)
     note = f"USER NOTE (follow it): {user_note.strip()}\n" if user_note.strip() else ""
     prompt = COVER_PROMPT.format(
         max_words=max_words - 30, note=note, title=job.title,

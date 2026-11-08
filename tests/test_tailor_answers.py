@@ -2064,7 +2064,7 @@ def test_an_unreadable_writing_sample_is_skipped_not_fatal(paths):
 @pytest.mark.parametrize("address", ["123 5th Avenue", "12 MAIN STREET", "12 main street",
                                      "40 Oak Tree Lane", "7 Elm St.", "TX 78701",
                                      "12 main st", "Austin 78701", "P.O. Box 44",
-                                     "Apt 5, Riverside"])
+                                     "Apt 5, Riverside", "12 main drive", "9 oak court"])
 def test_voice_sample_addresses_are_removed_however_written(paths, address):
     """Re-audit: the tighter pattern let numbered, uppercase and lowercase streets through.
     (A city on its own isn't an address: "Austin" stays, its ZIP doesn't.)"""
@@ -2091,3 +2091,29 @@ def test_a_name_that_is_also_a_word_stays_in_the_writing(paths):
     prompt = router.calls[0][1]
     assert "I will keep it short, and the rose garden helped" in prompt
     assert "Will Rose" not in prompt
+
+
+def test_postal_details_inside_long_prose_are_removed(paths):
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    long = ("I have spent years writing plainly for busy readers, and I keep doing it here. " * 2
+            + "Write to P.O. Box 4411 or Suite 210, 78701-1234, any time.")
+    (paths.resources / "writing" / "w.txt").write_text(long, encoding="utf-8")
+    samples = load_voice_samples(paths)
+    assert "writing plainly" in samples
+    for private in ("4411", "Suite 210", "78701-1234"):
+        assert private not in samples, private
+
+
+def test_your_name_in_capitals_is_removed_too(paths):
+    from test_tailor_support import FakeRouter, make_job, make_profile
+
+    from recrute.schemas import ResumeSelection
+    from recrute.tailor.cover_letter import write_cover_letter
+
+    profile = make_profile()
+    (paths.resources / "writing" / "w.txt").write_text(
+        f"{profile.name.upper()}\nI write short.", encoding="utf-8")
+    router = FakeRouter({"cover": {"paragraphs": ["Body."], "cited_ids": []}})
+    write_cover_letter(profile, ResumeSelection(), make_job(), router, paths=paths)
+    assert profile.name.upper() not in router.calls[0][1]

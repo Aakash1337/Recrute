@@ -1189,8 +1189,12 @@ def test_hidden_backing_values_of_a_picker_are_recognized(context):
         <input type="hidden" name="requires_sponsorship" value="No"></div>
     </form>""")
     ids = {f.id for f in dom.extract_fields(page)}
-    assert not {"location_latitude", "location_longitude", "selectedLocation"} & ids
-    assert "requires_sponsorship" in ids  # next to a plain text box: still verified
+    # no guessing which hidden values belong to a picker: all are verified (an unfamiliar form's
+    # come to you); an adapter lists the ones it checks itself
+    assert {"location_latitude", "location_longitude", "selectedLocation",
+            "requires_sponsorship"} <= ids
+    listed = {f.id for f in dom.extract_fields(page, transport=[r"selectedLocation"])}
+    assert "selectedLocation" not in listed and "requires_sponsorship" in listed
     page.close()
 
 
@@ -1675,19 +1679,6 @@ def test_hidden_answer_is_verified_whatever_the_page_calls_its_form(context, wra
 
 
 @pytest.mark.browser
-def test_hidden_value_of_a_real_picker_is_still_exempt(context):
-    from recrute.apply import dom
-
-    page = context.new_page()
-    page.set_content("""<form><div class="location-picker">
-      <label for="loc">Location</label><input id="loc" role="combobox" value="Austin">
-      <input type="hidden" name="location_id" value="123"></div></form>""")
-    fields = {f.id for f in dom.extract_fields(page)}
-    page.close()
-    assert "location_id" not in fields
-
-
-@pytest.mark.browser
 @pytest.mark.parametrize("html", [
     # final audit (critical): straight inside the form, the form itself was "the picker"
     '<form class="job-location-form"><label for="n">Name</label><input id="n" name="n" value="Ada">'
@@ -1711,27 +1702,6 @@ def test_hidden_answer_beside_a_plain_text_box_is_always_checked(context, html):
                              Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")]),
                              {})
     assert "requires_sponsorship" in problems
-
-
-@pytest.mark.browser
-@pytest.mark.parametrize("html", [
-    '<form><div class="x"><label for="l">Location</label><input id="l" role="combobox" '
-    'value="Austin"><input type="hidden" name="location_id" value="1"></div></form>',
-    '<form><div class="field"><div class="select__control"><input id="country" value="US"></div>'
-    '<input type="hidden" name="country_id" value="1"></div></form>',
-    '<form><div><label for="l">Location</label><input id="l" class="location-input">'
-    '<input type="hidden" name="job[latitude]" value="30.2"></div></form>',
-    '<form><label>Location <input role="combobox" value="Austin"><input type="hidden" '
-    'name="location_id" value="1"></label></form>',
-])
-def test_hidden_value_of_a_real_picker_is_still_exempt_in_every_shape(context, html):
-    from recrute.apply import dom
-
-    page = context.new_page()
-    page.set_content(html)
-    ids = {f.id for f in dom.extract_fields(page)}
-    page.close()
-    assert not ids & {"location_id", "country_id"}
 
 
 @pytest.mark.browser
@@ -1764,3 +1734,24 @@ def test_hidden_answer_is_checked_unless_it_is_plainly_a_pickers_value(context, 
     assert hidden, fields.keys()
     problems = verify_fields(list(fields.values()), Packet(job_id=1), {})
     assert all(k in problems for k in hidden)
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("html", [
+    # re-audit (critical): a shared word was taken as proof
+    '<form><div><label for="s">Sponsorship</label><input id="sponsorship" role="combobox" '
+    'value="Yes"><input type="hidden" name="requires_sponsorship" value="No"></div></form>',
+    '<form><div><label for="c">Country</label><input id="country" role="combobox" value="US">'
+    '<input type="hidden" name="country_work_authorization" value="No"></div></form>',
+    '<form><div class="location-picker"><label for="l">Location</label><input id="l" '
+    'role="combobox" value="Austin"><input type="hidden" name="location_id" value="1"></div>'
+    '</form>',
+])
+def test_every_hidden_value_beside_a_picker_is_verified(context, html):
+    from recrute.apply import dom
+
+    page = context.new_page()
+    page.set_content(html)
+    hidden = [f for f in dom.extract_fields(page) if f.widget == "hidden_value"]
+    page.close()
+    assert hidden

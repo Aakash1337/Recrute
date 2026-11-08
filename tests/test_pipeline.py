@@ -953,7 +953,8 @@ def test_a_link_that_is_not_a_web_address_is_never_ingested(engine):
     "http://0x7f000001:8765/settings", "http://0x7f.0.0.1/", "http://[::ffff:127.0.0.1]/",
     "http://%31%32%37.0.0.1:8765/settings", "http://local%68ost:8765/settings",
     "http://\uff11\uff12\uff17.\uff10.\uff10.\uff11:8765/settings",
-    "http://127\u30020\u30020\u30021/", "http://\uff4c\uff4f\uff43\uff41\uff4c\uff48\uff4f\uff53\uff54:8765/",
+    "http://router/", "http://nas:5000/", "http://printer.lan/", "http://gateway.home.arpa/",
+    "http://intranet/", "http://127\u30020\u30020\u30021/", "http://\uff4c\uff4f\uff43\uff41\uff4c\uff48\uff4f\uff53\uff54:8765/",
 ])
 def test_a_link_into_your_own_network_is_never_ingested(engine, url):
     """Re-audit: this server trusts local requests, and the browser is logged in."""

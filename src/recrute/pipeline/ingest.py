@@ -96,6 +96,12 @@ def source_url(raw: RawJob) -> str:
 MULTI_ROLE_SOURCES = {"hn_whoshiring"}
 
 
+# Names that only mean something on your own network. (Not resolved here: a public name can
+# still point at a private address; the approvals at CP1 and CP2 stand in front of that.)
+_LOCAL_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home", ".home.arpa", ".corp",
+                   ".intranet", ".localdomain", ".private")
+
+
 def _public_web_address(url: str) -> bool:
     try:
         parts = urlsplit(url)
@@ -107,7 +113,7 @@ def _public_web_address(url: str) -> bool:
         return False
     if "%" in host or "\\" in url:  # browsers decode these into the real destination
         return False
-    if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
+    if host == "localhost" or host.endswith(_LOCAL_SUFFIXES):
         return False
     try:
         ip = ipaddress.ip_address(host)
@@ -115,7 +121,7 @@ def _public_web_address(url: str) -> bool:
         try:  # "127.1", "2130706433", "0x7f.0.0.1": browsers read these as addresses too
             ip = ipaddress.ip_address(socket.inet_aton(host))
         except (OSError, ValueError):
-            return True  # a name
+            return "." in host  # a name; a dotless one ("router", "nas") is your network's
     return ip.is_global
 
 

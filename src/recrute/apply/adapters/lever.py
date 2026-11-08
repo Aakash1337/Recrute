@@ -115,8 +115,9 @@ class LeverAdapter(BaseAdapter):
     # each question card carries its serialized definition (the questions, not answers); the
     # page's scripts also set the board's account id, the browser's time zone and the stored
     # upload's id
+    # (selectedLocation: the location picker's value, which read_form checks against the field)
     transport_fields = (r"cards\[[0-9a-f-]+\]\[baseTemplate\]", r"accountId", r"timezone",
-                        r"resumeStorageId")
+                        r"resumeStorageId", r"selectedLocation")
     aliases: ClassVar[dict[str, list[str]]] = {}
     confirm_url_re = re.compile(r"/(thanks|confirmation)\b", re.I)
 

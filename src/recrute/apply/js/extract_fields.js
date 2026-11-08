@@ -128,60 +128,10 @@
   const TRANSPORT_NAMES = new Set(['_token', 'token', '_method', 'gh_src', 'gh_jid',
     'session_redirect', 'redirect', 'redirect_url', 'return_to', 'timestamp', 'locale']);
   const transport = (args.transport || []).map(p => new RegExp(`^(?:${p})$`));
-  // A hidden input that stores the value of ONE visible picker (a location combobox's
-  // coordinates, a typeahead's selected id). Explicit association only: inside that control's
-  // own <label>, or the nearest wrapper holding exactly one visible control, and that control
-  // is a picker. A hidden input next to several fields, or next to a plain text box, is not.
-  // Exempting a hidden input means it is never checked, so the rule is strict, and a mistake
-  // only ever sends the form to you. All three must hold:
-  //  1. a real picker: picker ARIA, or a picker library's own class token (never a substring:
-  //     "select-none", "selected-input" and "relocation-question" are not pickers), on the
-  //     control or between it and the wrapper, never the wrapper or above;
-  //  2. in the hidden input's own field: climbing past a wrapper with its own label or words
-  //     would reach a neighbouring question;
-  //  3. plainly that picker's value: it shares a word with the picker's name, id or label
-  //     ("selectedLocation" for a location box), or is coordinates for a location.
-  const SEMANTIC_PICKER = '[role="combobox"], [aria-autocomplete], [aria-haspopup="listbox"], input[list]';
-  const PICKER_CLASS = /(^|[-_])(autocomplete|typeahead|picker|combobox)([-_]|$)|^select__|^location-input$/i;
-  const classPicker = e => [...(e.classList || [])].some(c => PICKER_CLASS.test(c));
-  const isPicker = (w, around) => {
-    if (w.matches(SEMANTIC_PICKER) || classPicker(w)) return true;
-    for (let a = w.parentElement; a && a !== around && around.contains(a); a = a.parentElement)
-      if (classPicker(a)) return true;
-    return false;
-  };
-  const STOP = new Set(['input', 'field', 'value', 'id', 'the', 'your', 'select', 'selected',
-    'question', 'form', 'job', 'application', 'answer', 'text', 'data', 'hidden', 'name', 'current']);
-  const words = s => (s || '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
-    .split(/[^a-z0-9]+/).filter(t => t.length > 1 && !STOP.has(t));
-  const GEO = new Set(['lat', 'lng', 'lon', 'latitude', 'longitude', 'geo', 'geocode', 'place',
-    'placeid', 'coordinates', 'coords']);
-  const PLACE = new Set(['location', 'city', 'address', 'town', 'region']);  // (one idea)
-  const valueOf = (hidden, w) => {
-    const mine = words(`${hidden.name} ${hidden.id}`);
-    const theirs = new Set(words([w.id, w.name, w.getAttribute('aria-label'),
-      w.getAttribute('placeholder'), w.getAttribute('class'), labelOf(w).text].join(' ')));
-    const place = [...theirs].some(t => PLACE.has(t));
-    return mine.some(t => theirs.has(t))
-      || (place && mine.some(t => PLACE.has(t) || GEO.has(t)));
-  };
-  const backsWidget = el => {
-    const lab = el.closest('label');
-    if (lab && lab.control && lab.control !== el && lab.control.type !== 'hidden' && visible(lab.control))
-      return isPicker(lab.control, lab) && valueOf(el, lab.control);
-    let cur = el.parentElement;
-    for (let d = 0; cur && d < 3 && cur !== document.body; d++, cur = cur.parentElement) {
-      const shown = [...cur.querySelectorAll('input, select, textarea, [role="combobox"]')]
-        .filter(o => o !== el && o.type !== 'hidden' && visible(o));
-      if (!shown.length) {
-        if (cur.querySelector('label, legend') || (cur.innerText || '').trim()) return false;
-        continue;  // (a bare wrapper around just the hidden input)
-      }
-      if (shown.length > 1) return false;
-      return isPicker(shown[0], cur) && valueOf(el, shown[0]);
-    }
-    return false;
-  };
+  // A hidden input that backs a picker (a location's coordinates, a typeahead's id) is NOT
+  // guessed at: three heuristics for "it belongs to that picker" each let an unapproved answer
+  // through. Every hidden value is verified, unless its adapter names it (`transport`) because it
+  // checks that value itself (Lever's selectedLocation). On an unfamiliar form, it comes to you.
   const out = [];
   const used = new Set();
   // Help/description text attached to a field (aria-describedby, or hint text in its
@@ -292,7 +242,6 @@
       const words = el.name.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
         .split(/[^a-z0-9]+/).filter(Boolean);
       if (words.some(w => TRANSPORT_WORDS.has(w)) || TRANSPORT_NAMES.has(el.name.toLowerCase())) continue;
-      if (backsWidget(el)) continue;
       const lab = labelOf(el);
       push({key: keyOf(el), label: clean(lab.text) || el.name, required: false, selector: sel(el),
             options: [], option_selectors: [], current: v, visible: false, trigger: '',
@@ -315,9 +264,8 @@
       const v = isFile ? [...(el.files || [])].map(f => f.name).join(', ')
         : (el.tagName === 'SELECT' ? [...el.selectedOptions].filter(o => o.value !== '')
              .map(o => o.text.trim()).join(' | ') : el.value);
-      // native forms only submit NAMED controls; and a hidden input backing a visible widget in
-      // the same field (react-select, custom pickers) is checked through that widget
-      if (v && el.name && !backsWidget(el)) {
+      // native forms only submit NAMED controls
+      if (v && el.name && !transport.some(rx => rx.test(el.name))) {
         const lab = labelOf(el);
         push({key: keyOf(el), label: clean(lab.text) || el.name || el.id, required: false,
               selector: sel(el), options: [], option_selectors: [], current: v,
