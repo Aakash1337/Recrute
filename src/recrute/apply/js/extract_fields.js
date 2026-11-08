@@ -134,21 +134,25 @@
   // is a picker. A hidden input next to several fields, or next to a plain text box, is not.
   const PICKER = '[role="combobox"], [aria-autocomplete], input[list], [class*="select" i], ' +
     '[class*="autocomplete" i], [class*="typeahead" i], [class*="picker" i], [class*="location" i]';
+  // The picker is the visible control itself, or something INSIDE the wrapper around both:
+  // never the wrapper (a <form class="job-location-form"> holding a text box and a hidden answer)
+  // or anything above it, whose class says nothing about this one field.
+  const isPicker = (w, around) => {
+    if (w.matches(PICKER)) return true;
+    const p = w.closest(PICKER);
+    return !!p && p !== around && around.contains(p);
+  };
   const backsWidget = el => {
     const lab = el.closest('label');
     if (lab && lab.control && lab.control !== el && lab.control.type !== 'hidden' && visible(lab.control))
-      return true;
+      return isPicker(lab.control, lab);  // (a label around a plain text box is no association)
     let cur = el.parentElement;
     for (let d = 0; cur && d < 3 && cur !== document.body; d++, cur = cur.parentElement) {
       const shown = [...cur.querySelectorAll('input, select, textarea, [role="combobox"]')]
         .filter(o => o !== el && o.type !== 'hidden' && visible(o));
       if (!shown.length) continue;
       if (shown.length > 1) return false;
-      const w = shown[0];
-      // (bounded by this wrapper: a <form class="job-location-form"> or <body class="preselected">
-      // far above must not make a plain text box a picker, and its hidden neighbour unchecked)
-      const p = w.closest(PICKER);
-      return w.matches(PICKER) || (!!p && cur.contains(p));
+      return isPicker(shown[0], cur);
     }
     return false;
   };

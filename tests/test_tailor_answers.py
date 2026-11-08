@@ -2059,3 +2059,33 @@ def test_an_unreadable_writing_sample_is_skipped_not_fatal(paths):
     (paths.resources / "cover_letters" / "broken.pdf").write_bytes(b"not a pdf at all")
     (paths.resources / "writing" / "ok.txt").write_text("I write short.", encoding="utf-8")
     assert "I write short." in load_voice_samples(paths)
+
+
+@pytest.mark.parametrize("address", ["123 5th Avenue", "12 MAIN STREET", "12 main street",
+                                     "40 Oak Tree Lane", "7 Elm St.", "TX 78701"])
+def test_voice_sample_addresses_are_removed_however_written(paths, address):
+    """Re-audit: the tighter pattern let numbered, uppercase and lowercase streets through.
+    (A city on its own isn't an address: "Austin" stays, its ZIP doesn't.)"""
+    from recrute.tailor.cover_letter import load_voice_samples
+
+    (paths.resources / "writing" / "w.txt").write_text(
+        f"{address}\nI write plainly and keep it short.", encoding="utf-8")
+    samples = load_voice_samples(paths)
+    assert "I write plainly" in samples and address not in samples
+
+
+def test_a_name_that_is_also_a_word_stays_in_the_writing(paths):
+    from test_tailor_support import FakeRouter, make_job, make_profile
+
+    from recrute.schemas import ResumeSelection
+    from recrute.tailor.cover_letter import write_cover_letter
+
+    profile = make_profile().model_copy(update={"name": "Will Rose"})
+    (paths.resources / "writing" / "w.txt").write_text(
+        "I will keep it short, and the rose garden helped. Sincerely, Will Rose",
+        encoding="utf-8")
+    router = FakeRouter({"cover": {"paragraphs": ["Body."], "cited_ids": []}})
+    write_cover_letter(profile, ResumeSelection(), make_job(), router, paths=paths)
+    prompt = router.calls[0][1]
+    assert "I will keep it short, and the rose garden helped" in prompt
+    assert "Will Rose" not in prompt

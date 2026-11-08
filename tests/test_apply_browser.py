@@ -1685,3 +1685,48 @@ def test_hidden_value_of_a_real_picker_is_still_exempt(context):
     fields = {f.id for f in dom.extract_fields(page)}
     page.close()
     assert "location_id" not in fields
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("html", [
+    # final audit (critical): straight inside the form, the form itself was "the picker"
+    '<form class="job-location-form"><label for="n">Name</label><input id="n" name="n" value="Ada">'
+    '<input type="hidden" name="requires_sponsorship" value="No"></form>',
+    # a label around a plain text box is no association either
+    '<form><label>Name <input name="n" value="Ada"><input type="hidden" '
+    'name="requires_sponsorship" value="No"></label></form>',
+    '<form><div class="select-field"><label for="n">Name</label><input id="n" name="n" '
+    'value="Ada"><input type="hidden" name="requires_sponsorship" value="No"></div></form>',
+])
+def test_hidden_answer_beside_a_plain_text_box_is_always_checked(context, html):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    page = context.new_page()
+    page.set_content(html)
+    fields = {f.id: f for f in dom.extract_fields(page)}
+    page.close()
+    assert "requires_sponsorship" in fields
+    problems = verify_fields(list(fields.values()),
+                             Packet(job_id=1, answers=[FormAnswer(question_id="n", value="Ada")]),
+                             {})
+    assert "requires_sponsorship" in problems
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("html", [
+    '<form><div class="x"><label for="l">Location</label><input id="l" role="combobox" '
+    'value="Austin"><input type="hidden" name="location_id" value="1"></div></form>',
+    '<form><div class="field"><div class="select__control"><input id="s" value="US"></div>'
+    '<input type="hidden" name="country_id" value="1"></div></form>',
+    '<form><label>Location <input role="combobox" value="Austin"><input type="hidden" '
+    'name="location_id" value="1"></label></form>',
+])
+def test_hidden_value_of_a_real_picker_is_still_exempt_in_every_shape(context, html):
+    from recrute.apply import dom
+
+    page = context.new_page()
+    page.set_content(html)
+    ids = {f.id for f in dom.extract_fields(page)}
+    page.close()
+    assert not ids & {"location_id", "country_id"}

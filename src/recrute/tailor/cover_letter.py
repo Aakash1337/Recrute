@@ -82,10 +82,14 @@ def load_voice_samples(paths: Paths, *, per_file: int = 1200, budget: int = 3000
 
 
 # A street address in prose, kept tight: the field-value pattern runs from the first "3 years" to
-# the last "way" in a whole letter. Capitalised words, a street word, or a state and ZIP.
+# the last "way" in a whole letter. Either name words that start with a capital or a digit
+# ("12 Main Street", "123 5th Avenue", "12 MAIN STREET") before any street word, or at most two
+# lowercase ones before a word that's only ever a street ("12 main street"; not "along the way").
+_STREET = r"(?i:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|court|ct|place|pl|" \
+          r"way|hwy|highway|parkway|pkwy|terrace|ter|circle|cir|square|sq)"
 _ADDRESS_IN_PROSE = re.compile(
-    r"\b\d+[A-Za-z]?\s+(?:[A-Z][\w.'-]*\s+){0,4}?(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|"
-    r"Blvd|Lane|Ln|Drive|Dr|Court|Ct|Place|Pl|Way|Hwy|Highway|Parkway|Pkwy)\b\.?|"
+    rf"\b\d+[A-Za-z]?\s+(?:[A-Z0-9][\w.'-]*\s+){{1,4}}?{_STREET}\b\.?|"
+    r"\b\d+[A-Za-z]?\s+(?:[a-z][\w'-]*\s+){1,2}?(?:street|avenue|road|boulevard|lane|parkway)\b|"
     r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b")
 _SALUTATION = re.compile(r"\b(?:dear|hello|hi|greetings|to whom)\b[^:,;]{0,80}[,:;]", re.I)
 
@@ -165,9 +169,11 @@ def write_cover_letter(profile: Profile, selection: ResumeSelection, job: JobCon
                        router: Completer, *, paths: Paths | None = None, user_note: str = "",
                        max_words: int = MAX_WORDS) -> CoverLetter:
     voice = load_voice_samples(paths) if paths is not None else ""
-    for part in (profile.name or "").split():  # (a letter's sign-off: only the voice is needed)
+    # (a letter's sign-off: only the voice is needed. As written, so a name that's also a word,
+    # "Will" or "Rose", doesn't take that word out of the writing)
+    for part in (profile.name or "").split():
         if len(part) > 1:
-            voice = re.sub(rf"\b{re.escape(part)}\b", "[removed]", voice, flags=re.IGNORECASE)
+            voice = re.sub(rf"\b{re.escape(part)}\b", "[removed]", voice)
     note = f"USER NOTE (follow it): {user_note.strip()}\n" if user_note.strip() else ""
     prompt = COVER_PROMPT.format(
         max_words=max_words - 30, note=note, title=job.title,
