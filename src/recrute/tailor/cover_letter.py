@@ -89,15 +89,22 @@ _STREET = r"(?i:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|cou
           r"way|hwy|highway|parkway|pkwy|terrace|ter|circle|cir|square|sq)"
 _ADDRESS_IN_PROSE = re.compile(
     rf"\b\d+[A-Za-z]?\s+(?:[A-Z0-9][\w.'-]*\s+){{1,4}}?{_STREET}\b\.?|"
-    r"\b\d+[A-Za-z]?\s+(?:[a-z][\w'-]*\s+){1,2}?(?:street|avenue|road|boulevard|lane|parkway)\b|"
+    r"\b\d+[A-Za-z]?\s+(?:[a-z][\w'-]*\s+){1,2}?(?:street|avenue|road|boulevard|lane|parkway|"
+    r"st|ave|rd|ln|blvd)\b\.?|"
     r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b")
+# A short line that looks like part of a postal address (a ZIP, a P.O. box, an apartment): the
+# letterhead, gone whole before the lines are joined
+_POSTAL_LINE = re.compile(r"\b\d{5}(?:-\d{4})?\b|(?i:\bp\.?\s?o\.?\s+box\b)|"
+                          r"(?i:\b(?:apt|apartment|suite|ste|unit)\b\.?\s*#?\s*\d)")
 _SALUTATION = re.compile(r"\b(?:dear|hello|hi|greetings|to whom)\b[^:,;]{0,80}[,:;]", re.I)
 
 
 def _voice_text(raw: str) -> str:
     """Your writing, without what heads a letter (name, address, phone, recipient) or any contact
     detail left in the body: only the voice is needed, and these never go to the LLM."""
-    text = " ".join(raw.split())
+    lines = [ln for ln in raw.splitlines() if not (
+        len(ln) <= 100 and (_POSTAL_LINE.search(ln) or _ADDRESS_IN_PROSE.search(ln)))]
+    text = " ".join(" ".join(lines).split())
     if (m := _SALUTATION.search(text[:1500])) is not None:
         text = text[m.end():].strip()
     for rx in (_EMAIL_VALUE_RE, _PHONE_IN_TEXT_RE, _ADDRESS_IN_PROSE):

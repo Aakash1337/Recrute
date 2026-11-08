@@ -99,8 +99,9 @@ MULTI_ROLE_SOURCES = {"hn_whoshiring"}
 def _public_web_address(url: str) -> bool:
     try:
         parts = urlsplit(url)
-        host = (parts.hostname or "").lower().rstrip(".")
-    except ValueError:  # "https://[bad/x": not somewhere a browser should go
+        # as a browser reads it: "１２７.０.０.１" and "127。0。0。1" are 127.0.0.1 to Chromium
+        host = (parts.hostname or "").encode("idna").decode("ascii").lower().rstrip(".")
+    except (ValueError, UnicodeError):  # "https://[bad/x": not somewhere a browser should go
         return False
     if parts.scheme.lower() not in ("http", "https") or not host:
         return False
@@ -391,7 +392,7 @@ def ingest(session: Session, raws: Iterable[RawJob]) -> IngestStats:
                 stats.new, stats.updated, stats.merged = snap[:3]
                 del stats.new_job_ids[snap[3]:]
                 del stats.job_ids[snap[4]:]
-                if attempt == 2:
+                if attempt >= 2:  # (retried once; after a lock retry too, never dropped silently)
                     raise
     session.commit()
     return stats

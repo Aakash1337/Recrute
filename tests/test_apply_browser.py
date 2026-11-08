@@ -1717,8 +1717,10 @@ def test_hidden_answer_beside_a_plain_text_box_is_always_checked(context, html):
 @pytest.mark.parametrize("html", [
     '<form><div class="x"><label for="l">Location</label><input id="l" role="combobox" '
     'value="Austin"><input type="hidden" name="location_id" value="1"></div></form>',
-    '<form><div class="field"><div class="select__control"><input id="s" value="US"></div>'
+    '<form><div class="field"><div class="select__control"><input id="country" value="US"></div>'
     '<input type="hidden" name="country_id" value="1"></div></form>',
+    '<form><div><label for="l">Location</label><input id="l" class="location-input">'
+    '<input type="hidden" name="job[latitude]" value="30.2"></div></form>',
     '<form><label>Location <input role="combobox" value="Austin"><input type="hidden" '
     'name="location_id" value="1"></label></form>',
 ])
@@ -1730,3 +1732,35 @@ def test_hidden_value_of_a_real_picker_is_still_exempt_in_every_shape(context, h
     ids = {f.id for f in dom.extract_fields(page)}
     page.close()
     assert not ids & {"location_id", "country_id"}
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("html", [
+    # re-audit: class fragments that aren't pickers at all
+    '<form><div><label for="n">Name</label><div class="relative select-none"><input id="n" '
+    'name="n" value="Ada"></div><input type="hidden" name="requires_sponsorship" value="No">'
+    '</div></form>',
+    '<form><div><label for="n">Name</label><input id="n" name="n" class="selected-input" '
+    'value="Ada"><input type="hidden" name="requires_sponsorship" value="No"></div></form>',
+    '<form><div class="relocation-question"><label for="n">Name</label><input id="n" name="n" '
+    'value="Ada"><input type="hidden" name="requires_sponsorship" value="No"></div></form>',
+    # a real picker, but the hidden answer isn't its value
+    '<form><div><label for="l">Location</label><input id="l" role="combobox" value="Austin">'
+    '<input type="hidden" name="requires_sponsorship" value="No"></div></form>',
+    # a neighbouring question's own wrapper
+    '<form><fieldset><div class="q"><label for="l">Location</label><input id="l" '
+    'role="combobox"></div><div class="q">Open to relocating?<input type="hidden" '
+    'name="open_to_relocate" value="Yes"></div></fieldset></form>',
+])
+def test_hidden_answer_is_checked_unless_it_is_plainly_a_pickers_value(context, html):
+    from recrute.apply import dom
+    from recrute.apply.base import verify_fields
+
+    page = context.new_page()
+    page.set_content(html)
+    fields = {f.id: f for f in dom.extract_fields(page)}
+    page.close()
+    hidden = [k for k in fields if k in ("requires_sponsorship", "open_to_relocate")]
+    assert hidden, fields.keys()
+    problems = verify_fields(list(fields.values()), Packet(job_id=1), {})
+    assert all(k in problems for k in hidden)

@@ -132,27 +132,53 @@
   // coordinates, a typeahead's selected id). Explicit association only: inside that control's
   // own <label>, or the nearest wrapper holding exactly one visible control, and that control
   // is a picker. A hidden input next to several fields, or next to a plain text box, is not.
-  const PICKER = '[role="combobox"], [aria-autocomplete], input[list], [class*="select" i], ' +
-    '[class*="autocomplete" i], [class*="typeahead" i], [class*="picker" i], [class*="location" i]';
-  // The picker is the visible control itself, or something INSIDE the wrapper around both:
-  // never the wrapper (a <form class="job-location-form"> holding a text box and a hidden answer)
-  // or anything above it, whose class says nothing about this one field.
+  // Exempting a hidden input means it is never checked, so the rule is strict, and a mistake
+  // only ever sends the form to you. All three must hold:
+  //  1. a real picker: picker ARIA, or a picker library's own class token (never a substring:
+  //     "select-none", "selected-input" and "relocation-question" are not pickers), on the
+  //     control or between it and the wrapper, never the wrapper or above;
+  //  2. in the hidden input's own field: climbing past a wrapper with its own label or words
+  //     would reach a neighbouring question;
+  //  3. plainly that picker's value: it shares a word with the picker's name, id or label
+  //     ("selectedLocation" for a location box), or is coordinates for a location.
+  const SEMANTIC_PICKER = '[role="combobox"], [aria-autocomplete], [aria-haspopup="listbox"], input[list]';
+  const PICKER_CLASS = /(^|[-_])(autocomplete|typeahead|picker|combobox)([-_]|$)|^select__|^location-input$/i;
+  const classPicker = e => [...(e.classList || [])].some(c => PICKER_CLASS.test(c));
   const isPicker = (w, around) => {
-    if (w.matches(PICKER)) return true;
-    const p = w.closest(PICKER);
-    return !!p && p !== around && around.contains(p);
+    if (w.matches(SEMANTIC_PICKER) || classPicker(w)) return true;
+    for (let a = w.parentElement; a && a !== around && around.contains(a); a = a.parentElement)
+      if (classPicker(a)) return true;
+    return false;
+  };
+  const STOP = new Set(['input', 'field', 'value', 'id', 'the', 'your', 'select', 'selected',
+    'question', 'form', 'job', 'application', 'answer', 'text', 'data', 'hidden', 'name', 'current']);
+  const words = s => (s || '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
+    .split(/[^a-z0-9]+/).filter(t => t.length > 1 && !STOP.has(t));
+  const GEO = new Set(['lat', 'lng', 'lon', 'latitude', 'longitude', 'geo', 'geocode', 'place',
+    'placeid', 'coordinates', 'coords']);
+  const PLACE = new Set(['location', 'city', 'address', 'town', 'region']);  // (one idea)
+  const valueOf = (hidden, w) => {
+    const mine = words(`${hidden.name} ${hidden.id}`);
+    const theirs = new Set(words([w.id, w.name, w.getAttribute('aria-label'),
+      w.getAttribute('placeholder'), w.getAttribute('class'), labelOf(w).text].join(' ')));
+    const place = [...theirs].some(t => PLACE.has(t));
+    return mine.some(t => theirs.has(t))
+      || (place && mine.some(t => PLACE.has(t) || GEO.has(t)));
   };
   const backsWidget = el => {
     const lab = el.closest('label');
     if (lab && lab.control && lab.control !== el && lab.control.type !== 'hidden' && visible(lab.control))
-      return isPicker(lab.control, lab);  // (a label around a plain text box is no association)
+      return isPicker(lab.control, lab) && valueOf(el, lab.control);
     let cur = el.parentElement;
     for (let d = 0; cur && d < 3 && cur !== document.body; d++, cur = cur.parentElement) {
       const shown = [...cur.querySelectorAll('input, select, textarea, [role="combobox"]')]
         .filter(o => o !== el && o.type !== 'hidden' && visible(o));
-      if (!shown.length) continue;
+      if (!shown.length) {
+        if (cur.querySelector('label, legend') || (cur.innerText || '').trim()) return false;
+        continue;  // (a bare wrapper around just the hidden input)
+      }
       if (shown.length > 1) return false;
-      return isPicker(shown[0], cur);
+      return isPicker(shown[0], cur) && valueOf(el, shown[0]);
     }
     return false;
   };

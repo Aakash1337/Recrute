@@ -952,6 +952,8 @@ def test_a_link_that_is_not_a_web_address_is_never_ingested(engine):
     "http://127.1:8765/settings", "http://2130706433:8765/settings",
     "http://0x7f000001:8765/settings", "http://0x7f.0.0.1/", "http://[::ffff:127.0.0.1]/",
     "http://%31%32%37.0.0.1:8765/settings", "http://local%68ost:8765/settings",
+    "http://\uff11\uff12\uff17.\uff10.\uff10.\uff11:8765/settings",
+    "http://127\u30020\u30020\u30021/", "http://\uff4c\uff4f\uff43\uff41\uff4c\uff48\uff4f\uff53\uff54:8765/",
 ])
 def test_a_link_into_your_own_network_is_never_ingested(engine, url):
     """Re-audit: this server trusts local requests, and the browser is logged in."""
@@ -1007,3 +1009,24 @@ def test_one_malformed_link_does_not_stop_the_rest_of_the_source(engine):
         assert stats.new == 1
         assert [j.apply_url for j in session.exec(select(Job)).all()] == [
             "https://acme.example/jobs/3"]
+
+
+def test_an_integrity_conflict_after_lock_retries_is_never_dropped(engine, monkeypatch):
+    """Re-audit: locked, locked, then a conflict ended the loop as if it had worked."""
+    from sqlalchemy.exc import IntegrityError, OperationalError
+
+    from recrute.pipeline import ingest as ingest_module
+    from recrute.schemas import RawJob
+
+    errors = [OperationalError("x", {}, Exception("database is locked")),
+              OperationalError("x", {}, Exception("database is locked")),
+              IntegrityError("x", {}, Exception("UNIQUE"))]
+
+    def failing(*a, **kw):
+        raise errors.pop(0)
+
+    monkeypatch.setattr(ingest_module, "_ingest_one", failing)
+    monkeypatch.setattr(ingest_module.time, "sleep", lambda s: None)
+    with Session(engine) as session, pytest.raises(IntegrityError):
+        ingest_module.ingest(session, [RawJob(source="x", source_job_id="1", title="Analyst",
+                                              company="Acme", url="https://acme.example/1")])

@@ -2062,7 +2062,9 @@ def test_an_unreadable_writing_sample_is_skipped_not_fatal(paths):
 
 
 @pytest.mark.parametrize("address", ["123 5th Avenue", "12 MAIN STREET", "12 main street",
-                                     "40 Oak Tree Lane", "7 Elm St.", "TX 78701"])
+                                     "40 Oak Tree Lane", "7 Elm St.", "TX 78701",
+                                     "12 main st", "Austin 78701", "P.O. Box 44",
+                                     "Apt 5, Riverside"])
 def test_voice_sample_addresses_are_removed_however_written(paths, address):
     """Re-audit: the tighter pattern let numbered, uppercase and lowercase streets through.
     (A city on its own isn't an address: "Austin" stays, its ZIP doesn't.)"""
