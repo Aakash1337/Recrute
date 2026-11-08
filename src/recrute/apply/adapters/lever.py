@@ -146,14 +146,21 @@ class LeverAdapter(BaseAdapter):
         unapproved one stops the application: a typeahead can't be safely cleared)."""
         fields = super().read_form(page)
         loc = next((f for f in fields if f.id == "location"), None)
-        if loc is None:
-            return fields
         try:
             backing = self.form_root(page).locator('input[name="selectedLocation"]')
             raw = backing.first.input_value(timeout=2000) if backing.count() else ""
             picked = json.loads(raw).get("name") if raw else None
         except Exception:  # noqa: BLE001 - unreadable: treat as not picked
             raw, picked = "?", None
+        if loc is None:
+            # no location field read (hidden, or keyed differently): the value behind it is
+            # still submitted, and only checking it here keeps it out of transport_fields' blind
+            # spot, so it's verified like any other hidden value
+            if not raw:
+                return fields
+            return [*fields, LiveField(id="selectedLocation", label="Location (behind the form)",
+                                       type="text", widget="hidden_value", visible=False,
+                                       current=picked or raw)]
         shown = loc.current if isinstance(loc.current, str) else ""
         if shown and picked != shown:  # typed text / a stale pick behind it
             current = f"{shown} {NOT_PICKED}"

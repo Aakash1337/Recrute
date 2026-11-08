@@ -1755,3 +1755,23 @@ def test_every_hidden_value_beside_a_picker_is_verified(context, html):
     hidden = [f for f in dom.extract_fields(page) if f.widget == "hidden_value"]
     page.close()
     assert hidden
+
+
+def test_lever_location_value_is_checked_even_when_its_field_is_not_read(context):
+    """Re-audit: listing selectedLocation for Lever to check left it unchecked whenever the
+    location question itself wasn't read (hidden and empty), so an autofilled one went out."""
+    from recrute.apply.adapters.lever import LeverAdapter
+    from recrute.apply.base import verify_fields
+    from recrute.schemas import Packet
+
+    page = context.new_page()
+    page.set_content("""<form><label>Name <input name="name" value="Ada"></label>
+      <div style="display:none"><input id="location-input" name="location" type="text"></div>
+      <input type="hidden" name="selectedLocation" value='{"name":"Berlin, Germany"}'></form>""")
+    adapter = LeverAdapter()
+    adapter.form_root = lambda p: p
+    fields = adapter.read_form(page)
+    page.close()
+    behind = [f for f in fields if f.id == "selectedLocation"]
+    assert behind and behind[0].current == "Berlin, Germany"
+    assert "selectedLocation" in verify_fields(fields, Packet(job_id=1), {})
