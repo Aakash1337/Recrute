@@ -97,24 +97,26 @@ _ADDRESS_IN_PROSE = re.compile(
     r"(?i:\bp\.?\s?o\.?\s+box\s+\d+)|(?i:\b(?:apt|apartment|suite|ste|unit)\b\.?\s*#?\s*\d+\w?)|"
     r"\b\d{5}-\d{4}\b|"
     r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b")
-# A short line that looks like part of a postal address (a ZIP, a P.O. box, an apartment): the
-# letterhead, gone whole before the lines are joined
-_POSTAL_LINE = re.compile(r"\b\d{5}(?:-\d{4})?\b|(?i:\bp\.?\s?o\.?\s+box\b)|"
-                          r"(?i:\b(?:apt|apartment|suite|ste|unit)\b\.?\s*#?\s*\d)")
 _SALUTATION = re.compile(r"\b(?:dear|hello|hi|greetings|to whom)\b[^:,;]{0,80}[,:;]", re.I)
 
 
-_ADDRESS_ANY_CASE = re.compile(rf"\b\d+[A-Za-z]?\s+(?:[\w.'-]+\s+){{1,6}}?{_STREET}\b", re.I)
+# A whole line that IS an address, start to end: "12 main drive.", "123 W. Martin Luther King Jr.
+# Blvd", "12 Main Street, Austin", "Austin, TX 78701", "P.O. Box 44", "Apt 5, Riverside". Writing
+# that merely holds a number ("I secured 12000 endpoints", "- we served 10000 users a day and", a
+# PDF line wrapped after "the hard way") is never one, punctuated or not.
+_ADDRESS_LINE = re.compile(
+    rf"^\d+[A-Za-z]?\s+(?:[\w.'-]+\s+){{0,6}}?{_STREET}\b\.?(?:[,\s]+(?:#\s*)?\w{{1,12}}\.?)?$|"
+    r"^[\w .,'-]{0,60}?\b(?:[A-Z]{2}\s+)?\d{5}(?:-\d{4})?\.?$|"
+    r"^p\.?\s?o\.?\s+box\s+\d+\w*\.?(?:[,\s]+[\w .,'-]{0,40})?$|"
+    r"^(?:apt|apartment|suite|ste|unit)\b\.?\s*#?\s*\d+\w*\.?(?:[,\s]+[\w .,'-]{0,40})?$",
+    re.IGNORECASE)
 
 
 def _address_line(line: str) -> bool:
-    """A letterhead line (short, not a sentence) that holds an address: dropped whole. A sentence
-    ("I secured 12000 endpoints.") is writing, and only its address parts are taken out."""
+    """A letterhead line that is an address, dropped whole; anything else is writing, and only
+    its address parts are taken out (see _ADDRESS_IN_PROSE)."""
     s = line.strip()
-    if not s or len(s) > 100 or re.search(r"[.!?]$", s):
-        return False
-    return bool(_POSTAL_LINE.search(s) or _ADDRESS_ANY_CASE.search(s)
-                or _ADDRESS_IN_PROSE.search(s))
+    return bool(s) and len(s) <= 100 and bool(_ADDRESS_LINE.match(s))
 
 
 def _voice_text(raw: str) -> str:
