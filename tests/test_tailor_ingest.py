@@ -339,3 +339,111 @@ def test_project_ids_use_the_short_name():
 def test_ingest_without_sources_raises(paths):
     with pytest.raises(FileNotFoundError):
         ingest_resume(paths, FakeRouter({}))
+
+
+def _near(profile, source):
+    from recrute.tailor.ingest import check_against_source
+
+    return [(f.where, f.text) for f in check_against_source(profile, source)
+            if "not near this entry" in f.reason]
+
+
+_TABLE_BANK = """Ada Lovelace
+Notes
+Location Austin, TX
+Current title Security Engineer, Acme
+Page 2 of 9
+Education
+School Degree Dates GPA
+Northfield University,
+Boston, MA
+M.S., Cybersecurity
+and Operations
+Aug 2024 to
+May 2026
+3.90 /
+4.0
+Riverside Institute of
+Engineering, Pune, India
+B.Tech, Information
+Technology
+Dec 2020 to
+May 2024
+8.10 /
+10
+Experience
+Organization Role Dates
+Acme, Austin, TX Security Engineer Aug 2024 to Present
+Acme, Pune Analyst Feb 2023 to Jul 2024
+"""
+
+
+@pytest.mark.parametrize("company", ["Acme, Austin, TX", "Acme"])
+def test_dates_in_a_table_layout_are_near_their_entry(company):
+    """A bank naming the employer in its notes ("Current title Security Engineer, Acme") and a
+    table whose dates sit six lines under the school: both were blocked as 'not near'."""
+    from recrute.schemas import Education, Experience, Profile
+
+    p = Profile(name="Ada Lovelace",
+                experience=[Experience(id="e", company=company,
+                                       title="Security Engineer", start="Aug 2024",
+                                       end="present")],
+                education=[Education(id="u", school="Riverside Institute of Engineering, Pune, "
+                                     "India", degree="B.Tech", field="Information Technology",
+                                     start="Dec 2020", end="May 2024")])
+    assert _near(p, _TABLE_BANK) == []
+
+
+def test_a_date_from_another_entry_is_still_not_near():
+    from recrute.schemas import Experience, Profile
+
+    p = Profile(name="Ada Lovelace",
+                experience=[Experience(id="e", company="Acme, Pune", title="Analyst",
+                                       start="Dec 2020", end="Jul 2024")])
+    assert _near(p, _TABLE_BANK) == [("profile:e.start", "Dec 2020")]
+
+
+_COMPACT = """Ada Lovelace
+Experience
+Acme, Security Engineer, Jan 2022 to Present
+- Built detections.
+- Ran incident response.
+Beacon, Security Analyst, Jun 2019 to Dec 2021
+- Triaged alerts.
+- Wrote runbooks.
+Education
+Northfield University, B.S. Computer Science, Aug 2015 to May 2019
+"""
+
+
+@pytest.mark.parametrize("which,start,end", [("acme", "Jun 2019", "Present"),
+                                             ("beacon", "Jan 2022", "Dec 2021")])
+def test_a_neighbours_date_is_not_near_this_entry(which, start, end):
+    """Re-audit: the wider window took in the next and previous roles, so dates swapped
+    between neighbours passed."""
+    from recrute.schemas import Education, Experience, Profile
+
+    roles = {"acme": ("Acme", "Security Engineer", "Jan 2022", "present"),
+             "beacon": ("Beacon", "Security Analyst", "Jun 2019", "Dec 2021")}
+    exp = []
+    for k, (company, title, s, e) in roles.items():
+        if k == which:
+            s, e = start, end if end != "Present" else "present"
+        exp.append(Experience(id=k, company=company, title=title, start=s, end=e))
+    p = Profile(name="Ada Lovelace", experience=exp, education=[Education(
+        id="u", school="Northfield University", degree="B.S.", field="Computer Science",
+        start="Aug 2015", end="May 2019")])
+    assert _near(p, _COMPACT) == [(f"profile:{which}.start", start)]
+
+
+def test_earlier_undated_mentions_dont_hide_the_dated_row():
+    """Re-audit: mentions of the role in notes used up the matches, and the dated row was
+    never read."""
+    from recrute.schemas import Experience, Profile
+
+    notes = "\n".join(f"Current title: Acme Security Engineer (note {n})\n" + "filler\n" * 10
+                      for n in range(3))
+    src = f"Ada Lovelace\n{notes}Experience\nAcme Security Engineer Jan 2020 to Dec 2021\n"
+    p = Profile(name="Ada Lovelace", experience=[Experience(
+        id="e", company="Acme", title="Security Engineer", start="Jan 2020", end="Dec 2021")])
+    assert _near(p, src) == []
