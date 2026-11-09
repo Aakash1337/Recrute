@@ -18,18 +18,24 @@ from pydantic import BaseModel
 
 from recrute.schemas import FormAnswer, FormQuestion, Profile, ResumeSelection, VerifierFlag
 from recrute.tailor.common import (
+    NOT_EARNED_RE,
     STR,
     Completer,
     JobContext,
     SupportIndex,
     arr,
     background_facts,
+    bracketed_after,
     enum,
     find_unsupported,
     item_lines,
     keywords,
+    never_claim_lines,
+    never_claim_terms,
+    never_term_pattern,
     obj,
     parse_llm,
+    plain_quotes,
     profile_texts,
 )
 
@@ -79,8 +85,9 @@ def collect_claims(profile: Profile, selection: ResumeSelection | None = None, *
             text, choice = ", ".join(a.value), True
         else:
             text, choice = str(a.value), bool(q and q.options)
-        affirmative = a.value is True or (isinstance(a.value, str) and choice
-                                          and bool(_YES_RE.match(a.value)))
+        # (typed or picked: "Yes, I do." to "Do you hold the CPTS?" claims it)
+        affirmative = a.value is True or (isinstance(a.value, str) and bool(
+            _YES_RE.match(a.value) if choice else _LEADING_YES_RE.match(a.value)))
         claims.append(Claim(f"answer:{a.question_id}", f"{label}: {text}" if choice else text,
                             "answer", (cited or {}).get(a.question_id, []), label,
                             affirmative, detail))
@@ -88,6 +95,10 @@ def collect_claims(profile: Profile, selection: ResumeSelection | None = None, *
 
 
 _YES_RE = re.compile(r"^\s*(yes|true)\b", re.IGNORECASE)
+# A typed answer that starts by saying yes: "Yes, I do.", "I have, for 2 years."
+# (not "I have built agents on Bedrock": that says what it claims)
+_LEADING_YES_RE = re.compile(r"\s*(?:(?:yes|yeah|yep|true|correct)\b|(?:i do|i have|i hold)"
+                             r"(?=\s*(?:[,.;:!\u2013\u2014-]|$)))", re.IGNORECASE)
 _POSSESSION_RE = re.compile(r"\b(have|has|hold|held|possess|earned|completed|obtained|"
                             r"certified|licensed|cleared)\b", re.IGNORECASE)
 # Words in a yes/no question that carry no factual content.
@@ -148,7 +159,9 @@ _ZERO_RANGE = re.compile(r"(?<![\d.,])0\s*(?:-|–|—|to)\s*\d+(?:\.\d+)?(?![\d
 
 
 def deterministic_flags(profile: Profile, claims: list[Claim], *, job: JobContext | None = None,
-                        extra_support: Iterable[str] = ()) -> list[VerifierFlag]:
+                        extra_support: Iterable[str] = (),
+                        selection: ResumeSelection | None = None,
+                        other_answers: Iterable[tuple[str, str]] = ()) -> list[VerifierFlag]:
     """Token-level support check, most local source first.
 
     A claim's tokens must occur in its cited items (plus, except for bullet rewrites, the
@@ -160,13 +173,28 @@ def deterministic_flags(profile: Profile, claims: list[Claim], *, job: JobContex
     """
     extra = list(extra_support)
     whole = SupportIndex.of([*profile_texts(profile), *extra])
+    # a "Yes" to holding a credential needs one that's earned: "CPTS (in progress)" isn't
+    earned = SupportIndex.of([*profile_texts(profile.model_copy(update={"certifications": [
+        c for c in profile.certifications
+        if not _NOT_EARNED_RE.search(f"{c.name} {c.issuer} {c.date}")]})), *extra])
+    rendered = [*rendered_content(profile, selection), *other_answers]
+    never = [(t, never_term_pattern(t)) for t in never_claim_terms(profile)]
     jd = SupportIndex.of([job.title, job.company, job.description]) if job else None
     job_names = [job.title, job.company] if job else []
     background = background_facts(profile)
     flags: list[VerifierFlag] = []
+    # (every claim, choices included: picking "HTB CPTS" for "Which do you hold?" claims it)
+    flags += _unearned_flags(profile, [*((c.where, _claimed_text(c, job)) for c in claims),
+                                       *rendered])
+    for where, text in [*((c.where, _claimed_text(c, job)) for c in claims),
+                        *rendered]:  # (your own list: no evidence makes these claimable)
+        for term, rx in never:
+            if text and rx.search(plain_quotes(text)):
+                flags.append(VerifierFlag(where=where, text=term, severity="block",
+                                          reason=f"you said never to claim '{term}'"))
     for c in claims:
         if c.affirmative:
-            flags += _affirmative_flags(c, whole)
+            flags += _affirmative_flags(c, earned)
         texts = [t for cid in c.cited_ids for t in _item_support(profile, cid)]
         allowed: list[str] = []
         if c.kind != "rewrite":
@@ -243,6 +271,169 @@ class _Flags(BaseModel):
     flags: list[_Flag] = []
 
 
+_NOT_EARNED_RE = NOT_EARNED_RE
+# "pursuing the CPTS", "CPTS (in progress)", "CPTS, expected 2027": attached to the mention
+_PROGRESS_BEFORE = re.compile(r"(?:pursuing|preparing for|working (?:toward|towards|on)|studying "
+                              r"for|planning(?: to take)?|scheduled for|registered for)\s+"
+                              r"(?:the\s+|an?\s+|my\s+)?$", re.IGNORECASE)
+
+
+def _cert_names(name: str) -> list[str]:
+    """How a certification may be named: in full, and by its acronym ("CPTS")."""
+    core = re.sub(r"\s*\([^()]*\)", "", name).strip()
+    acronyms = [a for a in re.findall(r"\(([A-Z][A-Z0-9+-]{2,})\)", name)]
+    # the code at the end of a longer name is its name too ("CPTS" in "HTB CPTS")
+    if (last := re.search(r"\s([A-Z][A-Z0-9+-]{2,})$", core)) and \
+            len(re.sub(r"[^A-Za-z]", "", last.group(1))) >= 3:
+        acronyms.append(last.group(1))
+    return list(dict.fromkeys(n for n in (core, *acronyms) if len(n) >= 3))
+
+
+def _status_attached(text: str, end: int, names: list[str]) -> bool:
+    """A status right after a mention: "CPTS (in progress)", "CPTS (Hack The Box, Expected
+    2027)", "HTB ... (CPTS) (Target Dec 2026)", "CPTS, expected 2027". Brackets are read whole;
+    the cert's own acronym in brackets is part of the mention."""
+    rest = text[end:]
+    rest = rest[1:] if rest.startswith(")") else rest  # (the mention was "(CPTS)")
+    own = "|".join(re.escape(n) for n in names)
+    for _ in range(3):  # (its acronym, then its issuer/date: a few brackets at most)
+        note = bracketed_after(rest)
+        if not note:
+            break
+        if _NOT_EARNED_RE.search(note):
+            return True
+        if not re.fullmatch(rf"[\[(]\s*(?:{own})\s*[\])]", note, re.IGNORECASE):
+            break  # (some other note: "(Hack The Box)", then ", expected 2027" may follow)
+        rest = rest[rest.index(note) + len(note):]
+    rest = re.sub(r"^\s*[\[(][^\[\]()]{0,60}[\])]", "", rest)  # an issuer note: "(Hack The Box)"
+    return bool(re.match(r"\s*[,:;\u2013\u2014-]?\s*(?:" + _NOT_EARNED_RE.pattern + ")", rest,
+                         re.IGNORECASE))
+
+
+def _unearned_flags(profile: Profile, texts: list[tuple[str, str]]) -> list[VerifierFlag]:
+    """A certification not held (in progress, expected, expired), named without its status
+    attached to that very mention, states it as held: "I hold the CPTS" is false while it's
+    "(in progress)". (A status word elsewhere in the sentence is about something else.)"""
+    flags = []
+    for c in profile.certifications:
+        if not _NOT_EARNED_RE.search(f"{c.name} {c.issuer} {c.date}"):
+            continue
+        names = _cert_names(c.name)
+        for where, text in texts:
+            covered: list[tuple[int, int]] = []  # ("CPTS" inside "HTB CPTS" is that mention)
+            for name in sorted(names, key=len, reverse=True):
+                rx = re.compile(rf"(?<![\w]){re.escape(name)}(?![A-Za-z0-9_])", re.IGNORECASE)
+                for m in rx.finditer(text or ""):
+                    if any(s <= m.start() and m.end() <= e for s, e in covered):
+                        continue
+                    # ("<name> (CPTS)" is one mention: excused or flagged together)
+                    own = re.match(r"\s*[\[(](?:" + "|".join(re.escape(n) for n in names)
+                                   + r")[\])]", text[m.end():], re.IGNORECASE)
+                    covered.append((m.start(), m.end() + (own.end() if own else 0)))
+                    before = text[max(0, m.start() - 40):m.start()]
+                    before = before[:-1] if before.endswith("(") else before
+                    if not (_PROGRESS_BEFORE.search(before)
+                            or _status_attached(text, m.end(), names)):
+                        flags.append(VerifierFlag(
+                            where=where, text=name, severity="block",
+                            reason=f"'{name}' isn't held ({c.date or c.name}): say so right "
+                                   "next to it, or leave it out"))
+                        break
+    return flags
+
+
+def _claimed_text(c: Claim, job: JobContext | None) -> str:
+    """What a claim asserts. An answer: its value, and for a "Yes" what the question asks too
+    ("Yes" to "LangChain experience?" claims LangChain); nothing at all for "No" (denying it
+    isn't claiming it)."""
+    text = c.text
+    choice = c.kind == "answer" and bool(c.question) and text.startswith(f"{c.question}: ")
+    if choice:
+        text = text[len(c.question) + 2:]
+    if c.kind == "answer" and _DENIAL_RE.fullmatch(text):
+        return ""  # (only a bare "No": "No certification, but I led the team" claims plenty)
+    short_yes = c.kind == "answer" and bool(_SHORT_YES_RE.fullmatch(text)
+                                            or _LEADING_YES_RE.match(text))
+    if choice and (_NOT_EARNED_RE.search(text) or re.match(r"\s*(?:no|not)\b", text, re.I)):
+        return text  # (picking "In progress" or "Not yet" for "Do you hold X?" denies it)
+    # (each of several picks: "Bedrock, TensorFlow" from "LangChain, Bedrock or TensorFlow?")
+    picks = [t.strip() for t in text.split(", ")] if text else []
+    alternative = choice and bool(picks) and all(
+        t and not _LEVEL_RE.fullmatch(t) and re.search(
+            rf"(?<![\w]){re.escape(t)}(?![\w])", f"{c.question} {c.detail}", re.IGNORECASE)
+        for t in picks)
+    if (choice or short_yes or (c.kind == "answer" and c.affirmative)) and not alternative:
+        # a picked option claims what the question asks ("Expert" for "Your LangChain
+        # level?"), unless it names one of the question's own alternatives (picking "Bedrock"
+        # from "LangChain, LlamaIndex or Bedrock?" claims Bedrock only); free text claims only
+        # what it says
+        text = f"{c.question} {c.detail} {text}"
+    return text
+
+
+# A short "Yes" or a number typed into a text box answers the question: "3" to "Years of
+# LangChain?" claims LangChain.
+_SHORT_YES_RE = re.compile(r"\s*(?:yes|y|true|i do|i have|correct|\d+(?:\.\d+)?\+?(?:\s*(?:years?|"
+                           r"yrs?|months?))?)\.?\s*", re.IGNORECASE)
+# An option that is a level or an answer, not one of the question's alternatives: "Expert" in
+# "Beginner to Expert: your LangChain?" still claims LangChain.
+_LEVEL_RE = re.compile(r"\s*(?:yes|true|beginner|basic|novice|intermediate|advanced|expert|"
+                       r"proficient|fluent|native|familiar|strong|\d+(?:\.\d+)?\+?(?:\s*\w+)?)\s*",
+                       re.IGNORECASE)
+# (a "0" to "years of LangChain experience?" denies it too)
+_DENIAL_RE = re.compile(r"\s*(?:no|false|none|never|n/a|not applicable|0(?:\s*(?:years?|yrs?|"
+                        r"months?))?)\.?\s*", re.IGNORECASE)
+
+
+def answer_content(answers: Iterable[FormAnswer], questions: Iterable[FormQuestion],
+                   job: JobContext | None = None) -> list[tuple[str, str]]:
+    """Every answer that isn't newly drafted (saved, or from your profile): the do-not-claim
+    list applies to them too, though the LLM verifier doesn't see them."""
+    by_id = {q.id: q for q in questions}
+    out = []
+    for a in answers:
+        q = by_id.get(a.question_id)
+        if a.source == "llm_new" or a.value in (None, "", []) or (q and q.type == "file"):
+            continue
+        value = ("Yes" if a.value else "No") if isinstance(a.value, bool) else (
+            ", ".join(a.value) if isinstance(a.value, list) else str(a.value))
+        label = q.label if q else ""
+        choice = bool(label) and (isinstance(a.value, bool | list) or bool(q and q.options))
+        claim = Claim(f"answer:{a.question_id}", f"{label}: {value}" if choice else value,
+                      "answer", [], label, False, (q.description or "") if q else "")
+        out.append((claim.where, _claimed_text(claim, job)))
+    return out
+
+
+def rendered_content(profile: Profile,
+                     selection: ResumeSelection | None) -> list[tuple[str, str]]:
+    """Everything the resume shows as written in your profile (unchanged bullets, skills,
+    certifications, headers): your do-not-claim list applies to it as much as to new wording."""
+    if selection is None:
+        return []
+    from recrute.tailor.render import resume_data
+
+    # exactly what is printed (the renderer's own data), except your name and contact line
+    data = resume_data(profile, selection)
+    out: list[tuple[str, str]] = [("resume.headline", data["headline"] or ""),
+                                  ("resume.summary", data["summary"] or ""),
+                                  ("resume.skills", ", ".join(data["skills"]))]
+    for section in ("experience", "projects", "education"):
+        for entry in data[section]:
+            out.append((f"resume.{section}", " ".join(
+                str(entry[k] or "") for k in ("org", "right_top", "title", "right_bottom"))))
+            out += [(f"resume.{section}", str(b)) for b in entry["bullets"]]
+    out += [("resume.certifications", str(c)) for c in data["certifications"]]
+    return out
+
+
+def _never_rule(profile: Profile) -> str:
+    if not profile.do_not_claim and not never_claim_terms(profile):
+        return ""
+    return ("\n- block, whatever else supports it, anything the candidate never writes or "
+            "claims:\n" + "\n".join(never_claim_lines(profile)))
+
+
 _SAVED_RULE = ("A PREVIOUSLY APPROVED ANSWER (the candidate's own words) also supports a claim, "
                "but only on the same subject as the question it answered (an answer about "
                "Python says nothing about Kubernetes).")
@@ -289,7 +480,8 @@ def llm_flags(profile: Profile, claims: list[Claim], router: Completer,
     evidence = _saved_evidence(claims, saved)
     prompt = VERIFY_PROMPT.format(background=background_facts(profile, name=False),
                                   saved=evidence,
-                                  saved_rule=_SAVED_RULE if evidence else "",
+                                  saved_rule=(_SAVED_RULE if evidence else "")
+                                  + _never_rule(profile),
                                   sources="\n".join(item_lines(profile, cited)) or "(none)",
                                   claims="\n".join(claim_lines))
     raw = parse_llm(_Flags, router.complete("verify", prompt, schema=VERIFY_SCHEMA,
@@ -319,9 +511,12 @@ def merge_flags(*groups: Iterable[VerifierFlag]) -> list[VerifierFlag]:
 def verify(profile: Profile, claims: list[Claim], *, router: Completer | None = None,
            job: JobContext | None = None,
            extra_support: Iterable[str] = (),
-           saved: Iterable[tuple[str, str]] = ()) -> list[VerifierFlag]:
+           saved: Iterable[tuple[str, str]] = (),
+           selection: ResumeSelection | None = None,
+           other_answers: Iterable[tuple[str, str]] = ()) -> list[VerifierFlag]:
     """Deterministic flags + (when a router is given) the LLM fact-check pass. `saved`: your
     previously approved answers (question key, answer), evidence for claims that repeat them."""
-    det = deterministic_flags(profile, claims, job=job, extra_support=extra_support)
+    det = deterministic_flags(profile, claims, job=job, extra_support=extra_support,
+                              selection=selection, other_answers=other_answers)
     return merge_flags(det, llm_flags(profile, claims, router, list(saved))
                        if router is not None else [])

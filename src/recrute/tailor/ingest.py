@@ -34,14 +34,18 @@ from recrute.schemas import (
     VerifierFlag,
 )
 from recrute.tailor.common import (
+    NOT_EARNED_RE,
     STR,
     STRS,
     Completer,
     SupportIndex,
     arr,
+    bracketed_after,
+    clean_terms,
     find_unsupported,
     obj,
     parse_llm,
+    plain_quotes,
     slugify,
 )
 
@@ -74,8 +78,17 @@ def extract_text(path: Path) -> str:
     if suffix == ".pdf":
         from pypdf import PdfReader
 
-        return "\n".join(page.extract_text() or "" for page in PdfReader(str(path)).pages)
-    return path.read_text(encoding="utf-8", errors="replace")
+        pages = PdfReader(str(path)).pages
+        return _clean_text("\n".join(page.extract_text() or "" for page in pages))
+    return _clean_text(path.read_text(encoding="utf-8", errors="replace"))
+
+
+def _clean_text(text: str) -> str:
+    """Typographic quotes as plain ones ("Don\u2019t" is "Don't"), and a word a PDF wrapped
+    after its hyphen joined again ("Pentest-\nAutomation")."""
+    text = text.translate(str.maketrans({"\u2019": "'", "\u2018": "'", "\u201c": '"',
+                                         "\u201d": '"'}))
+    return re.sub(r"(\w)-\n(\w)", r"\1-\2", text)
 
 
 def read_sources(directory: Path) -> list[tuple[str, str]]:
@@ -107,6 +120,9 @@ EXTRACT_SCHEMA = obj(
     certifications=arr(obj(name=STR, issuer=STR, date=STR, credential_id=STR)),
     awards=arr(_ITEM),
     extra=arr(_ITEM),
+    rules=STRS,
+    do_not_claim=STRS,
+    never_terms=STRS,
 )
 
 EXTRACT_SYSTEM = (
@@ -127,6 +143,23 @@ EXTRACT_PROMPT = """Structure the resume source below.
   (use "General" if none). links: label = linkedin|github|portfolio|other.
 - awards: honors/competitions. extra: talks, publications, volunteering, other items.
 - Several files may describe the same thing: merge duplicates, keep every distinct fact.
+- rules: the source's own instructions to whoever writes resumes from it (style rules,
+  framing decisions, what to leave off, which name or email to use), one per entry, verbatim.
+- do_not_claim: things the source says must never be claimed (gaps, "do not claim"), and any
+  name it says never to use, one per entry, verbatim.
+- never_terms: the exact words, names or short phrases those entries forbid, ONE per entry,
+  with no instruction words, quotes or explanations: "Never claim Kubernetes or Docker" gives
+  "Kubernetes" and "Docker"; "LangChain, LlamaIndex (optional only)" gives "LangChain" and
+  "LlamaIndex"; a spelling correction ('Beacon (not "Bacon")') gives only the wrong spelling,
+  "Bacon". Never a word the candidate may truthfully use.
+- If the source marks an item, entry, project or certification as not verified or not decided
+  ("[confirm ...]", "confirm", "decide whether", "do not list until", "still unidentified"),
+  copy that marker verbatim into item.context, the entry or project summary, or the
+  certification name. Never drop such a marker. "In progress" stays in the name as
+  "(in progress)": copy the marker words only, never an instruction around them. A marker on
+  a section heading ("Still unidentified", "[confirm each before use]") applies to every item
+  in that section: copy it into each one.
+- Notes about the document itself (open items, interview notes) are not resume content: skip.
 
 SOURCE:
 {source}"""
@@ -185,6 +218,9 @@ class _Cert(BaseModel):
 
 
 class _Extracted(BaseModel):
+    rules: list[str] = []
+    do_not_claim: list[str] = []
+    never_terms: list[str] = []
     name: str = ""
     headline: str = ""
     email: str = ""
@@ -243,8 +279,11 @@ def to_profile(ex: _Extracted) -> Profile:
         Education(id=_unique(f"edu-{slugify(ed.school, 40)}", used), **ed.model_dump())
         for ed in ex.education
     ]
+    # ("CPTS (In progress; always keep the qualifier)": the marker, not the note around it;
+    # never on a name the source marks unconfirmed, whose note hold_unconfirmed must still see)
     certs = [
-        Certification(id=_unique(f"cert-{slugify(c.name, 40)}", used), **c.model_dump())
+        Certification(id=_unique(f"cert-{slugify(c.name, 40)}", used),
+                      **{**c.model_dump(), "name": _clean_cert_name(c.name)})
         for c in ex.certifications
     ]
 
@@ -265,12 +304,354 @@ def to_profile(ex: _Extracted) -> Profile:
     for link in ex.links:
         if link.url.strip():
             links[_unique(slugify(link.label or "other", 20), set(links))] = link.url.strip()
-    return Profile(
+    return hold_unconfirmed(Profile(
         name=ex.name, headline=ex.headline, email=ex.email, phone=ex.phone, location=ex.location,
         links=links, summary=ex.summary, skills=skills, experience=experience,
         projects=projects, education=education, certifications=certs,
         awards=standalone("award", ex.awards), extra=standalone("extra", ex.extra),
-    )
+        rules=[r.strip() for r in ex.rules if r.strip()],
+        do_not_claim=[d.strip() for d in ex.do_not_claim if d.strip()],
+        never_terms=clean_terms([*ex.never_terms, *_never_names(ex.rules)]),
+    ))
+
+
+def _clean_cert_name(name: str) -> str:
+    """"CPTS (In progress; always keep the qualifier)" -> "CPTS (In progress)": a note to the
+    writer goes, but never a marker or status ("(expired; decide whether to list)" stays)."""
+    def tidy(m: re.Match) -> str:
+        head, tail = m.group(1), m.group(2)
+        if _UNCONFIRMED_RE.search(f"({tail})") or _NOTE_MARKER_RE.search(tail) or (
+                NOT_EARNED_RE.search(tail) and not NOT_EARNED_RE.search(head)):
+            return m.group(0)  # (a marker, or a status the head doesn't state yet)
+        return f"({head})"
+    return re.sub(r"\(([^;()]+);([^()]*)\)", tidy, plain_quotes(name))
+
+
+def _never_names(rules: list[str]) -> list[str]:
+    """A name a rule says never to use ("never the HERALD name") is never claimed either: in a
+    bullet's notes it would otherwise count as support for writing it."""
+    names = []
+    for rule in rules:
+        names += re.findall(r"\bnever (?:\w+ ){0,2}the ([A-Z][A-Za-z0-9]+) name\b", rule)
+        # "HERALD: describe the sales agent's capabilities without naming it"
+        # "HERALD: describe it without naming it": the prefix is the name only when the rule
+        # says not to name that very thing ("NOTE: never use em dashes" forbids nothing named)
+        if (m := re.match(r"\s*([A-Z][A-Z0-9]{2,})\s*:", rule)) and re.search(
+                r"without naming it|never (?:use|name|mention) (?:it|the name|this name|its name)",
+                rule, re.IGNORECASE):
+            names.append(m.group(1))
+    return list(dict.fromkeys(names))
+
+
+# What a source says about an item that isn't a fact yet. ("in progress" is a fact, kept with its
+# qualifier.) Checked in code, not left to the transcription.
+# Explicit markers: brackets, a note in parentheses, a status. Count anywhere, prose included.
+_UNCONFIRMED_RE = re.compile(
+    r"\[[^\]]*\b(?:confirm|decide|verify|tbd|tbc|unconfirmed|unverified|add specifics)\b[^\]]*\]|"
+    r"\([^()]*\b(?:confirm|tbd|tbc|unverified|unconfirmed|not verified|not confirmed|"
+    r"to be confirmed|pending confirmation)\b[^()]*\)|\(\s*verify\s*\)|"
+    r"\b(?:do not|don't) list\b|\bnot to be listed\b|\bstill unidentified\b|"
+    r"\bstatus\s*:\s*(?:confirm|verify|unverified|unconfirmed|tbd|tbc|pending)\b|"
+    r"(?:^|:)\s*(?:confirm|verify|tbd|tbc|to be confirmed)\s*$|\bconfirm\s*[:)]",
+    re.IGNORECASE)
+# A summary that is nothing but a status ("Unverified", "Needs confirmation", "TBD").
+_STATUS_ONLY_RE = re.compile(
+    r"\s*(?:status\s*:\s*)?(?:unverified|unconfirmed|tbd|tbc|to be confirmed|pending(?: "
+    r"confirmation)?|needs? (?:confirmation|verification)|not (?:yet )?(?:confirmed|verified))"
+    r"\s*\.?\s*", re.IGNORECASE)
+# A summary that is only an instruction to the candidate: "Confirm exact title on record.",
+# "Decide whether to list on real resumes."
+_INSTRUCTION_SUMMARY_RE = re.compile(
+    r"\s*(?:please\s+)?(?:confirm|decide whether|double[- ]check|check (?:whether|if|before)|"
+    r"verify (?:whether|if|before|the exact|exact|this|that|dates?|numbers?|titles?))\b",
+    re.IGNORECASE)
+# In a note about an item (its context, metrics), plain words are markers too. In the item's
+# own words they're ordinary security prose: "Investigated unverified threat reports".
+_NOTE_MARKER_RE = re.compile(
+    r"\bun(?:confirmed|verified)\b|\bunidentified\b|\btb[dc]\b|\bdo not (?:list|claim|use)\b|"
+    r"\b(?:to be|yet to be|pending|needs?|awaiting)\s+(?:confirm\w*|verif\w*)\b|"
+    r"^\s*(?:confirm|verify)\s*$|\bnot (?:yet )?(?:confirmed|verified|identified)\b|\bno readme\b|"
+    r"\bdecide whether\b|\bcheck before claiming\b|\bverify\b|"
+    # in a note, "confirm" itself, however it's phrased ("Confirm. Check before claiming",
+    # "Transcribe on X: confirm."); never "confirmed"
+    r"\bconfirm\b",
+    re.IGNORECASE)
+
+
+def _plain_line(line: str) -> str:
+    """A source line without list, heading or emphasis markup: "### **Range** [confirm]"."""
+    ln = " ".join(plain_quotes(line).split())
+    ln = re.sub(r"(\*\*|__|`)", "", ln)
+    ln = re.sub(r"(?<![\w*])[*_](\S[^*_]*?)[*_](?![\w*])", r"\1", ln)
+    prev = None
+    while prev != ln:
+        prev, ln = ln, re.sub(r"^(?:#+|\d+[.)]|[-\u2022*+>])\s*", "", ln)
+    return ln
+
+
+_note_after = bracketed_after  # (the bracketed note right after an item, whole)
+
+
+def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
+    """Whatever the source marks but the transcription kept without its marker: held all the
+    same. For each claimable thing, its own source line is read: a marker right after its text
+    ("Reduced MTTR by 40% [confirm number]", "Kubernetes [confirm]"), or on the line just below
+    it, holds it. A long bracketed note after a heading is about a whole section, not a list item
+    of the same name ("Incident response [confirm whether each incident ...]")."""
+    raw = source_text.splitlines()
+    lines = [_plain_line(ln) for ln in raw]
+    # a marker on a heading holds everything under it, until a heading of its level or above
+    # ("## Projects [confirm each before use]" holds each "### Range" below it)
+    inherited: list[bool] = []
+    open_heads: list[tuple[int, bool]] = []
+    for ln in raw:
+        if re.fullmatch(r"=== .+ ===", ln.strip()):  # (the next source file: a fresh start)
+            open_heads = []
+            inherited.append(False)
+        elif h := re.match(r"\s*(#{1,6})\s", ln):
+            level = len(h.group(1))
+            open_heads = [o for o in open_heads if o[0] < level]
+            head = _plain_line(ln)  # ("## Unverified" is a marker on its own)
+            open_heads.append((level, bool(_UNCONFIRMED_RE.search(head)
+                                           or _STATUS_ONLY_RE.fullmatch(head))))
+            inherited.append(any(m for _, m in open_heads[:-1]))
+        else:
+            inherited.append(any(m for _, m in open_heads))
+
+    def marked_in_source(text: str, *, listed: bool = False, within: str = "",
+                         name: bool = False, roles: bool = False,
+                         long_notes: bool = False) -> bool:
+        """Only the thing's OWN source line counts: a bullet, role, project or degree at the
+        start of its line; a skill or tech at the start of its list segment, as a whole word
+        (so "LEDGER" inside an unrelated table row, or "Git" in "GitHub", isn't it). `within`:
+        only lines starting with this (a project's own line, for its tech)."""
+        key = " ".join(plain_quotes(text).split())[:60]
+        if len(key) < 2:
+            return False
+        words = r"[\s\W]{1,5}".join(re.escape(w) for w in key.split()) if roles else \
+            re.escape(key)
+        if listed:
+            rx = re.compile(rf"(?:^|[,:|;\u2022]\s*){words}(?![\w-])", re.IGNORECASE)
+        else:
+            rx = re.compile(rf"^{words}(?![\w-])" if len(key) < 60 else rf"^{words}",
+                            re.IGNORECASE)
+        for n, ln in enumerate(lines):
+            if within and not ln.lower().startswith(within.lower()):
+                continue
+            for m in rx.finditer(ln):
+                if inherited[n]:
+                    return True
+                rest = ln[m.end():] if listed or len(text) <= 60 \
+                    else ln[m.start() + len(" ".join(text.split())):]
+                if listed:  # a list item: only a note right after it, read whole ("AWS
+                    # Security Specialty [confirm]" says nothing about the skill "AWS"; "CKA
+                    # (confirm exam date, issuer)" is one note, commas and all)
+                    rest = _note_after(rest)
+                elif name:  # a name: up to its description ("Range [confirm]: a range")
+                    rest = re.split(r"[:|\u2022]", rest, maxsplit=1)[0]
+                note = _UNCONFIRMED_RE.search(rest)
+                if note and (not listed or long_notes or len(note.group(0)) <= 30):
+                    return True
+                below = lines[n + 1] if n + 1 < len(lines) else ""
+                if not listed and re.match(r"[\[(]", below) and _UNCONFIRMED_RE.match(below):
+                    return True
+        return False
+
+    def source_status(name: str) -> str:
+        rx = re.compile(rf"(?:^|[,:|;\u2022]\s*){re.escape(name.strip())}(?![\w-])", re.IGNORECASE)
+        for ln in lines:
+            for m in rx.finditer(ln):
+                # only its own list item: "AWS SAA, CKA (in progress)" says nothing of AWS SAA
+                rest = ln[m.end():]
+                # past its own acronym: "HTB ... (CPTS) (in progress)"
+                while (own := _note_after(rest)) and re.fullmatch(r"[\[(][A-Z][A-Z0-9+-]{1,9}[\])]",
+                                                                  own):
+                    rest = rest[rest.index(own) + len(own):]
+                note = _note_after(rest) or re.split(r"[,;|\u2022]", rest, maxsplit=1)[0][:40]
+                at_start = re.match(r"\s*(?:[\[(]|[-\u2013\u2014:]?\s*" + NOT_EARNED_RE.pattern
+                                    + ")", note, re.IGNORECASE)
+                hit = NOT_EARNED_RE.search(note)
+                # ("Security+ - studying for CySA+" is about CySA+)
+                if at_start and hit and not re.match(r"\s+(?:for|toward|towards|to)\b",
+                                                     note[hit.end():], re.IGNORECASE):
+                    return hit.group(0)
+        return ""
+
+    held = list(profile.unconfirmed)
+
+    def keep(where: str, items: list) -> list:
+        out = []
+        for it in items:
+            if marked_in_source(it.text):
+                held.append(f"{where}: {it.text} (marked in the source)")
+            else:
+                out.append(it)
+        return out
+
+    experience = []
+    for e in profile.experience:
+        # (company and title together, in either order: one marked "Engineer" role must not
+        # take another employer's "Engineer" with it)
+        if marked_in_source(f"{e.company} {e.title}", roles=True, name=True) or \
+                marked_in_source(f"{e.title} {e.company}", roles=True, name=True) or \
+                marked_in_source(f"{e.title} at {e.company}", roles=True, name=True):
+            held.append(f"{e.title} @ {e.company}: the whole role (marked in the source)")
+            continue
+        experience.append(e.model_copy(update={"bullets": keep(f"{e.title} @ {e.company}",
+                                                               e.bullets)}))
+    projects = []
+    for p in profile.projects:
+        if marked_in_source(p.name, name=True):
+            held.append(f"project {p.name} (marked in the source)")
+            continue
+        tech = [t for t in p.tech if not marked_in_source(t, listed=True, within=p.name)]
+        held += [f"project {p.name}: tech {t} (marked in the source)" for t in p.tech
+                 if t not in tech]
+        projects.append(p.model_copy(update={"tech": tech,
+                                             "bullets": keep(f"project {p.name}", p.bullets)}))
+    education = []
+    for ed in profile.education:
+        if ed.degree and marked_in_source(ed.degree, name=True):
+            held.append(f"education: {ed.degree}, {ed.school} (marked in the source)")
+            continue
+        details = [d for d in ed.details if not marked_in_source(d)]
+        held += [f"education detail: {d} (marked in the source)" for d in ed.details
+                 if d not in details]
+        education.append(ed.model_copy(update={"details": details}))
+    skills = {}
+    for cat, items in profile.skills.items():
+        held += [f"skill ({cat}): {s} (marked in the source)" for s in items
+                 if marked_in_source(s, listed=True)]
+        if kept := [s for s in items if not marked_in_source(s, listed=True)]:
+            skills[cat] = kept
+    certs = []
+    for c in profile.certifications:
+        if marked_in_source(c.name, listed=True, long_notes=True):
+            held.append(f"certification: {c.name} (marked in the source)")
+            continue
+        # a status the transcription lost ("CKA (in progress)" -> "CKA"): put back
+        if not NOT_EARNED_RE.search(f"{c.name} {c.issuer} {c.date}") and \
+                (status := source_status(c.name)):
+            c = c.model_copy(update={"name": f"{c.name} ({status})"})
+        certs.append(c)
+    return profile.model_copy(update={
+        "experience": experience, "projects": projects, "education": education,
+        "skills": skills, "certifications": certs,
+        "awards": keep("award", profile.awards), "extra": keep("extra", profile.extra),
+        "unconfirmed": list(dict.fromkeys(held))})
+
+
+def never_claim_conflicts(profile: Profile) -> list[VerifierFlag]:
+    """Your own facts that use a term your do-not-claim list forbids ("development URLs in
+    production" against "in production"): every resume using them would be blocked, so you
+    decide now, by narrowing the list or the wording."""
+    from recrute.tailor.common import never_claim_terms, never_term_pattern
+
+    texts = [(f"profile:{i}", it.text) for i, it in profile.all_items().items()]
+    texts += [(f"profile:{p.id}", f"{p.name} {' '.join(p.tech)}") for p in profile.projects]
+    texts += [(f"profile:{e.id}", f"{e.title} {e.company} {e.location}")
+              for e in profile.experience]
+    texts += [(f"profile:{ed.id}", " ".join([ed.school, ed.degree, ed.field, *ed.details]))
+              for ed in profile.education]
+    texts += [(f"profile:{c.id}", f"{c.name} {c.issuer}") for c in profile.certifications]
+    texts += [(f"profile.skills:{c}", ", ".join(s)) for c, s in profile.skills.items()]
+    texts += [("profile.headline", profile.headline), ("profile.summary", profile.summary)]
+    out = []
+    for term in never_claim_terms(profile):
+        rx = never_term_pattern(term)
+        out += [VerifierFlag(where=w, text=term, severity="warn",
+                             reason=f"your do-not-claim list forbids '{term}', and this fact of "
+                                    "yours uses it: resumes using it will be blocked until you "
+                                    "narrow the list or the wording")
+                for w, t in texts if rx.search(t)]
+    return out
+
+
+def hold_unconfirmed(profile: Profile) -> Profile:
+    """Move everything the source marks unverified out of what can be claimed, into
+    `unconfirmed` (flagged at ingest; confirm it in the source and ingest again to use it).
+    Any marked note holds its whole item: "(amount: confirm)" is about the claim itself."""
+    held: list[str] = list(profile.unconfirmed)
+
+    def marked(*texts: str) -> bool:  # (curly quotes too: "don’t list")
+        return any(_UNCONFIRMED_RE.search(plain_quotes(t or "")) for t in texts)
+
+    def noted(*notes: str) -> bool:
+        return any(_UNCONFIRMED_RE.search(plain_quotes(t or ""))
+                   or _NOTE_MARKER_RE.search(plain_quotes(t or "")) for t in notes)
+
+    def note(where: str, text: str, ctx: str = "") -> str:
+        return f"{where}: {text}" + (f" ({ctx})" if ctx and ctx not in text else "")
+
+    def keep_items(where: str, items: list) -> list:
+        out = []
+        for it in items:
+            # (any marked note holds the whole item: "(amount: confirm)" on "$2M budget" is
+            # about the very claim that would remain)
+            if marked(it.text) or noted(it.context, *it.metrics):
+                held.append(note(where, it.text, it.context))
+            else:
+                out.append(it)
+        return out
+
+    experience = []
+    for e in profile.experience:
+        where = f"{e.title} @ {e.company}"
+        if marked(e.title, e.summary, e.company, e.location, e.start, e.end) or \
+                _STATUS_ONLY_RE.fullmatch(e.summary) or _INSTRUCTION_SUMMARY_RE.match(e.summary):
+            # (a summary that is just "Unverified", or "Confirm exact title on record.")
+            held.append(note(where, f"the whole role ({e.start} to {e.end})", e.summary))
+            held.extend(note(where, b.text, b.context) for b in e.bullets)
+            continue
+        experience.append(e.model_copy(update={"bullets": keep_items(where, e.bullets)}))
+    projects = []
+    for p in profile.projects:
+        if marked(p.name, p.summary, p.url) or _STATUS_ONLY_RE.fullmatch(p.summary) or \
+                _INSTRUCTION_SUMMARY_RE.match(p.summary):
+            held.append(note(f"project {p.name}", p.summary or p.name))
+            held.extend(note(f"project {p.name}", b.text, b.context) for b in p.bullets)
+            continue
+        projects.append(p.model_copy(update={"bullets": keep_items(f"project {p.name}",
+                                                                   p.bullets)}))
+    certs = []
+    for c in profile.certifications:
+        # (its parenthetical is a note, not prose: "(expired; decide whether to list)")
+        if noted(c.name, c.issuer, c.date, c.credential_id):
+            held.append(note("certification", c.name))
+        else:
+            certs.append(c)
+    skills: dict[str, list[str]] = {}
+    for cat, items in profile.skills.items():
+        kept = []
+        for s in items:
+            (held.append(note(f"skill ({cat})", s)) if marked(s) else kept.append(s))
+        if kept and not marked(cat):
+            skills[cat] = kept
+        elif kept:
+            held.append(note("skills", f"{cat}: {', '.join(kept)}"))
+    education = []
+    for ed in profile.education:
+        if marked(ed.school, ed.degree, ed.field, ed.start, ed.end, ed.gpa):
+            held.append(note("education", f"{ed.degree} {ed.field}, {ed.school}".strip()))
+            continue
+        # (one marked detail line holds that line, not the degree: answers about it stay true)
+        held += [note("education detail", d) for d in ed.details if marked(d)]
+        education.append(ed.model_copy(update={"details": [d for d in ed.details
+                                                           if not marked(d)]}))
+    projects = [p.model_copy(update={"tech": [t for t in p.tech if not marked(t)]})
+                for p in projects]
+    held += [note(f"project {p.name}", f"tech {t}") for p in profile.projects for t in p.tech
+             if marked(t) and not marked(p.name, p.summary, p.url)]
+    top = {}
+    for name in ("headline", "summary", "location"):
+        if marked(getattr(profile, name)):
+            held.append(note(name, getattr(profile, name)))
+            top[name] = ""
+    return profile.model_copy(update={
+        "experience": experience, "projects": projects, "certifications": certs,
+        "skills": skills, "education": education, **top,
+        "awards": keep_items("award", profile.awards), "extra": keep_items("extra", profile.extra),
+        "unconfirmed": list(dict.fromkeys(held))})
 
 
 
@@ -309,7 +690,8 @@ def _norm_url(url: str) -> str:
 
 
 def _missing_words(text: str, index: SupportIndex) -> list[str]:
-    words = re.findall(r"[A-Za-z][A-Za-z0-9'+#&-]*", text)
+    # (split at apostrophes, as the source index does: "Don't" is "Don" + "t")
+    words = re.findall(r"[A-Za-z][A-Za-z0-9+#&-]*", plain_quotes(text))
     return [w for w in words if len(w) > 1 and w.lower() not in _NAME_STOP
             and not index.has_term(w.strip("'-"))]
 
@@ -628,7 +1010,8 @@ def load_profile(paths: Paths) -> Profile:
         raise FileNotFoundError(
             f"{path} not found: put your resume files in {paths.resources / 'resume'}, run the "
             "profile ingest and accept the proposal")
-    return read_profile(path)
+    # (a profile.yaml from before markers were held, or edited by hand, may still carry them)
+    return hold_unconfirmed(read_profile(path))
 
 
 def profile_diff(old: Profile | None, new: Profile, *, fromfile: str = "profile.yaml (current)",
@@ -761,11 +1144,43 @@ def ingest_resume(paths: Paths, router: Completer, *, apply: bool = False) -> In
     removed: list[str] = []
     trusted: set[str] = set()
     if old is not None:
-        profile = merge_profiles(profile, old)
+        # (the merge brings back older notes, which may carry a marker: held again after it)
+        profile = hold_unconfirmed(merge_profiles(profile, old))
         removed = sorted(set(_all_ids(old)) - set(_all_ids(profile)))
         trusted = {i.context for i in old.all_items().values() if i.context}
 
+    cert_names = {c.name for c in profile.certifications}
+    profile = hold_marked_in_source(profile, source_text)
     flags = check_against_source(profile, source_text, trusted=trusted)
+    flags += [VerifierFlag(where="profile.certifications", text=c.name, severity="warn",
+                           reason="its status was put back from the source (the transcription "
+                                  "lost it): check it's right")
+              for c in profile.certifications if c.name not in cert_names
+              and NOT_EARNED_RE.search(c.name)]
+    flags += never_claim_conflicts(profile)
+    from recrute.tailor.verify import _unearned_flags
+
+    # your own facts naming a cert you don't hold yet without its status: they'd block every
+    # resume using them
+    flags += [f.model_copy(update={
+        "severity": "warn", "reason": f.reason + " (every resume using this would be blocked: "
+                                                 "reword it in the source)"})
+        for f in _unearned_flags(profile, [(f"profile:{i}", it.text) for i, it in
+                                           profile.all_items().items()]
+                                 + [("profile.summary", profile.summary),
+                                    ("profile.headline", profile.headline)])]
+    from recrute.tailor.common import never_term_pattern
+
+    flags += [VerifierFlag(where="profile.do_not_claim", text=entry[:200], severity="warn",
+                           reason="no never-term covers this, so only the writing prompts see "
+                                  "it: add the exact word to never_terms to have it blocked")
+              for entry in profile.do_not_claim
+              if not any(never_term_pattern(t).search(plain_quotes(entry))
+                         for t in profile.never_terms)]
+    flags += [VerifierFlag(where="profile.unconfirmed", text=u[:200], severity="warn",
+                           reason="held back: the source marks it unconfirmed. Confirm it there "
+                                  "and ingest again to use it")
+              for u in profile.unconfirmed]
     flags += [VerifierFlag(where=f"profile:{rid}", text=rid, severity="warn",
                            reason="present in the current profile.yaml but not in the new "
                                   "ingest (removed or reworded in the source?)")

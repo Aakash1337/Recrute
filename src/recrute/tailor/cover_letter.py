@@ -24,6 +24,7 @@ from recrute.tailor.common import (
     item_lines,
     obj,
     parse_llm,
+    rules_note,
     truncate,
     word_count,
 )
@@ -202,6 +203,7 @@ def write_cover_letter(profile: Profile, selection: ResumeSelection, job: JobCon
             voice = re.sub(rf"\b(?:{re.escape(part)}|{re.escape(part.upper())})\b", "[removed]",
                            voice)
     note = f"USER NOTE (follow it): {user_note.strip()}\n" if user_note.strip() else ""
+    note = rules_note(profile) + note
     prompt = COVER_PROMPT.format(
         max_words=max_words - 30, note=note, title=job.title,
         company=f" @ {job.company}" if job.company else "",

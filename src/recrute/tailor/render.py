@@ -57,10 +57,23 @@ def _display_url(url: str) -> str:
     return re.sub(r"^https?://(www\.)?", "", url).rstrip("/")
 
 
+def hidden_links(profile: Profile) -> set[str]:
+    """Links your rules say to leave off ("LinkedIn: left off every resume")."""
+    off = re.compile(r"\b(?:left off|leave (?:\w+ )?off|omit|not listed|never list|don't list|"
+                     r"do not list|exclude)\b", re.IGNORECASE)
+    clauses = [c for r in profile.rules for c in re.split(r"[;.]\s+|\s+but\s+", r)]
+    return {label for label in profile.links
+            if any(re.search(rf"\b{re.escape(label)}\b", c, re.IGNORECASE) and off.search(c)
+                   for c in clauses)}
+
+
 def contact_line(profile: Profile) -> list[dict[str, str]]:
     items = [{"text": profile.email, "url": f"mailto:{profile.email}" if profile.email else ""},
              {"text": profile.phone, "url": ""}, {"text": profile.location, "url": ""}]
-    for url in profile.links.values():
+    hidden = hidden_links(profile)
+    for label, url in profile.links.items():
+        if label in hidden:
+            continue
         full = url if re.match(r"^[a-z]+://", url) else f"https://{url}"
         items.append({"text": _display_url(url), "url": full})
     return [i for i in items if i["text"]]

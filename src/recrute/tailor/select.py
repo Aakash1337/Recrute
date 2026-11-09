@@ -21,9 +21,11 @@ from recrute.tailor.common import (
     Completer,
     JobContext,
     arr,
+    cert_line,
     keywords,
     obj,
     parse_llm,
+    rules_note,
     truncate,
 )
 
@@ -152,7 +154,7 @@ def profile_digest(profile: Profile, job: JobContext, ranks: dict[str, float], *
                   for ed in profile.education]
     if profile.certifications:
         lines.append("CERTIFICATIONS")
-        lines += [f"[{c.id}] {c.name}" for c in profile.certifications]
+        lines += [f"[{c.id}] {cert_line(c)}" for c in profile.certifications]
     lines.append("SKILLS: " + ", ".join(all_skills(profile)))
     return "\n".join(lines)
 
@@ -174,6 +176,7 @@ def select_resume(profile: Profile, job: JobContext, router: Completer, *, user_
     pages = pages_for(job, pages)
     ranks = rank_items(profile, job, user_note)
     note = f"USER NOTE (follow it): {user_note.strip()}\n" if user_note.strip() else ""
+    note = rules_note(profile) + note
     company = f" @ {job.company}" if job.company else ""
     prompt = SELECT_PROMPT.format(
         pages=pages, bullets=MAX_BULLETS[pages], note=note, title=job.title, company=company,

@@ -32,7 +32,7 @@ from recrute.tailor.common import Completer, JobContext, as_job_context
 from recrute.tailor.cover_letter import needs_cover_letter, write_cover_letter
 from recrute.tailor.render import render_cover_letter, render_resume
 from recrute.tailor.select import pages_for, rank_items, select_resume
-from recrute.tailor.verify import collect_claims, merge_flags, verify
+from recrute.tailor.verify import answer_content, collect_claims, merge_flags, verify
 
 
 def packet_dir(paths: Paths, job_id: int) -> Path:
@@ -180,7 +180,8 @@ def _generate(jc: JobContext, questions: list[FormQuestion], out_dir: Path, *,
                             answers=answer_set.answers, questions=questions,
                             cited=answer_set.cited)
     flags += verify(profile, claims, router=router, job=jc, extra_support=bank.common.values(),
-                    saved=bank.common.items())
+                    saved=bank.common.items(), selection=selection,
+                    other_answers=answer_content(answer_set.answers, questions, jc))
 
     packet = Packet(
         job_id=jc.job_id, resume=selection, resume_pdf=rel(resume.path),

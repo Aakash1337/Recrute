@@ -41,6 +41,7 @@ from recrute.tailor.common import (
     item_lines,
     obj,
     parse_llm,
+    rules_note,
     truncate,
 )
 from recrute.tailor.cover_letter import is_cover_letter_field
@@ -405,8 +406,13 @@ def profile_answer(q: FormQuestion, profile: Profile) -> FormAnswer | None:
     value = format_value(q, raw)
     if value is None:
         return None
+    # (a degree or role held back as unconfirmed may be the one this asks about: you check)
+    held = " ".join(profile.unconfirmed)
+    review = (kind in ("degree", "gpa", "major", "school", "grad_date")
+              and "education:" in held) or (
+        kind in ("current_company", "current_title") and "the whole role" in held)
     return FormAnswer(question_id=q.id, value=value, source="profile", confidence=0.85,
-                      needs_review=False)
+                      needs_review=review)
 
 
 # --------------------------------------------------------------------------- LLM batch
@@ -495,6 +501,7 @@ def _llm_answers(pending: list[FormQuestion], *, profile: Profile, bank: AnswerB
         ids = list(profile.all_items())[:25]
     common = "\n".join(f"- {k}: {truncate(v, 400)}" for k, v in drafting_context(bank, pending))
     note = f"USER NOTE (follow it): {user_note.strip()}\n" if user_note.strip() else ""
+    note = rules_note(profile) + note
     prompt = ANSWER_PROMPT.format(
         note=note, title=job.title if job else "", company=f" @ {job.company}" if job and
         job.company else "", description=truncate(job.description, 1500) if job else "",
