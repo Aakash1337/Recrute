@@ -345,9 +345,12 @@ def _claimed_text(c: Claim, job: JobContext | None) -> str:
     if c.kind == "answer" and _DENIAL_RE.fullmatch(text):
         return ""  # (only a bare "No": "No certification, but I led the team" claims plenty)
     short_yes = c.kind == "answer" and bool(_SHORT_YES_RE.fullmatch(text))
-    alternative = choice and bool(text) and not _LEVEL_RE.fullmatch(text) and bool(re.search(
-        rf"(?<![\w]){re.escape(text.strip())}(?![\w])", f"{c.question} {c.detail}",
-        re.IGNORECASE))
+    # (each of several picks: "Bedrock, TensorFlow" from "LangChain, Bedrock or TensorFlow?")
+    picks = [t.strip() for t in text.split(", ")] if text else []
+    alternative = choice and bool(picks) and all(
+        t and not _LEVEL_RE.fullmatch(t) and re.search(
+            rf"(?<![\w]){re.escape(t)}(?![\w])", f"{c.question} {c.detail}", re.IGNORECASE)
+        for t in picks)
     if (choice or short_yes or (c.kind == "answer" and c.affirmative)) and not alternative:
         # a picked option claims what the question asks ("Expert" for "Your LangChain
         # level?"), unless it names one of the question's own alternatives (picking "Bedrock"

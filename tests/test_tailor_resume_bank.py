@@ -1011,3 +1011,53 @@ def test_the_llm_verifier_is_told_never_terms_without_a_do_not_claim_list():
     from recrute.tailor.verify import _never_rule
 
     assert "HERALD" in _never_rule(Profile(never_terms=["HERALD"]))
+
+
+def test_a_put_back_status_is_read_past_the_certs_own_acronym():
+    """Re-audit (high): '(CPTS)' was read as the note and the '(in progress)' after it lost."""
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(certifications=[Certification(
+        id="c", name="HTB Certified Penetration Tester Specialist")])
+    src = "HTB Certified Penetration Tester Specialist (CPTS) (in progress)"
+    assert [c.name for c in hold_marked_in_source(p, src).certifications] == [
+        "HTB Certified Penetration Tester Specialist (in progress)"]
+
+
+def test_a_section_marker_ends_with_its_source_file():
+    """Re-audit: a marked heading at the end of one file held everything in the next."""
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(projects=[Project(id="r", name="Range", summary="A cyber range."),
+                          Project(id="o", name="Orbit", summary="A scheduler.")])
+    src = ("=== a.md ===\n## Projects [confirm each before use]\n### Range\nA cyber range.\n\n"
+           "=== b.txt ===\nOrbit: A scheduler.")
+    assert [x.name for x in hold_marked_in_source(p, src).projects] == ["Orbit"]
+
+
+def test_a_heading_that_is_only_a_status_marks_its_section():
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(projects=[Project(id="r", name="Range", summary="A cyber range.")])
+    src = "## Unverified\n### Range\nA cyber range."
+    assert hold_marked_in_source(p, src).projects == []
+
+
+def test_a_curly_apostrophe_doesnt_hide_an_instruction_not_to_list():
+    from recrute.tailor.ingest import _Extracted, to_profile
+
+    p = to_profile(_Extracted.model_validate({"certifications": [
+        {"name": "AWS Security Specialty (preparing; don’t list until passed)"}]}))
+    assert p.certifications == [] and "AWS Security Specialty" in " ".join(p.unconfirmed)
+
+
+def test_picking_several_alternatives_doesnt_claim_the_rest():
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    p = Profile(never_terms=["LangChain"])
+    q = FormQuestion(id="q", label="Which have you used: LangChain, Bedrock or TensorFlow?",
+                     type="multiselect", options=["LangChain", "Bedrock", "TensorFlow"])
+    claims = collect_claims(p, answers=[FormAnswer(question_id="q", value=["Bedrock",
+                                                                           "TensorFlow"],
+                                                   source="llm_new")], questions=[q])
+    assert not any("never to claim" in f.reason for f in deterministic_flags(p, claims))

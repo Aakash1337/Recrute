@@ -324,7 +324,7 @@ def _clean_cert_name(name: str) -> str:
                 NOT_EARNED_RE.search(tail) and not NOT_EARNED_RE.search(head)):
             return m.group(0)  # (a marker, or a status the head doesn't state yet)
         return f"({head})"
-    return re.sub(r"\(([^;()]+);([^()]*)\)", tidy, name)
+    return re.sub(r"\(([^;()]+);([^()]*)\)", tidy, plain_quotes(name))
 
 
 def _never_names(rules: list[str]) -> list[str]:
@@ -405,10 +405,15 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
     inherited: list[bool] = []
     open_heads: list[tuple[int, bool]] = []
     for ln in raw:
-        if h := re.match(r"\s*(#{1,6})\s", ln):
+        if re.fullmatch(r"=== .+ ===", ln.strip()):  # (the next source file: a fresh start)
+            open_heads = []
+            inherited.append(False)
+        elif h := re.match(r"\s*(#{1,6})\s", ln):
             level = len(h.group(1))
             open_heads = [o for o in open_heads if o[0] < level]
-            open_heads.append((level, bool(_UNCONFIRMED_RE.search(_plain_line(ln)))))
+            head = _plain_line(ln)  # ("## Unverified" is a marker on its own)
+            open_heads.append((level, bool(_UNCONFIRMED_RE.search(head)
+                                           or _STATUS_ONLY_RE.fullmatch(head))))
             inherited.append(any(m for _, m in open_heads[:-1]))
         else:
             inherited.append(any(m for _, m in open_heads))
@@ -458,6 +463,10 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
             for m in rx.finditer(ln):
                 # only its own list item: "AWS SAA, CKA (in progress)" says nothing of AWS SAA
                 rest = ln[m.end():]
+                # past its own acronym: "HTB ... (CPTS) (in progress)"
+                while (own := _note_after(rest)) and re.fullmatch(r"[\[(][A-Z][A-Z0-9+-]{1,9}[\])]",
+                                                                  own):
+                    rest = rest[rest.index(own) + len(own):]
                 note = _note_after(rest) or re.split(r"[,;|\u2022]", rest, maxsplit=1)[0][:40]
                 at_start = re.match(r"\s*(?:[\[(]|[-\u2013\u2014:]?\s*" + NOT_EARNED_RE.pattern
                                     + ")", note, re.IGNORECASE)
@@ -564,12 +573,12 @@ def hold_unconfirmed(profile: Profile) -> Profile:
     Any marked note holds its whole item: "(amount: confirm)" is about the claim itself."""
     held: list[str] = list(profile.unconfirmed)
 
-    def marked(*texts: str) -> bool:
-        return any(_UNCONFIRMED_RE.search(t or "") for t in texts)
+    def marked(*texts: str) -> bool:  # (curly quotes too: "don’t list")
+        return any(_UNCONFIRMED_RE.search(plain_quotes(t or "")) for t in texts)
 
     def noted(*notes: str) -> bool:
-        return any(_UNCONFIRMED_RE.search(t or "") or _NOTE_MARKER_RE.search(t or "")
-                   for t in notes)
+        return any(_UNCONFIRMED_RE.search(plain_quotes(t or ""))
+                   or _NOTE_MARKER_RE.search(plain_quotes(t or "")) for t in notes)
 
     def note(where: str, text: str, ctx: str = "") -> str:
         return f"{where}: {text}" + (f" ({ctx})" if ctx and ctx not in text else "")
