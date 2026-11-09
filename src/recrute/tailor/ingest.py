@@ -958,6 +958,10 @@ def merge_profiles(new: Profile, old: Profile) -> Profile:
     _merge_items(new.awards, old.awards, ids, None)
     _merge_items(new.extra, old.extra, ids, None)
     ensure_unique_ids(new)
+    # a never-term you added to profile.yaml by hand is kept: losing one turns its block off
+    seen: set[str] = set()
+    new.never_terms = [t for t in (*new.never_terms, *old.never_terms)
+                       if not (t.casefold() in seen or seen.add(t.casefold()))]
     return new
 
 
@@ -1181,6 +1185,14 @@ def ingest_resume(paths: Paths, router: Completer, *, apply: bool = False) -> In
                            reason="held back: the source marks it unconfirmed. Confirm it there "
                                   "and ingest again to use it")
               for u in profile.unconfirmed]
+    if old is not None:  # (a rule or do-not-claim entry only profile.yaml had: shown, not lost)
+        flags += [VerifierFlag(where=f"profile.{field}", text=entry[:200], severity="warn",
+                               reason="in the current profile.yaml but not in the new ingest: "
+                                      "add it to the resume source to keep it")
+                  for field in ("rules", "do_not_claim")
+                  for entry in getattr(old, field)
+                  if " ".join(entry.split()) not in {" ".join(e.split())
+                                                     for e in getattr(profile, field)}]
     flags += [VerifierFlag(where=f"profile:{rid}", text=rid, severity="warn",
                            reason="present in the current profile.yaml but not in the new "
                                   "ingest (removed or reworded in the source?)")
