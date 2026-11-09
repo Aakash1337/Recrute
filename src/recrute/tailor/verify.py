@@ -28,8 +28,12 @@ from recrute.tailor.common import (
     find_unsupported,
     item_lines,
     keywords,
+    never_claim_lines,
+    never_claim_terms,
+    never_term_pattern,
     obj,
     parse_llm,
+    plain_quotes,
     profile_texts,
 )
 
@@ -148,7 +152,9 @@ _ZERO_RANGE = re.compile(r"(?<![\d.,])0\s*(?:-|–|—|to)\s*\d+(?:\.\d+)?(?![\d
 
 
 def deterministic_flags(profile: Profile, claims: list[Claim], *, job: JobContext | None = None,
-                        extra_support: Iterable[str] = ()) -> list[VerifierFlag]:
+                        extra_support: Iterable[str] = (),
+                        selection: ResumeSelection | None = None,
+                        other_answers: Iterable[tuple[str, str]] = ()) -> list[VerifierFlag]:
     """Token-level support check, most local source first.
 
     A claim's tokens must occur in its cited items (plus, except for bullet rewrites, the
@@ -160,13 +166,24 @@ def deterministic_flags(profile: Profile, claims: list[Claim], *, job: JobContex
     """
     extra = list(extra_support)
     whole = SupportIndex.of([*profile_texts(profile), *extra])
+    # a "Yes" to holding a credential needs one that's earned: "CPTS (in progress)" isn't
+    earned = SupportIndex.of([*profile_texts(profile.model_copy(update={"certifications": [
+        c for c in profile.certifications if not _NOT_EARNED_RE.search(c.name)]})), *extra])
+    rendered = [*rendered_content(profile, selection), *other_answers]
+    never = [(t, never_term_pattern(t)) for t in never_claim_terms(profile)]
     jd = SupportIndex.of([job.title, job.company, job.description]) if job else None
     job_names = [job.title, job.company] if job else []
     background = background_facts(profile)
     flags: list[VerifierFlag] = []
+    for where, text in [*((c.where, _claimed_text(c, job)) for c in claims),
+                        *rendered]:  # (your own list: no evidence makes these claimable)
+        for term, rx in never:
+            if text and rx.search(plain_quotes(text)):
+                flags.append(VerifierFlag(where=where, text=term, severity="block",
+                                          reason=f"you said never to claim '{term}'"))
     for c in claims:
         if c.affirmative:
-            flags += _affirmative_flags(c, whole)
+            flags += _affirmative_flags(c, earned)
         texts = [t for cid in c.cited_ids for t in _item_support(profile, cid)]
         allowed: list[str] = []
         if c.kind != "rewrite":
@@ -243,6 +260,78 @@ class _Flags(BaseModel):
     flags: list[_Flag] = []
 
 
+_NOT_EARNED_RE = re.compile(r"\b(?:in progress|preparing|expected|pursuing|planned|studying)\b",
+                            re.IGNORECASE)
+
+
+def _claimed_text(c: Claim, job: JobContext | None) -> str:
+    """What a claim asserts. An answer: its value, and for a "Yes" what the question asks too
+    ("Yes" to "LangChain experience?" claims LangChain); nothing at all for "No" (denying it
+    isn't claiming it)."""
+    text = c.text
+    if c.kind == "answer" and c.question and text.startswith(f"{c.question}: "):
+        text = text[len(c.question) + 2:]
+    if c.kind == "answer" and _DENIAL_RE.fullmatch(text):
+        return ""  # (only a bare "No": "No certification, but I led the team" claims plenty)
+    if c.kind == "answer" and c.question:
+        # a "Yes" claims what the question asks, and so does any other choice ("Expert" for
+        # "Your LangChain level?")
+        text = f"{c.question} {c.detail} {text}"
+    return text
+
+
+# (a "0" to "years of LangChain experience?" denies it too)
+_DENIAL_RE = re.compile(r"\s*(?:no|false|none|never|n/a|not applicable|0(?:\s*(?:years?|yrs?|"
+                        r"months?))?)\.?\s*", re.IGNORECASE)
+
+
+def answer_content(answers: Iterable[FormAnswer], questions: Iterable[FormQuestion],
+                   job: JobContext | None = None) -> list[tuple[str, str]]:
+    """Every answer that isn't newly drafted (saved, or from your profile): the do-not-claim
+    list applies to them too, though the LLM verifier doesn't see them."""
+    by_id = {q.id: q for q in questions}
+    out = []
+    for a in answers:
+        q = by_id.get(a.question_id)
+        if a.source == "llm_new" or a.value in (None, "", []) or (q and q.type == "file"):
+            continue
+        value = ("Yes" if a.value else "No") if isinstance(a.value, bool) else (
+            ", ".join(a.value) if isinstance(a.value, list) else str(a.value))
+        claim = Claim(f"answer:{a.question_id}", value, "answer", [],
+                      q.label if q else "", False, (q.description or "") if q else "")
+        out.append((claim.where, _claimed_text(claim, job)))
+    return out
+
+
+def rendered_content(profile: Profile,
+                     selection: ResumeSelection | None) -> list[tuple[str, str]]:
+    """Everything the resume shows as written in your profile (unchanged bullets, skills,
+    certifications, headers): your do-not-claim list applies to it as much as to new wording."""
+    if selection is None:
+        return []
+    from recrute.tailor.render import resume_data
+
+    # exactly what is printed (the renderer's own data), except your name and contact line
+    data = resume_data(profile, selection)
+    out: list[tuple[str, str]] = [("resume.headline", data["headline"] or ""),
+                                  ("resume.summary", data["summary"] or ""),
+                                  ("resume.skills", ", ".join(data["skills"]))]
+    for section in ("experience", "projects", "education"):
+        for entry in data[section]:
+            out.append((f"resume.{section}", " ".join(
+                str(entry[k] or "") for k in ("org", "right_top", "title", "right_bottom"))))
+            out += [(f"resume.{section}", str(b)) for b in entry["bullets"]]
+    out += [("resume.certifications", str(c)) for c in data["certifications"]]
+    return out
+
+
+def _never_rule(profile: Profile) -> str:
+    if not profile.do_not_claim:
+        return ""
+    return ("\n- block, whatever else supports it, anything the candidate never writes or "
+            "claims:\n" + "\n".join(never_claim_lines(profile)))
+
+
 _SAVED_RULE = ("A PREVIOUSLY APPROVED ANSWER (the candidate's own words) also supports a claim, "
                "but only on the same subject as the question it answered (an answer about "
                "Python says nothing about Kubernetes).")
@@ -289,7 +378,8 @@ def llm_flags(profile: Profile, claims: list[Claim], router: Completer,
     evidence = _saved_evidence(claims, saved)
     prompt = VERIFY_PROMPT.format(background=background_facts(profile, name=False),
                                   saved=evidence,
-                                  saved_rule=_SAVED_RULE if evidence else "",
+                                  saved_rule=(_SAVED_RULE if evidence else "")
+                                  + _never_rule(profile),
                                   sources="\n".join(item_lines(profile, cited)) or "(none)",
                                   claims="\n".join(claim_lines))
     raw = parse_llm(_Flags, router.complete("verify", prompt, schema=VERIFY_SCHEMA,
@@ -319,9 +409,12 @@ def merge_flags(*groups: Iterable[VerifierFlag]) -> list[VerifierFlag]:
 def verify(profile: Profile, claims: list[Claim], *, router: Completer | None = None,
            job: JobContext | None = None,
            extra_support: Iterable[str] = (),
-           saved: Iterable[tuple[str, str]] = ()) -> list[VerifierFlag]:
+           saved: Iterable[tuple[str, str]] = (),
+           selection: ResumeSelection | None = None,
+           other_answers: Iterable[tuple[str, str]] = ()) -> list[VerifierFlag]:
     """Deterministic flags + (when a router is given) the LLM fact-check pass. `saved`: your
     previously approved answers (question key, answer), evidence for claims that repeat them."""
-    det = deterministic_flags(profile, claims, job=job, extra_support=extra_support)
+    det = deterministic_flags(profile, claims, job=job, extra_support=extra_support,
+                              selection=selection, other_answers=other_answers)
     return merge_flags(det, llm_flags(profile, claims, router, list(saved))
                        if router is not None else [])

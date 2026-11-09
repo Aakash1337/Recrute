@@ -108,6 +108,11 @@ class Profile(BaseModel):
     certifications: list[Certification] = Field(default_factory=list)
     awards: list[ProfileItem] = Field(default_factory=list)
     extra: list[ProfileItem] = Field(default_factory=list)  # talks, publications, volunteering
+    # From your source's own instructions. None of these is ever evidence for a claim.
+    rules: list[str] = Field(default_factory=list)  # how to write about you ("no hyphens ...")
+    do_not_claim: list[str] = Field(default_factory=list)  # never claimed ("LangChain")
+    # held back until you confirm them (the source marks them [confirm], "decide whether", ...)
+    unconfirmed: list[str] = Field(default_factory=list)
 
     def all_items(self) -> dict[str, ProfileItem]:
         items: dict[str, ProfileItem] = {}

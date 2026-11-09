@@ -24,6 +24,7 @@ from recrute.tailor.common import (
     keywords,
     obj,
     parse_llm,
+    rules_note,
     truncate,
 )
 
@@ -174,6 +175,7 @@ def select_resume(profile: Profile, job: JobContext, router: Completer, *, user_
     pages = pages_for(job, pages)
     ranks = rank_items(profile, job, user_note)
     note = f"USER NOTE (follow it): {user_note.strip()}\n" if user_note.strip() else ""
+    note = rules_note(profile) + note
     company = f" @ {job.company}" if job.company else ""
     prompt = SELECT_PROMPT.format(
         pages=pages, bullets=MAX_BULLETS[pages], note=note, title=job.title, company=company,

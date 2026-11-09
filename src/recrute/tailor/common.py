@@ -183,6 +183,15 @@ def _term_variants(term: str) -> set[str]:
     return v
 
 
+_QUOTES = str.maketrans({"\u2019": "'", "\u2018": "'", "\u02bc": "'", "\u201c": '"',
+                         "\u201d": '"'})
+
+
+def plain_quotes(text: str) -> str:
+    """Typographic quotes as plain ones: "Acme\u2019s" and "Acme's" are the same word."""
+    return text.translate(_QUOTES)
+
+
 @dataclass
 class SupportIndex:
     """Tokens (numbers + words) present in a body of source text."""
@@ -199,6 +208,7 @@ class SupportIndex:
         return idx
 
     def add(self, text: str) -> None:
+        text = plain_quotes(text)
         for _, forms in number_forms(text):
             self.numbers |= forms
         for tok in _TERM_RE.findall(text):
@@ -255,6 +265,7 @@ def claim_terms(text: str) -> list[tuple[str, TermKind]]:
 def find_unsupported(text: str, index: SupportIndex, allowed: Iterable[str] = ()) -> list[
         Unsupported]:
     """Claim tokens of `text` that don't appear anywhere in `index`."""
+    text = plain_quotes(text)
     allowed_idx = SupportIndex.of(allowed)
     out: list[Unsupported] = []
     seen: set[str] = set()
@@ -294,8 +305,91 @@ def degree_names(profile: Profile) -> str:
     return " ".join(dict.fromkeys(found))
 
 
+def rules_note(profile: Profile) -> str:
+    """Your own instructions for anything written about you, ahead of the user note. Rules that
+    hold contact details or your name stay out: what the LLM writes needs neither."""
+    lines = []
+    if rules := prompt_safe_rules(profile):
+        lines += ["CANDIDATE'S RULES (follow every one; they override any style default):",
+                  *(f"- {r}" for r in rules)]
+    lines += never_claim_lines(profile)
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def never_claim_lines(profile: Profile) -> list[str]:
+    """The do-not-claim list for a prompt: parsed terms ('Beacon (not "Bacon")' -> Bacon,
+    so the right name isn't read as forbidden), and any entry no term came from, as written."""
+    lines = []
+    # (an entry or term holding a contact detail or your name stays out: the deterministic
+    # check still blocks it, and the LLM can't write what it never saw)
+    if terms := [t for t in never_claim_terms(profile) if _prompt_safe(t, profile)]:
+        lines.append("NEVER WRITE OR CLAIM (even if it seems implied): " + "; ".join(terms))
+    # every entry as written too (parsing may not catch every part), except a spelling fix:
+    # 'Beacon (not "Bacon")' is all in its term, and as written could read "avoid Beacon"
+    if notes := [n for n in profile.do_not_claim
+                 if not _CORRECTION_RE.fullmatch(n) and _prompt_safe(n, profile)]:
+        lines += ["THE CANDIDATE'S OWN WORDS ON WHAT NEVER TO CLAIM:", *(f"- {n}" for n in notes)]
+    return lines
+
+
+_CORRECTION_RE = re.compile(r'\s*[^()"]+\(\s*not\s+["\u201c][^"\u201d]+["\u201d]\s*\)\s*\.?\s*',
+                            re.IGNORECASE)
+
+
+def prompt_safe_rules(profile: Profile) -> list[str]:
+    return [r for r in profile.rules if _prompt_safe(r, profile)]
+
+
+def _prompt_safe(text: str, profile: Profile) -> bool:
+    """No contact detail, address or name of yours: what the LLM writes needs none of them."""
+    from recrute.tailor.answers import _EMAIL_VALUE_RE, _PHONE_IN_TEXT_RE
+    from recrute.tailor.cover_letter import _ADDRESS_IN_PROSE
+
+    names = [p for p in (profile.name or "").split() if len(p) > 2]
+    return not (_EMAIL_VALUE_RE.search(text) or _PHONE_IN_TEXT_RE.search(text)
+                or _ADDRESS_IN_PROSE.search(text)
+                or re.search(r"https?://|www\.|\w+\.(?:com|io|dev|org)/", text)
+                or any(re.search(rf"\b{re.escape(n)}\b", text) for n in names))
+
+
+def never_term_pattern(term: str) -> re.Pattern[str]:
+    """A do-not-claim term as it may be written: "LLM fine tuning" also matches "LLM
+    fine-tuning", a line break or a curly apostrophe. (Match on plain_quotes(text).)"""
+    words = [re.escape(w) for w in re.split(r"[\s-]+", plain_quotes(term).strip()) if w]
+    return re.compile(r"(?<![\w-])" + r"[\s\-]*".join(words) + r"(?![\w-])", re.IGNORECASE)
+
+
+def never_claim_terms(profile: Profile) -> list[str]:
+    """The do-not-claim entries as short phrases to look for ("LangChain, LlamaIndex (...)")."""
+    return list(dict.fromkeys(t for e in profile.do_not_claim for t in _entry_terms(e)))
+
+
+def _entry_terms(entry: str) -> list[str]:
+    # quoted words are exactly what's never written: 'Beacon (not "Bacon")' forbids
+    # "Bacon", never "Beacon"
+    quoted = re.findall(r'["\u201c]([^"\u201d]{2,60})["\u201d]', entry)
+    if quoted:
+        if _CORRECTION_RE.fullmatch(entry):
+            return [q.strip() for q in quoted if q.strip()]
+        # and any name left outside the quotes: 'Never claim "LangChain" or LlamaIndex'
+        rest = re.sub(r'["\u201c][^"\u201d]*["\u201d]', " ", entry)
+        names = re.findall(r"\b(?:[A-Z][a-z]*[A-Z0-9]\w*|[A-Z]{2,}\w*|[A-Z][a-z]+\d\w*)\b", rest)
+        return [q.strip() for q in quoted if q.strip()] + names
+    # ("Do not claim Kubernetes", "No Kubernetes": the instruction isn't the term)
+    entry = re.sub(r"^\s*(?:never|do not|don't|no)\s+(?:(?:write|claim|say|use|mention|list|"
+                   r"call it)\s+)?(?:that\s+)?", "", entry, flags=re.IGNORECASE)
+    head = re.split(r"\s*[(:;\u2014]|\s+-\s+", entry)[0].strip(" .")
+    parts = [x.strip() for x in head.split(",")]
+    if len(parts) > 1 and all(len(x.split()) == 1 for x in parts):
+        return [x for x in parts if x]  # a list of names: "LangChain, LlamaIndex, LangGraph"
+    if head and len(head.split()) <= 5:
+        return [head]  # one phrase: "AWS Certified Security, Specialty"
+    return []
+
+
 def profile_texts(profile: Profile) -> list[str]:
-    """Every string in the profile (for building a whole-profile SupportIndex)."""
+    """Every string in the profile (for building a whole-profile SupportIndex). Your rules, the
+    do-not-claim list and unconfirmed items are never evidence."""
     out: list[str] = [degree_names(profile)]
 
     def walk(v: Any) -> None:
@@ -309,7 +403,7 @@ def profile_texts(profile: Profile) -> list[str]:
             for x in v:
                 walk(x)
 
-    walk(profile.model_dump(mode="json"))
+    walk(profile.model_dump(mode="json", exclude={"rules", "do_not_claim", "unconfirmed"}))
     return out
 
 
