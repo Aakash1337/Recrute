@@ -706,6 +706,22 @@ def _source_window(text: str, lines: list[str], windows: list[str]) -> str | Non
     return "\n".join(lines[max(0, i - 1): i + 6])
 
 
+def _source_windows(headers: tuple[str, ...], lines: list[str],
+                    windows: list[str]) -> list[str]:
+    """The source spots an entry's header may come from: each wording's best matches (a bank
+    may name the employer in its notes too: "Current title Engineer, Acme"), with room below
+    for a table row whose dates sit several lines under the name."""
+    spots: dict[int, None] = {}
+    for header in headers:
+        probe = " ".join(header.split())[:120]
+        found = process.extract(probe, windows, scorer=fuzz.partial_ratio, limit=5,
+                                score_cutoff=70)
+        if found:
+            top = found[0][1]
+            spots.update((i, None) for _, score, i in found if score >= top - 5)
+    return ["\n".join(lines[max(0, i - 1): i + 8]) for i in spots]
+
+
 def check_against_source(profile: Profile, source_text: str, *,
                          trusted: frozenset[str] | set[str] = frozenset()) -> list[VerifierFlag]:
     """Flag anything in the structured profile that isn't in the source text.
@@ -748,7 +764,7 @@ def check_against_source(profile: Profile, source_text: str, *,
         for w in _missing_words(text, index):
             block(where, w, f"'{w}' does not appear in the resume source")
 
-    def dates(where: str, value: str, header: str) -> None:
+    def dates(where: str, value: str, *headers: str) -> None:
         """Dates must appear near the entry they belong to (its header's source lines)."""
         if value.strip().lower() in _OPEN_ENDED:
             return
@@ -756,10 +772,10 @@ def check_against_source(profile: Profile, source_text: str, *,
         if not keys:
             check(where, value)
             return
-        local = _source_window(header, lines, windows)
+        spots = _source_windows(headers, lines, windows)
         if not keys <= src_dates:
             block(where, value, f"date '{value}' does not appear in the resume source")
-        elif local is not None and not keys <= date_keys(local):
+        elif spots and not any(keys <= date_keys(local) for local in spots):
             flags.append(VerifierFlag(
                 where=where, text=value, severity="block",
                 reason=f"date '{value}' is in the resume source, but not near this entry"))
@@ -786,8 +802,9 @@ def check_against_source(profile: Profile, source_text: str, *,
     for e in profile.experience:
         words(f"profile:{e.id}", f"{e.company} {e.title} {e.location}")
         check(f"profile:{e.id}", e.summary)
-        dates(f"profile:{e.id}.start", e.start, f"{e.title} {e.company}")
-        dates(f"profile:{e.id}.end", e.end, f"{e.title} {e.company}")
+        role = (f"{e.title} {e.company}", f"{e.company} {e.title}")
+        dates(f"profile:{e.id}.start", e.start, *role)
+        dates(f"profile:{e.id}.end", e.end, *role)
     for p in profile.projects:
         words(f"profile:{p.id}", p.name)
         check(f"profile:{p.id}", " ".join([p.summary, *p.tech]))
@@ -796,8 +813,9 @@ def check_against_source(profile: Profile, source_text: str, *,
     for ed in profile.education:
         words(f"profile:{ed.id}", f"{ed.school} {ed.field}")
         check(f"profile:{ed.id}", " ".join([ed.degree, ed.gpa, *ed.details]))
-        dates(f"profile:{ed.id}.start", ed.start, f"{ed.degree} {ed.field} {ed.school}")
-        dates(f"profile:{ed.id}.end", ed.end, f"{ed.degree} {ed.field} {ed.school}")
+        school = (f"{ed.degree} {ed.field} {ed.school}", f"{ed.school} {ed.degree} {ed.field}")
+        dates(f"profile:{ed.id}.start", ed.start, *school)
+        dates(f"profile:{ed.id}.end", ed.end, *school)
     for c in profile.certifications:
         words(f"profile:{c.id}", f"{c.name} {c.issuer}")
         check(f"profile:{c.id}", c.credential_id)

@@ -339,3 +339,64 @@ def test_project_ids_use_the_short_name():
 def test_ingest_without_sources_raises(paths):
     with pytest.raises(FileNotFoundError):
         ingest_resume(paths, FakeRouter({}))
+
+
+def _near(profile, source):
+    from recrute.tailor.ingest import check_against_source
+
+    return [(f.where, f.text) for f in check_against_source(profile, source)
+            if "not near this entry" in f.reason]
+
+
+_TABLE_BANK = """Ada Lovelace
+Notes
+Location Austin, TX
+Current title Security Engineer, Acme
+Page 2 of 9
+Education
+School Degree Dates GPA
+Northfield University,
+Boston, MA
+M.S., Cybersecurity
+and Operations
+Aug 2024 to
+May 2026
+3.90 /
+4.0
+Riverside Institute of
+Engineering, Pune, India
+B.Tech, Information
+Technology
+Dec 2020 to
+May 2024
+8.10 /
+10
+Experience
+Organization Role Dates
+Acme, Austin, TX Security Engineer Aug 2024 to Present
+Acme, Pune Analyst Feb 2023 to Jul 2024
+"""
+
+
+def test_dates_in_a_table_layout_are_near_their_entry():
+    """A bank naming the employer in its notes ("Current title Security Engineer, Acme") and a
+    table whose dates sit six lines under the school: both were blocked as 'not near'."""
+    from recrute.schemas import Education, Experience, Profile
+
+    p = Profile(name="Ada Lovelace",
+                experience=[Experience(id="e", company="Acme, Austin, TX",
+                                       title="Security Engineer", start="Aug 2024",
+                                       end="present")],
+                education=[Education(id="u", school="Riverside Institute of Engineering, Pune, "
+                                     "India", degree="B.Tech", field="Information Technology",
+                                     start="Dec 2020", end="May 2024")])
+    assert _near(p, _TABLE_BANK) == []
+
+
+def test_a_date_from_another_entry_is_still_not_near():
+    from recrute.schemas import Experience, Profile
+
+    p = Profile(name="Ada Lovelace",
+                experience=[Experience(id="e", company="Acme, Pune", title="Analyst",
+                                       start="Dec 2020", end="Jul 2024")])
+    assert _near(p, _TABLE_BANK) == [("profile:e.start", "Dec 2020")]
