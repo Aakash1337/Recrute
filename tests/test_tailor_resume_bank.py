@@ -1143,9 +1143,9 @@ def test_a_hand_added_never_term_survives_a_re_ingest():
     """Re-audit: the ingest warning says to add a term to never_terms; the next ingest lost it."""
     from recrute.tailor.ingest import merge_profiles
 
-    merged = merge_profiles(Profile(never_terms=["LangChain"]),
-                            Profile(never_terms=["langchain", "HERALD"]))
-    assert merged.never_terms == ["LangChain", "HERALD"]
+    merged = merge_profiles(Profile(never_terms=["LangChain", "Go"]),
+                            Profile(never_terms=["LangChain", "HERALD", "GO"]))
+    assert merged.never_terms == ["LangChain", "Go", "HERALD", "GO"]
 
 
 def test_a_rule_only_profile_yaml_had_is_flagged_at_re_ingest(tmp_path):
@@ -1155,7 +1155,8 @@ def test_a_rule_only_profile_yaml_had_is_flagged_at_re_ingest(tmp_path):
     paths = Paths(tmp_path)
     paths.ensure()
     profile_path(paths).write_text(dump_profile(Profile(
-        name="Ada", rules=["No em dashes."], do_not_claim=["Kubernetes at scale"])),
+        name="Ada", rules=["No em dashes."], do_not_claim=["Kubernetes at scale"],
+        never_terms=["HERALD"])),
         encoding="utf-8")
     (paths.resources / "resume" / "r.md").write_text("Ada", encoding="utf-8")
     router = FakeRouter({"extract": {
@@ -1166,3 +1167,8 @@ def test_a_rule_only_profile_yaml_had_is_flagged_at_re_ingest(tmp_path):
     flags = ingest_resume(paths, router).flags
     assert {(f.where, f.text) for f in flags if "not in the new ingest" in f.reason} >= {
         ("profile.rules", "No em dashes."), ("profile.do_not_claim", "Kubernetes at scale")}
+    assert any(f.where == "profile.never_terms" and f.text == "HERALD" for f in flags)
+    # the whole ingest keeps it
+    from recrute.tailor.ingest import proposed_profile_path, read_profile
+
+    assert read_profile(proposed_profile_path(paths)).never_terms == ["HERALD"]
