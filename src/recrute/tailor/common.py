@@ -356,7 +356,9 @@ def never_term_pattern(term: str) -> re.Pattern[str]:
     """A do-not-claim term as it may be written: "LLM fine tuning" also matches "LLM
     fine-tuning", a line break or a curly apostrophe. (Match on plain_quotes(text).)"""
     words = [re.escape(w) for w in re.split(r"[\s-]+", plain_quotes(term).strip()) if w]
-    return re.compile(r"(?<![\w-])" + r"[\s\-]*".join(words) + r"(?![\w-])", re.IGNORECASE)
+    # (a hyphen after it is still it, "LangChain-based"; a longer name isn't, "LangGraph4j")
+    return re.compile(r"(?<![\w])" + r"[\s\-]*".join(words) + r"(?![A-Za-z0-9_])",
+                      re.IGNORECASE)
 
 
 def never_claim_terms(profile: Profile) -> list[str]:
@@ -441,7 +443,10 @@ def background_facts(profile: Profile, *, name: bool = True) -> str:
               for ed in profile.education]
     if names := degree_names(profile):
         lines.append(f"Degree names: {names}")
-    lines += [f"Certification: {c.name}" for c in profile.certifications]
+    # (its date and issuer too: "Expected 2027" is what says it isn't held yet)
+    lines += [f"Certification: {c.name}" + (f" ({', '.join(x for x in (c.issuer, c.date) if x)})"
+                                            if c.issuer or c.date else "")
+              for c in profile.certifications]
     lines += [f"Skills ({cat}): {', '.join(skills)}" for cat, skills in profile.skills.items()
               if skills]
     return "\n".join(lines)

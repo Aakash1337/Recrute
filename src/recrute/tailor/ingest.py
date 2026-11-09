@@ -154,7 +154,9 @@ EXTRACT_PROMPT = """Structure the resume source below.
   ("[confirm ...]", "confirm", "decide whether", "do not list until", "still unidentified"),
   copy that marker verbatim into item.context, the entry or project summary, or the
   certification name. Never drop such a marker. "In progress" stays in the name as
-  "(in progress)": copy the marker words only, never an instruction around them.
+  "(in progress)": copy the marker words only, never an instruction around them. A marker on
+  a section heading ("Still unidentified", "[confirm each before use]") applies to every item
+  in that section: copy it into each one.
 - Notes about the document itself (open items, interview notes) are not resume content: skip.
 
 SOURCE:
@@ -320,8 +322,11 @@ def _never_names(rules: list[str]) -> list[str]:
     for rule in rules:
         names += re.findall(r"\bnever (?:\w+ ){0,2}the ([A-Z][A-Za-z0-9]+) name\b", rule)
         # "HERALD: describe the sales agent's capabilities without naming it"
+        # "HERALD: describe it without naming it": the prefix is the name only when the rule
+        # says not to name that very thing ("NOTE: never use em dashes" forbids nothing named)
         if (m := re.match(r"\s*([A-Z][A-Z0-9]{2,})\s*:", rule)) and re.search(
-                r"without naming it|never (?:use|name|mention)", rule, re.IGNORECASE):
+                r"without naming it|never (?:use|name|mention) (?:it|the name|this name|its name)",
+                rule, re.IGNORECASE):
             names.append(m.group(1))
     return list(dict.fromkeys(names))
 
@@ -333,7 +338,7 @@ _UNCONFIRMED_RE = re.compile(
     r"\[[^\]]*\b(?:confirm|decide|verify|tbd|tbc|unconfirmed|unverified|add specifics)\b[^\]]*\]|"
     r"\([^()]*\b(?:confirm|tbd|tbc|unverified|unconfirmed|not verified|not confirmed|"
     r"to be confirmed|pending confirmation)\b[^()]*\)|\(\s*verify\s*\)|"
-    r"\bdo not list until\b|\bstill unidentified\b|"
+    r"\b(?:do not|don't) list\b|\bnot to be listed\b|\bstill unidentified\b|"
     r"\bstatus\s*:\s*(?:confirm|verify|unverified|unconfirmed|tbd|tbc|pending)\b|"
     r"(?:^|:)\s*(?:confirm|verify|tbd|tbc|to be confirmed)\s*$|\bconfirm\s*[:)]",
     re.IGNORECASE)
@@ -348,7 +353,10 @@ _NOTE_MARKER_RE = re.compile(
     r"\bun(?:confirmed|verified)\b|\bunidentified\b|\btb[dc]\b|\bdo not (?:list|claim|use)\b|"
     r"\b(?:to be|yet to be|pending|needs?|awaiting)\s+(?:confirm\w*|verif\w*)\b|"
     r"^\s*(?:confirm|verify)\s*$|\bnot (?:yet )?(?:confirmed|verified|identified)\b|\bno readme\b|"
-    r"\bdecide whether\b|\bconfirm (?:before|each|whether|exact|details)\b",
+    r"\bdecide whether\b|\bcheck before claiming\b|"
+    # in a note, "confirm" itself, however it's phrased ("Confirm. Check before claiming",
+    # "Transcribe on X: confirm."); never "confirmed"
+    r"\bconfirm\b",
     re.IGNORECASE)
 
 
@@ -358,11 +366,13 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
     ("Reduced MTTR by 40% [confirm number]", "Kubernetes [confirm]"), or on the line just below
     it, holds it. A long bracketed note after a heading is about a whole section, not a list item
     of the same name ("Incident response [confirm whether each incident ...]")."""
-    lines = [" ".join(plain_quotes(ln).split()).strip(" -\u2022*") for ln in
-             source_text.splitlines()]
+    # (list and heading markup off: "## Range [confirm]", "1. Reduced ...", "> ...")
+    lines = [re.sub(r"^(?:#+|\d+[.)]|[-\u2022*+>])\s*", "", " ".join(plain_quotes(ln).split()))
+             for ln in source_text.splitlines()]
 
     def marked_in_source(text: str, *, listed: bool = False, within: str = "",
-                         name: bool = False) -> bool:
+                         name: bool = False, roles: bool = False,
+                         long_notes: bool = False) -> bool:
         """Only the thing's OWN source line counts: a bullet, role, project or degree at the
         start of its line; a skill or tech at the start of its list segment, as a whole word
         (so "LEDGER" inside an unrelated table row, or "Git" in "GitHub", isn't it). `within`:
@@ -370,22 +380,27 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
         key = " ".join(plain_quotes(text).split())[:60]
         if len(key) < 2:
             return False
+        words = r"[\s\W]{1,5}".join(re.escape(w) for w in key.split()) if roles else \
+            re.escape(key)
         if listed:
-            rx = re.compile(rf"(?:^|[,:|;\u2022]\s*){re.escape(key)}(?![\w-])", re.IGNORECASE)
+            rx = re.compile(rf"(?:^|[,:|;\u2022]\s*){words}(?![\w-])", re.IGNORECASE)
         else:
-            rx = re.compile(rf"^{re.escape(key)}", re.IGNORECASE)
+            rx = re.compile(rf"^{words}(?![\w-])" if len(key) < 60 else rf"^{words}",
+                            re.IGNORECASE)
         for n, ln in enumerate(lines):
             if within and not ln.lower().startswith(within.lower()):
                 continue
             for m in rx.finditer(ln):
                 rest = ln[m.end():] if listed or len(text) <= 60 \
                     else ln[m.start() + len(" ".join(text.split())):]
-                if listed:  # a list item: up to the next separator
+                if listed:  # a list item: only a note right after it ("AWS Security
+                    # Specialty [confirm]" says nothing about the skill "AWS")
+                    rest = rest if re.match(r"\s*[\[(]", rest) else ""
                     rest = re.split(r"[,|;\u2022]", rest, maxsplit=1)[0]
                 elif name:  # a name: up to its description ("Range [confirm]: a range")
                     rest = re.split(r"[:|\u2022]", rest, maxsplit=1)[0]
                 note = _UNCONFIRMED_RE.search(rest)
-                if note and (not listed or len(note.group(0)) <= 30):
+                if note and (not listed or long_notes or len(note.group(0)) <= 30):
                     return True
                 below = lines[n + 1] if n + 1 < len(lines) else ""
                 if not listed and re.match(r"[\[(]", below) and _UNCONFIRMED_RE.match(below):
@@ -405,7 +420,11 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
 
     experience = []
     for e in profile.experience:
-        if marked_in_source(e.title) or marked_in_source(f"{e.company} {e.title}"):
+        # (company and title together, in either order: one marked "Engineer" role must not
+        # take another employer's "Engineer" with it)
+        if marked_in_source(f"{e.company} {e.title}", roles=True, name=True) or \
+                marked_in_source(f"{e.title} {e.company}", roles=True, name=True) or \
+                marked_in_source(f"{e.title} at {e.company}", roles=True, name=True):
             held.append(f"{e.title} @ {e.company}: the whole role (marked in the source)")
             continue
         experience.append(e.model_copy(update={"bullets": keep(f"{e.title} @ {e.company}",
@@ -422,10 +441,13 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
                                              "bullets": keep(f"project {p.name}", p.bullets)}))
     education = []
     for ed in profile.education:
-        if ed.degree and marked_in_source(ed.degree):
+        if ed.degree and marked_in_source(ed.degree, name=True):
             held.append(f"education: {ed.degree}, {ed.school} (marked in the source)")
-        else:
-            education.append(ed)
+            continue
+        details = [d for d in ed.details if not marked_in_source(d)]
+        held += [f"education detail: {d} (marked in the source)" for d in ed.details
+                 if d not in details]
+        education.append(ed.model_copy(update={"details": details}))
     skills = {}
     for cat, items in profile.skills.items():
         held += [f"skill ({cat}): {s} (marked in the source)" for s in items
@@ -434,7 +456,7 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
             skills[cat] = kept
     certs = []
     for c in profile.certifications:
-        if marked_in_source(c.name, listed=True):
+        if marked_in_source(c.name, listed=True, long_notes=True):
             held.append(f"certification: {c.name} (marked in the source)")
         else:
             certs.append(c)

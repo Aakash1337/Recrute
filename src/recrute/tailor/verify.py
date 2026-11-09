@@ -176,6 +176,10 @@ def deterministic_flags(profile: Profile, claims: list[Claim], *, job: JobContex
     job_names = [job.title, job.company] if job else []
     background = background_facts(profile)
     flags: list[VerifierFlag] = []
+    flags += _unearned_flags(profile, [*((c.where, c.text) for c in claims
+                                         if c.kind != "answer" or not c.question
+                                         or not c.text.startswith(f"{c.question}: ")),
+                                       *rendered])
     for where, text in [*((c.where, _claimed_text(c, job)) for c in claims),
                         *rendered]:  # (your own list: no evidence makes these claimable)
         for term, rx in never:
@@ -262,7 +266,30 @@ class _Flags(BaseModel):
 
 
 _NOT_EARNED_RE = re.compile(r"\b(?:in[- ]progress|preparing|expected|pursuing|planned|studying|"
-                            r"target(?:ed|ing)?|scheduled|not yet)\b", re.IGNORECASE)
+                            r"target(?:ed|ing)?|scheduled|not yet|expired|lapsed)\b", re.IGNORECASE)
+
+
+def _unearned_flags(profile: Profile, texts: list[tuple[str, str]]) -> list[VerifierFlag]:
+    """A certification not held yet (in progress, expected, expired) named without such a
+    qualifier nearby states it as held: "I hold the CPTS" is false while it's "(in progress)"."""
+    flags = []
+    for c in profile.certifications:
+        if not _NOT_EARNED_RE.search(f"{c.name} {c.issuer} {c.date}"):
+            continue
+        core = re.sub(r"\s*\([^()]*\)", "", c.name).strip()
+        if len(core) < 3:
+            continue
+        rx = re.compile(rf"(?<![\w]){re.escape(core)}(?![A-Za-z0-9_])", re.IGNORECASE)
+        for where, text in texts:
+            for m in rx.finditer(text or ""):
+                near = text[max(0, m.start() - 60):m.end() + 60]
+                if not _NOT_EARNED_RE.search(near):
+                    flags.append(VerifierFlag(
+                        where=where, text=core, severity="block",
+                        reason=f"'{core}' isn't held yet ({c.date or c.name}): say so, or "
+                               "leave it out"))
+                    break
+    return flags
 
 
 def _claimed_text(c: Claim, job: JobContext | None) -> str:

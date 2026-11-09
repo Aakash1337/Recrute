@@ -649,3 +649,105 @@ def test_a_rule_to_leave_a_link_off_is_applied_in_the_header():
                 rules=["LinkedIn: left off every resume. The profile is sparse."])
     texts = [c["text"] for c in contact_line(p)]
     assert "github.com/ada" in texts and not any("linkedin" in t for t in texts)
+
+
+@pytest.mark.parametrize("text,blocked", [
+    ("I hold the HTB CPTS.", True),
+    ("Certified: HTB CPTS, CompTIA Security+.", True),
+    ("Working toward the HTB CPTS (in progress).", False),
+    ("I am pursuing the HTB CPTS this year.", False),
+])
+def test_a_cert_not_held_yet_cannot_be_stated_as_held_in_prose(text, blocked):
+    """Re-audit (high): only Yes/No answers were checked; prose and the LLM verifier weren't."""
+    from recrute.tailor.verify import Claim, deterministic_flags
+
+    p = Profile(certifications=[Certification(id="c", name="HTB CPTS", date="Expected 2027"),
+                                Certification(id="s", name="CompTIA Security+")])
+    flags = deterministic_flags(p, [Claim("cover_letter", text, "cover_letter", [])])
+    assert any("isn't held yet" in f.reason for f in flags) is blocked
+
+
+def test_the_llm_sees_a_certs_date():
+    from recrute.tailor.common import background_facts
+
+    p = Profile(certifications=[Certification(id="c", name="HTB CPTS", date="Expected 2027")])
+    assert "Expected 2027" in background_facts(p, name=False)
+
+
+def test_a_rule_label_is_not_a_forbidden_name():
+    from recrute.tailor.ingest import _never_names
+
+    assert _never_names(["NOTE: never use em dashes.", "AWS: never mention the cert until "
+                         "passed.", "HERALD: describe it without naming it."]) == ["HERALD"]
+
+
+@pytest.mark.parametrize("name", ["CEH (expired; do not list)", "OSCP (lapsed; don't list)",
+                                  "Cert X (do not list)"])
+def test_a_cert_the_source_says_not_to_list_is_held(name):
+    from recrute.tailor.ingest import _Extracted, to_profile
+
+    p = to_profile(_Extracted.model_validate({"certifications": [{"name": name}]}))
+    assert p.certifications == [] and p.unconfirmed
+
+
+def test_hyphenated_forms_of_a_never_term_are_caught():
+    from recrute.tailor.common import never_term_pattern
+
+    rx = never_term_pattern("LangChain")
+    assert rx.search("Built LangChain-based agents.")
+    assert not never_term_pattern("LangGraph").search("Used LangGraph4j once.")
+
+
+def test_the_backstop_reads_only_each_items_own_line():
+    """Re-audit: prefix matches held real skills, projects and roles."""
+    from recrute.schemas import Education
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(skills={"Cloud": ["AWS", "Python"]},
+                projects=[Project(id="p", name="Range", summary="A range.")],
+                experience=[Experience(id="a", company="Acme Corp", title="Security Engineer"),
+                            Experience(id="o", company="Other", title="Security Engineer")],
+                education=[Education(id="ed", school="U", degree="M.S.",
+                                     details=["Reduced latency by 40%."])])
+    src = ("AWS Security Specialty [confirm exam date]\nPython certification (TBD)\n"
+           "Ranger rollout [confirm]\nAcme Corp | Security Engineer [confirm exact title]\n"
+           "Other | Security Engineer\nReduced latency by 40%. [confirm number]")
+    held = hold_marked_in_source(p, src)
+    assert held.skills == {"Cloud": ["AWS", "Python"]}
+    assert len(held.projects) == 1
+    assert [e.id for e in held.experience] == ["o"]
+    assert held.education[0].details == []
+
+
+@pytest.mark.parametrize("src", ["## Range [confirm]: a cyber range", "1. Range [confirm]",
+                                 "> Range [confirm]"])
+def test_the_backstop_reads_through_markdown(src):
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(projects=[Project(id="p", name="Range", summary="A range.")])
+    assert hold_marked_in_source(p, src).projects == []
+
+
+def test_a_long_note_on_a_certification_line_holds_it():
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(certifications=[Certification(id="c", name="CKA")])
+    src = "CKA (to be confirmed once the exam results are published next quarter)"
+    assert hold_marked_in_source(p, src).certifications == []
+
+
+def test_a_subject_confirm_note_in_an_items_notes_holds_it():
+    """A real ingest: unconfirmed services rode along in a confirmed bullet's notes, where they
+    counted as evidence."""
+    p = hold_unconfirmed(Profile(extra=[ProfileItem(
+        id="x", text="Deployed on Bedrock AgentCore.",
+        context="Interview note. Transcribe, Polly on Beacon: Confirm.")]))
+    assert p.extra == [] and "Transcribe" in p.unconfirmed[0]
+
+
+@pytest.mark.parametrize("context", ["Confirm. Check before claiming.",
+                                     "Transcribe on Beacon: Confirm.", "Please confirm usage."])
+def test_confirm_in_a_note_is_a_marker_however_phrased(context):
+    p = hold_unconfirmed(Profile(extra=[ProfileItem(id="x", text="Transcribe, Polly on Beacon",
+                                                    context=context)]))
+    assert p.extra == []
