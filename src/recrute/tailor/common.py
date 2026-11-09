@@ -357,13 +357,31 @@ def never_term_pattern(term: str) -> re.Pattern[str]:
     fine-tuning", a line break or a curly apostrophe. (Match on plain_quotes(text).)"""
     words = [re.escape(w) for w in re.split(r"[\s-]+", plain_quotes(term).strip()) if w]
     # (a hyphen after it is still it, "LangChain-based"; a longer name isn't, "LangGraph4j")
-    return re.compile(r"(?<![\w])" + r"[\s\-]*".join(words) + r"(?![A-Za-z0-9_])",
-                      re.IGNORECASE)
+    # (a short name is matched as written: "Go" isn't "go to", "R" isn't "r")
+    short = len(re.sub(r"\W", "", term)) <= 3 and any(c.isupper() for c in term)
+    flags = 0 if short else re.IGNORECASE
+    return re.compile(r"(?<![\w])" + r"[\s\-]*".join(words) + r"(?![A-Za-z0-9_])", flags)
 
 
 # A certification that isn't held (yet, or any more).
 NOT_EARNED_RE = re.compile(r"\b(?:in[- ]progress|preparing|expected|pursuing|planned|studying|"
-                           r"target(?:ed|ing)?|scheduled|not yet|expired|lapsed)\b", re.IGNORECASE)
+                           r"target(?:ed|ing)?|scheduled|pending|not yet|expired|lapsed)\b",
+                           re.IGNORECASE)
+
+
+def bracketed_after(rest: str) -> str:
+    """The bracketed note right at the start of `rest`, whole (brackets matched), or ""."""
+    m = re.match(r"\s*([\[(])", rest)
+    if not m:
+        return ""
+    close = {"[": "]", "(": ")"}[m.group(1)]
+    depth = 0
+    for i in range(m.start(1), len(rest)):
+        depth += rest[i] == m.group(1)
+        depth -= rest[i] == close
+        if depth == 0:
+            return rest[m.start(1):i + 1]
+    return rest[m.start(1):]
 
 
 def cert_line(c) -> str:

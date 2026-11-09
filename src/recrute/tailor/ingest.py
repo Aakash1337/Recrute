@@ -40,6 +40,7 @@ from recrute.tailor.common import (
     Completer,
     SupportIndex,
     arr,
+    bracketed_after,
     clean_terms,
     find_unsupported,
     obj,
@@ -358,6 +359,12 @@ _STATUS_ONLY_RE = re.compile(
     r"\s*(?:status\s*:\s*)?(?:unverified|unconfirmed|tbd|tbc|to be confirmed|pending(?: "
     r"confirmation)?|needs? (?:confirmation|verification)|not (?:yet )?(?:confirmed|verified))"
     r"\s*\.?\s*", re.IGNORECASE)
+# A summary that is only an instruction to the candidate: "Confirm exact title on record.",
+# "Decide whether to list on real resumes."
+_INSTRUCTION_SUMMARY_RE = re.compile(
+    r"\s*(?:please\s+)?(?:confirm|decide whether|double[- ]check|check (?:whether|if|before)|"
+    r"verify (?:whether|if|before|the exact|exact|this|that|dates?|numbers?|titles?))\b",
+    re.IGNORECASE)
 # In a note about an item (its context, metrics), plain words are markers too. In the item's
 # own words they're ordinary security prose: "Investigated unverified threat reports".
 _NOTE_MARKER_RE = re.compile(
@@ -382,19 +389,7 @@ def _plain_line(line: str) -> str:
     return ln
 
 
-def _note_after(rest: str) -> str:
-    """The bracketed note right after an item, whole (brackets matched), or ""."""
-    m = re.match(r"\s*([\[(])", rest)
-    if not m:
-        return ""
-    close = {"[": "]", "(": ")"}[m.group(1)]
-    depth = 0
-    for i in range(m.start(1), len(rest)):
-        depth += rest[i] == m.group(1)
-        depth -= rest[i] == close
-        if depth == 0:
-            return rest[m.start(1):i + 1]
-    return rest[m.start(1):]
+_note_after = bracketed_after  # (the bracketed note right after an item, whole)
 
 
 def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
@@ -403,7 +398,20 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
     ("Reduced MTTR by 40% [confirm number]", "Kubernetes [confirm]"), or on the line just below
     it, holds it. A long bracketed note after a heading is about a whole section, not a list item
     of the same name ("Incident response [confirm whether each incident ...]")."""
-    lines = [_plain_line(ln) for ln in source_text.splitlines()]
+    raw = source_text.splitlines()
+    lines = [_plain_line(ln) for ln in raw]
+    # a marker on a heading holds everything under it, until a heading of its level or above
+    # ("## Projects [confirm each before use]" holds each "### Range" below it)
+    inherited: list[bool] = []
+    open_heads: list[tuple[int, bool]] = []
+    for ln in raw:
+        if h := re.match(r"\s*(#{1,6})\s", ln):
+            level = len(h.group(1))
+            open_heads = [o for o in open_heads if o[0] < level]
+            open_heads.append((level, bool(_UNCONFIRMED_RE.search(_plain_line(ln)))))
+            inherited.append(any(m for _, m in open_heads[:-1]))
+        else:
+            inherited.append(any(m for _, m in open_heads))
 
     def marked_in_source(text: str, *, listed: bool = False, within: str = "",
                          name: bool = False, roles: bool = False,
@@ -426,6 +434,8 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
             if within and not ln.lower().startswith(within.lower()):
                 continue
             for m in rx.finditer(ln):
+                if inherited[n]:
+                    return True
                 rest = ln[m.end():] if listed or len(text) <= 60 \
                     else ln[m.start() + len(" ".join(text.split())):]
                 if listed:  # a list item: only a note right after it, read whole ("AWS
@@ -446,8 +456,15 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
         rx = re.compile(rf"(?:^|[,:|;\u2022]\s*){re.escape(name.strip())}(?![\w-])", re.IGNORECASE)
         for ln in lines:
             for m in rx.finditer(ln):
-                note = _note_after(ln[m.end():]) or ln[m.end():m.end() + 40]
-                if hit := NOT_EARNED_RE.search(note):
+                # only its own list item: "AWS SAA, CKA (in progress)" says nothing of AWS SAA
+                rest = ln[m.end():]
+                note = _note_after(rest) or re.split(r"[,;|\u2022]", rest, maxsplit=1)[0][:40]
+                at_start = re.match(r"\s*(?:[\[(]|[-\u2013\u2014:]?\s*" + NOT_EARNED_RE.pattern
+                                    + ")", note, re.IGNORECASE)
+                hit = NOT_EARNED_RE.search(note)
+                # ("Security+ - studying for CySA+" is about CySA+)
+                if at_start and hit and not re.match(r"\s+(?:for|toward|towards|to)\b",
+                                                     note[hit.end():], re.IGNORECASE):
                     return hit.group(0)
         return ""
 
@@ -572,14 +589,16 @@ def hold_unconfirmed(profile: Profile) -> Profile:
     for e in profile.experience:
         where = f"{e.title} @ {e.company}"
         if marked(e.title, e.summary, e.company, e.location, e.start, e.end) or \
-                _STATUS_ONLY_RE.fullmatch(e.summary):  # (a summary that is just "Unverified")
+                _STATUS_ONLY_RE.fullmatch(e.summary) or _INSTRUCTION_SUMMARY_RE.match(e.summary):
+            # (a summary that is just "Unverified", or "Confirm exact title on record.")
             held.append(note(where, f"the whole role ({e.start} to {e.end})", e.summary))
             held.extend(note(where, b.text, b.context) for b in e.bullets)
             continue
         experience.append(e.model_copy(update={"bullets": keep_items(where, e.bullets)}))
     projects = []
     for p in profile.projects:
-        if marked(p.name, p.summary, p.url) or _STATUS_ONLY_RE.fullmatch(p.summary):
+        if marked(p.name, p.summary, p.url) or _STATUS_ONLY_RE.fullmatch(p.summary) or \
+                _INSTRUCTION_SUMMARY_RE.match(p.summary):
             held.append(note(f"project {p.name}", p.summary or p.name))
             held.extend(note(f"project {p.name}", b.text, b.context) for b in p.bullets)
             continue
@@ -1121,8 +1140,14 @@ def ingest_resume(paths: Paths, router: Completer, *, apply: bool = False) -> In
         removed = sorted(set(_all_ids(old)) - set(_all_ids(profile)))
         trusted = {i.context for i in old.all_items().values() if i.context}
 
+    cert_names = {c.name for c in profile.certifications}
     profile = hold_marked_in_source(profile, source_text)
     flags = check_against_source(profile, source_text, trusted=trusted)
+    flags += [VerifierFlag(where="profile.certifications", text=c.name, severity="warn",
+                           reason="its status was put back from the source (the transcription "
+                                  "lost it): check it's right")
+              for c in profile.certifications if c.name not in cert_names
+              and NOT_EARNED_RE.search(c.name)]
     flags += never_claim_conflicts(profile)
     from recrute.tailor.common import never_term_pattern
 

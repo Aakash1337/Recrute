@@ -850,3 +850,164 @@ def test_the_resume_prompt_sees_a_certs_date():
     p = make_profile().model_copy(update={"certifications": [Certification(
         id="c", name="HTB CPTS", date="Expected 2027")]})
     assert "Expected 2027" in profile_digest(p, make_job(), {})
+
+
+@pytest.mark.parametrize("cert", [
+    Certification(id="c", name="HTB Certified Penetration Tester Specialist (CPTS)",
+                  issuer="Hack The Box", date="Expected 2027"),
+    Certification(id="c", name="HTB CPTS", issuer="Hack The Box", date="Target Dec 2026"),
+    Certification(id="c", name="HTB Certified Penetration Tester Specialist (CPTS) (in progress)"),
+    Certification(id="c", name="HTB CPTS", issuer="Hack The Box Academy Professional "
+                  "Certification Programme Office", date="In progress"),
+    Certification(id="c", name="OSCP", issuer="OffSec", date="Studying")])
+def test_the_resumes_own_line_for_an_unheld_cert_is_not_blocked(cert):
+    """Re-audit (high): the printed line 'HTB ... (CPTS) (Hack The Box, Expected 2027)' was
+    blocked: the acronym's brackets hid the status, and so did a long issuer."""
+    from recrute.tailor.verify import deterministic_flags
+
+    p = Profile(certifications=[cert])
+    flags = deterministic_flags(p, [], selection=ResumeSelection(certification_ids=["c"]))
+    assert not any("isn't held" in f.reason for f in flags), flags
+
+
+@pytest.mark.parametrize("text,blocked", [
+    ("HTB Certified Penetration Tester Specialist (CPTS), expected 2027.", False),
+    ("HTB Certified Penetration Tester Specialist (CPTS) (studying).", False),
+    ("HTB Certified Penetration Tester Specialist (CPTS).", True),
+    ("I hold the CPTS.", True)])
+def test_an_acronym_in_brackets_is_part_of_the_mention(text, blocked):
+    from recrute.tailor.verify import Claim, deterministic_flags
+
+    p = Profile(certifications=[Certification(
+        id="c", name="HTB Certified Penetration Tester Specialist (CPTS)", date="Expected 2027")])
+    flags = deterministic_flags(p, [Claim("cover_letter", text, "cover_letter", [])])
+    assert any("isn't held" in f.reason for f in flags) is blocked
+
+
+def test_the_code_at_the_end_of_a_certs_name_is_its_name_too():
+    """Re-audit: 'I hold the CPTS' passed for a cert named 'HTB CPTS'."""
+    from recrute.tailor.verify import Claim, deterministic_flags
+
+    p = Profile(certifications=[Certification(id="c", name="HTB CPTS", date="Expected 2027")])
+    flags = deterministic_flags(p, [Claim("cover_letter", "I hold the CPTS.", "cover_letter",
+                                          [])])
+    assert any("isn't held" in f.reason for f in flags)
+
+
+@pytest.mark.parametrize("src,names", [
+    ("Certifications: AWS SAA, CKA (in progress)", ["AWS SAA", "CKA (in progress)"]),
+    ("Security+ - studying for CySA+ next", ["Security+", "CKA"]),
+    ("Security+ (2023), CKA - expected 2027", ["Security+", "CKA (expected)"])])
+def test_a_put_back_status_comes_from_the_certs_own_item(src, names):
+    """Re-audit (high): the next list item's status was read as this one's."""
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(certifications=[Certification(id="s", name="AWS SAA" if "AWS" in src
+                                              else "Security+"),
+                                Certification(id="c", name="CKA")])
+    assert [c.name for c in hold_marked_in_source(p, src).certifications] == names
+
+
+def test_a_put_back_status_is_flagged_at_ingest(tmp_path):
+    from recrute.paths import Paths
+    from recrute.tailor.ingest import ingest_resume
+
+    paths = Paths(tmp_path)
+    paths.ensure()
+    (paths.resources / "resume" / "r.md").write_text(
+        "Ada\nCertifications: Security+, CKA (in progress)", encoding="utf-8")
+    router = FakeRouter({"extract": {
+        "name": "Ada", "headline": "", "email": "", "phone": "", "location": "", "links": [],
+        "summary": "", "skills": [], "projects": [], "education": [], "experience": [],
+        "certifications": [{"name": "Security+", "issuer": "", "date": "",
+                            "credential_id": ""},
+                           {"name": "CKA", "issuer": "", "date": "", "credential_id": ""}],
+        "awards": [], "extra": [], "rules": [], "do_not_claim": [], "never_terms": []}})
+    result = ingest_resume(paths, router)
+    assert [f.text for f in result.flags if f.where == "profile.certifications"] == [
+        "CKA (in progress)"]
+
+
+@pytest.mark.parametrize("label,value", [
+    ("Do you have experience with LangChain?", "Yes"),
+    ("Do you have experience with LangChain?", "yes."),
+    ("Years of experience with LangChain?", "3"),
+    ("Years of experience with LangChain?", "2+ years")])
+def test_a_saved_short_answer_claims_what_its_question_asks(label, value):
+    """Re-audit (high): a saved 'Yes' typed into a text box reached the check as just 'Yes'."""
+    from recrute.tailor.verify import answer_content, deterministic_flags
+
+    p = Profile(never_terms=["LangChain"])
+    other = answer_content([FormAnswer(question_id="q", value=value, source="answer_bank")],
+                           [FormQuestion(id="q", label=label, type="text")])
+    assert any("never to claim" in f.reason
+               for f in deterministic_flags(p, [], other_answers=other))
+
+
+def test_a_saved_no_or_prose_answer_still_doesnt_claim_the_question():
+    from recrute.tailor.verify import answer_content, deterministic_flags
+
+    p = Profile(never_terms=["LangChain"])
+    q = FormQuestion(id="q", label="Experience with frameworks such as LangChain?", type="text")
+    for value in ("No", "0", "I build agents directly on the Bedrock API."):
+        other = answer_content([FormAnswer(question_id="q", value=value,
+                                           source="answer_bank")], [q])
+        assert not any("never to claim" in f.reason
+                       for f in deterministic_flags(p, [], other_answers=other)), value
+
+
+@pytest.mark.parametrize("summary", ["Confirm exact title on record.",
+                                     "Decide whether to list on real resumes.",
+                                     "Verify dates with HR before use."])
+def test_a_summary_that_is_an_instruction_holds_its_entry(summary):
+    """Re-audit (high): a summary that only told the candidate to confirm it stayed claimable."""
+    from recrute.tailor.ingest import _Extracted, to_profile
+
+    p = to_profile(_Extracted.model_validate({
+        "experience": [{"company": "Acme", "title": "Engineer", "summary": summary}],
+        "projects": [{"name": "Range", "summary": summary}]}))
+    assert p.experience == [] and p.projects == []
+
+
+def test_a_marker_on_a_section_heading_holds_everything_under_it():
+    """Re-audit (high): '## Projects [confirm each before use]' was lost in transcription and
+    the backstop only read each item's own line."""
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(projects=[Project(id="r", name="Range", summary="A cyber range."),
+                          Project(id="o", name="Orbit", summary="A scheduler.")],
+                skills={"Tools": ["Wireshark"]})
+    src = ("## Projects [confirm each before use]\n### Range\nA cyber range.\n"
+           "## Side work\n### Orbit\nA scheduler.\n## Skills\nWireshark")
+    held = hold_marked_in_source(p, src)
+    assert [x.name for x in held.projects] == ["Orbit"]
+    assert held.skills == {"Tools": ["Wireshark"]}
+
+
+def test_a_level_option_still_claims_what_the_question_asks():
+    """Re-audit: 'Expert' appears in 'Beginner to Expert' and was taken for an alternative."""
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    p = Profile(never_terms=["LangChain"])
+    q = FormQuestion(id="q", label="Your LangChain level, from Beginner to Expert?",
+                     type="select", options=["Beginner", "Intermediate", "Expert"])
+    claims = collect_claims(p, answers=[FormAnswer(question_id="q", value="Expert",
+                                                   source="llm_new")], questions=[q])
+    assert any("never to claim" in f.reason for f in deterministic_flags(p, claims))
+
+
+@pytest.mark.parametrize("text,blocked", [("Built the scheduler in Go.", True),
+                                          ("Ready to go further with detection work.", False),
+                                          ("Happy to go on call.", False)])
+def test_a_short_never_term_is_matched_as_written(text, blocked):
+    from recrute.tailor.verify import Claim, deterministic_flags
+
+    p = Profile(never_terms=["Go"])
+    flags = deterministic_flags(p, [Claim("cover_letter", text, "cover_letter", [])])
+    assert any("never to claim" in f.reason for f in flags) is blocked
+
+
+def test_the_llm_verifier_is_told_never_terms_without_a_do_not_claim_list():
+    from recrute.tailor.verify import _never_rule
+
+    assert "HERALD" in _never_rule(Profile(never_terms=["HERALD"]))

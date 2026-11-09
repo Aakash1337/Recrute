@@ -25,6 +25,7 @@ from recrute.tailor.common import (
     SupportIndex,
     arr,
     background_facts,
+    bracketed_after,
     enum,
     find_unsupported,
     item_lines,
@@ -276,7 +277,32 @@ def _cert_names(name: str) -> list[str]:
     """How a certification may be named: in full, and by its acronym ("CPTS")."""
     core = re.sub(r"\s*\([^()]*\)", "", name).strip()
     acronyms = [a for a in re.findall(r"\(([A-Z][A-Z0-9+-]{2,})\)", name)]
-    return [n for n in (core, *acronyms) if len(n) >= 3]
+    # the code at the end of a longer name is its name too ("CPTS" in "HTB CPTS")
+    if (last := re.search(r"\s([A-Z][A-Z0-9+-]{2,})$", core)) and \
+            len(re.sub(r"[^A-Za-z]", "", last.group(1))) >= 3:
+        acronyms.append(last.group(1))
+    return list(dict.fromkeys(n for n in (core, *acronyms) if len(n) >= 3))
+
+
+def _status_attached(text: str, end: int, names: list[str]) -> bool:
+    """A status right after a mention: "CPTS (in progress)", "CPTS (Hack The Box, Expected
+    2027)", "HTB ... (CPTS) (Target Dec 2026)", "CPTS, expected 2027". Brackets are read whole;
+    the cert's own acronym in brackets is part of the mention."""
+    rest = text[end:]
+    rest = rest[1:] if rest.startswith(")") else rest  # (the mention was "(CPTS)")
+    own = "|".join(re.escape(n) for n in names)
+    for _ in range(3):  # (its acronym, then its issuer/date: a few brackets at most)
+        note = bracketed_after(rest)
+        if not note:
+            break
+        if _NOT_EARNED_RE.search(note):
+            return True
+        if not re.fullmatch(rf"[\[(]\s*(?:{own})\s*[\])]", note, re.IGNORECASE):
+            break  # (some other note: "(Hack The Box)", then ", expected 2027" may follow)
+        rest = rest[rest.index(note) + len(note):]
+    rest = re.sub(r"^\s*[\[(][^\[\]()]{0,60}[\])]", "", rest)  # an issuer note: "(Hack The Box)"
+    return bool(re.match(r"\s*[,:;\u2013\u2014-]?\s*(?:" + _NOT_EARNED_RE.pattern + ")", rest,
+                         re.IGNORECASE))
 
 
 def _unearned_flags(profile: Profile, texts: list[tuple[str, str]]) -> list[VerifierFlag]:
@@ -287,17 +313,19 @@ def _unearned_flags(profile: Profile, texts: list[tuple[str, str]]) -> list[Veri
     for c in profile.certifications:
         if not _NOT_EARNED_RE.search(f"{c.name} {c.issuer} {c.date}"):
             continue
-        for name in _cert_names(c.name):
-            rx = re.compile(rf"(?<![\w]){re.escape(name)}(?![A-Za-z0-9_])", re.IGNORECASE)
-            for where, text in texts:
+        names = _cert_names(c.name)
+        for where, text in texts:
+            covered: list[tuple[int, int]] = []  # ("CPTS" inside "HTB CPTS" is that mention)
+            for name in sorted(names, key=len, reverse=True):
+                rx = re.compile(rf"(?<![\w]){re.escape(name)}(?![A-Za-z0-9_])", re.IGNORECASE)
                 for m in rx.finditer(text or ""):
-                    after, before = text[m.end():m.end() + 40], text[max(0, m.start() - 40):
-                                                                     m.start()]
-                    attached = _PROGRESS_BEFORE.search(before) or re.match(
-                        r"\s*(?:\([^()]*\b(?:in[- ]progress|expected|pending|planned|scheduled|"
-                        r"preparing|pursuing|expired|lapsed)\b[^()]*\)|[,\u2014-]?\s*(?:in[- ]"
-                        r"progress|expected|pending|planned|scheduled)\b)", after, re.IGNORECASE)
-                    if not attached:
+                    if any(s <= m.start() and m.end() <= e for s, e in covered):
+                        continue
+                    covered.append(m.span())
+                    before = text[max(0, m.start() - 40):m.start()]
+                    before = before[:-1] if before.endswith("(") else before
+                    if not (_PROGRESS_BEFORE.search(before)
+                            or _status_attached(text, m.end(), names)):
                         flags.append(VerifierFlag(
                             where=where, text=name, severity="block",
                             reason=f"'{name}' isn't held ({c.date or c.name}): say so right "
@@ -316,8 +344,11 @@ def _claimed_text(c: Claim, job: JobContext | None) -> str:
         text = text[len(c.question) + 2:]
     if c.kind == "answer" and _DENIAL_RE.fullmatch(text):
         return ""  # (only a bare "No": "No certification, but I led the team" claims plenty)
-    if (choice or (c.kind == "answer" and c.affirmative)) and not (
-            choice and text and text.lower() in f"{c.question} {c.detail}".lower()):
+    short_yes = c.kind == "answer" and bool(_SHORT_YES_RE.fullmatch(text))
+    alternative = choice and bool(text) and not _LEVEL_RE.fullmatch(text) and bool(re.search(
+        rf"(?<![\w]){re.escape(text.strip())}(?![\w])", f"{c.question} {c.detail}",
+        re.IGNORECASE))
+    if (choice or short_yes or (c.kind == "answer" and c.affirmative)) and not alternative:
         # a picked option claims what the question asks ("Expert" for "Your LangChain
         # level?"), unless it names one of the question's own alternatives (picking "Bedrock"
         # from "LangChain, LlamaIndex or Bedrock?" claims Bedrock only); free text claims only
@@ -326,6 +357,15 @@ def _claimed_text(c: Claim, job: JobContext | None) -> str:
     return text
 
 
+# A short "Yes" or a number typed into a text box answers the question: "3" to "Years of
+# LangChain?" claims LangChain.
+_SHORT_YES_RE = re.compile(r"\s*(?:yes|y|true|i do|i have|correct|\d+(?:\.\d+)?\+?(?:\s*(?:years?|"
+                           r"yrs?|months?))?)\.?\s*", re.IGNORECASE)
+# An option that is a level or an answer, not one of the question's alternatives: "Expert" in
+# "Beginner to Expert: your LangChain?" still claims LangChain.
+_LEVEL_RE = re.compile(r"\s*(?:yes|true|beginner|basic|novice|intermediate|advanced|expert|"
+                       r"proficient|fluent|native|familiar|strong|\d+(?:\.\d+)?\+?(?:\s*\w+)?)\s*",
+                       re.IGNORECASE)
 # (a "0" to "years of LangChain experience?" denies it too)
 _DENIAL_RE = re.compile(r"\s*(?:no|false|none|never|n/a|not applicable|0(?:\s*(?:years?|yrs?|"
                         r"months?))?)\.?\s*", re.IGNORECASE)
@@ -374,7 +414,7 @@ def rendered_content(profile: Profile,
 
 
 def _never_rule(profile: Profile) -> str:
-    if not profile.do_not_claim:
+    if not profile.do_not_claim and not never_claim_terms(profile):
         return ""
     return ("\n- block, whatever else supports it, anything the candidate never writes or "
             "claims:\n" + "\n".join(never_claim_lines(profile)))
