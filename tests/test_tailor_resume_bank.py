@@ -1061,3 +1061,79 @@ def test_picking_several_alternatives_doesnt_claim_the_rest():
                                                                            "TensorFlow"],
                                                    source="llm_new")], questions=[q])
     assert not any("never to claim" in f.reason for f in deterministic_flags(p, claims))
+
+
+@pytest.mark.parametrize("label,value,source", [
+    ("Do you currently hold the HTB CPTS certification?", "Yes, I do.", "llm_new"),
+    ("Do you currently hold the HTB CPTS certification?", "I do.", "answer_bank"),
+    ("Have you built with LangChain?", "Yes, I have.", "llm_new"),
+    ("Have you built with LangChain?", "Yes - 2 years", "answer_bank")])
+def test_a_typed_yes_claims_what_its_question_asks(label, value, source):
+    """Re-audit (high): 'Yes, I do.' in a text box named nothing, so no check saw the claim."""
+    from recrute.tailor.verify import answer_content, collect_claims, deterministic_flags
+
+    p = Profile(never_terms=["LangChain"],
+                certifications=[Certification(id="c", name="HTB CPTS", date="Expected 2027")])
+    q = FormQuestion(id="q", label=label, type="text")
+    a = FormAnswer(question_id="q", value=value, source=source)
+    flags = deterministic_flags(p, collect_claims(p, answers=[a], questions=[q]),
+                                other_answers=answer_content([a], [q]))
+    assert any(f.severity == "block" for f in flags), flags
+
+
+def test_a_typed_answer_saying_what_it_did_doesnt_inherit_the_question():
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    p = Profile(never_terms=["LangChain"])
+    q = FormQuestion(id="q", label="Experience with frameworks such as LangChain?", type="text")
+    claims = collect_claims(p, answers=[FormAnswer(
+        question_id="q", value="I have built agents directly on the Bedrock API.",
+        source="llm_new")], questions=[q])
+    assert not any("never to claim" in f.reason for f in deterministic_flags(p, claims))
+
+
+@pytest.mark.parametrize("value", ["In progress", "Not yet - expected 2027"])
+def test_picking_a_status_for_do_you_hold_it_is_not_claiming_it(value):
+    """Re-audit: the truthful 'In progress' was blocked as claiming the cert."""
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    p = Profile(certifications=[Certification(id="c", name="HTB CPTS", date="Expected 2027")])
+    q = FormQuestion(id="q", label="Do you hold the HTB CPTS?", type="select",
+                     options=["Yes", "No", "In progress", "Not yet - expected 2027"])
+    claims = collect_claims(p, answers=[FormAnswer(question_id="q", value=value,
+                                                   source="llm_new")], questions=[q])
+    assert not any("isn't held" in f.reason for f in deterministic_flags(p, claims))
+
+
+def test_an_excused_full_name_excuses_its_acronym_after_it():
+    """Re-audit: 'pursuing the <full name> (CPTS)' flagged the '(CPTS)'."""
+    from recrute.tailor.verify import Claim, deterministic_flags
+
+    p = Profile(certifications=[Certification(
+        id="c", name="HTB Certified Penetration Tester Specialist (CPTS)", date="Expected 2027")])
+    text = "I am pursuing the HTB Certified Penetration Tester Specialist (CPTS) this year."
+    flags = deterministic_flags(p, [Claim("cover_letter", text, "cover_letter", [])])
+    assert not any("isn't held" in f.reason for f in flags)
+
+
+def test_own_facts_naming_an_unheld_cert_as_held_are_flagged_at_ingest(tmp_path):
+    from recrute.paths import Paths
+    from recrute.tailor.ingest import ingest_resume
+
+    paths = Paths(tmp_path)
+    paths.ensure()
+    (paths.resources / "resume" / "r.md").write_text(
+        "Ada\nAcme, Engineer\n- Applied HTB CPTS methods.\nCertifications: HTB CPTS "
+        "(in progress)", encoding="utf-8")
+    router = FakeRouter({"extract": {
+        "name": "Ada", "headline": "", "email": "", "phone": "", "location": "", "links": [],
+        "summary": "", "skills": [], "projects": [], "education": [],
+        "certifications": [{"name": "HTB CPTS (in progress)", "issuer": "", "date": "",
+                            "credential_id": ""}],
+        "awards": [], "extra": [], "rules": [], "do_not_claim": [], "never_terms": [],
+        "experience": [{"company": "Acme", "title": "Engineer", "location": "", "start": "",
+                        "end": "", "summary": "", "bullets": [
+                            {"text": "Applied HTB CPTS methods.", "tags": [], "metrics": [],
+                             "context": ""}]}]}})
+    result = ingest_resume(paths, router)
+    assert any("isn't held" in f.reason and f.severity == "warn" for f in result.flags)

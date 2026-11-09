@@ -85,8 +85,9 @@ def collect_claims(profile: Profile, selection: ResumeSelection | None = None, *
             text, choice = ", ".join(a.value), True
         else:
             text, choice = str(a.value), bool(q and q.options)
-        affirmative = a.value is True or (isinstance(a.value, str) and choice
-                                          and bool(_YES_RE.match(a.value)))
+        # (typed or picked: "Yes, I do." to "Do you hold the CPTS?" claims it)
+        affirmative = a.value is True or (isinstance(a.value, str) and bool(
+            _YES_RE.match(a.value) if choice else _LEADING_YES_RE.match(a.value)))
         claims.append(Claim(f"answer:{a.question_id}", f"{label}: {text}" if choice else text,
                             "answer", (cited or {}).get(a.question_id, []), label,
                             affirmative, detail))
@@ -94,6 +95,10 @@ def collect_claims(profile: Profile, selection: ResumeSelection | None = None, *
 
 
 _YES_RE = re.compile(r"^\s*(yes|true)\b", re.IGNORECASE)
+# A typed answer that starts by saying yes: "Yes, I do.", "I have, for 2 years."
+# (not "I have built agents on Bedrock": that says what it claims)
+_LEADING_YES_RE = re.compile(r"\s*(?:(?:yes|yeah|yep|true|correct)\b|(?:i do|i have|i hold)"
+                             r"(?=\s*(?:[,.;:!\u2013\u2014-]|$)))", re.IGNORECASE)
 _POSSESSION_RE = re.compile(r"\b(have|has|hold|held|possess|earned|completed|obtained|"
                             r"certified|licensed|cleared)\b", re.IGNORECASE)
 # Words in a yes/no question that carry no factual content.
@@ -321,7 +326,10 @@ def _unearned_flags(profile: Profile, texts: list[tuple[str, str]]) -> list[Veri
                 for m in rx.finditer(text or ""):
                     if any(s <= m.start() and m.end() <= e for s, e in covered):
                         continue
-                    covered.append(m.span())
+                    # ("<name> (CPTS)" is one mention: excused or flagged together)
+                    own = re.match(r"\s*[\[(](?:" + "|".join(re.escape(n) for n in names)
+                                   + r")[\])]", text[m.end():], re.IGNORECASE)
+                    covered.append((m.start(), m.end() + (own.end() if own else 0)))
                     before = text[max(0, m.start() - 40):m.start()]
                     before = before[:-1] if before.endswith("(") else before
                     if not (_PROGRESS_BEFORE.search(before)
@@ -344,7 +352,10 @@ def _claimed_text(c: Claim, job: JobContext | None) -> str:
         text = text[len(c.question) + 2:]
     if c.kind == "answer" and _DENIAL_RE.fullmatch(text):
         return ""  # (only a bare "No": "No certification, but I led the team" claims plenty)
-    short_yes = c.kind == "answer" and bool(_SHORT_YES_RE.fullmatch(text))
+    short_yes = c.kind == "answer" and bool(_SHORT_YES_RE.fullmatch(text)
+                                            or _LEADING_YES_RE.match(text))
+    if choice and (_NOT_EARNED_RE.search(text) or re.match(r"\s*(?:no|not)\b", text, re.I)):
+        return text  # (picking "In progress" or "Not yet" for "Do you hold X?" denies it)
     # (each of several picks: "Bedrock, TensorFlow" from "LangChain, Bedrock or TensorFlow?")
     picks = [t.strip() for t in text.split(", ")] if text else []
     alternative = choice and bool(picks) and all(

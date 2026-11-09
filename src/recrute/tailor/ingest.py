@@ -1158,6 +1158,17 @@ def ingest_resume(paths: Paths, router: Completer, *, apply: bool = False) -> In
               for c in profile.certifications if c.name not in cert_names
               and NOT_EARNED_RE.search(c.name)]
     flags += never_claim_conflicts(profile)
+    from recrute.tailor.verify import _unearned_flags
+
+    # your own facts naming a cert you don't hold yet without its status: they'd block every
+    # resume using them
+    flags += [f.model_copy(update={
+        "severity": "warn", "reason": f.reason + " (every resume using this would be blocked: "
+                                                 "reword it in the source)"})
+        for f in _unearned_flags(profile, [(f"profile:{i}", it.text) for i, it in
+                                           profile.all_items().items()]
+                                 + [("profile.summary", profile.summary),
+                                    ("profile.headline", profile.headline)])]
     from recrute.tailor.common import never_term_pattern
 
     flags += [VerifierFlag(where="profile.do_not_claim", text=entry[:200], severity="warn",
