@@ -1137,3 +1137,38 @@ def test_own_facts_naming_an_unheld_cert_as_held_are_flagged_at_ingest(tmp_path)
                              "context": ""}]}]}})
     result = ingest_resume(paths, router)
     assert any("isn't held" in f.reason and f.severity == "warn" for f in result.flags)
+
+
+def test_a_hand_added_never_term_survives_a_re_ingest():
+    """Re-audit: the ingest warning says to add a term to never_terms; the next ingest lost it."""
+    from recrute.tailor.ingest import merge_profiles
+
+    merged = merge_profiles(Profile(never_terms=["LangChain", "Go"]),
+                            Profile(never_terms=["LangChain", "HERALD", "GO"]))
+    assert merged.never_terms == ["LangChain", "Go", "HERALD", "GO"]
+
+
+def test_a_rule_only_profile_yaml_had_is_flagged_at_re_ingest(tmp_path):
+    from recrute.paths import Paths
+    from recrute.tailor.ingest import dump_profile, ingest_resume, profile_path
+
+    paths = Paths(tmp_path)
+    paths.ensure()
+    profile_path(paths).write_text(dump_profile(Profile(
+        name="Ada", rules=["No em dashes."], do_not_claim=["Kubernetes at scale"],
+        never_terms=["HERALD"])),
+        encoding="utf-8")
+    (paths.resources / "resume" / "r.md").write_text("Ada", encoding="utf-8")
+    router = FakeRouter({"extract": {
+        "name": "Ada", "headline": "", "email": "", "phone": "", "location": "", "links": [],
+        "summary": "", "skills": [], "projects": [], "education": [], "experience": [],
+        "certifications": [], "awards": [], "extra": [], "rules": [], "do_not_claim": [],
+        "never_terms": []}})
+    flags = ingest_resume(paths, router).flags
+    assert {(f.where, f.text) for f in flags if "not in the new ingest" in f.reason} >= {
+        ("profile.rules", "No em dashes."), ("profile.do_not_claim", "Kubernetes at scale")}
+    assert any(f.where == "profile.never_terms" and f.text == "HERALD" for f in flags)
+    # the whole ingest keeps it
+    from recrute.tailor.ingest import proposed_profile_path, read_profile
+
+    assert read_profile(proposed_profile_path(paths)).never_terms == ["HERALD"]
