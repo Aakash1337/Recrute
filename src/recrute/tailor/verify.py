@@ -168,7 +168,8 @@ def deterministic_flags(profile: Profile, claims: list[Claim], *, job: JobContex
     whole = SupportIndex.of([*profile_texts(profile), *extra])
     # a "Yes" to holding a credential needs one that's earned: "CPTS (in progress)" isn't
     earned = SupportIndex.of([*profile_texts(profile.model_copy(update={"certifications": [
-        c for c in profile.certifications if not _NOT_EARNED_RE.search(c.name)]})), *extra])
+        c for c in profile.certifications
+        if not _NOT_EARNED_RE.search(f"{c.name} {c.issuer} {c.date}")]})), *extra])
     rendered = [*rendered_content(profile, selection), *other_answers]
     never = [(t, never_term_pattern(t)) for t in never_claim_terms(profile)]
     jd = SupportIndex.of([job.title, job.company, job.description]) if job else None
@@ -260,8 +261,8 @@ class _Flags(BaseModel):
     flags: list[_Flag] = []
 
 
-_NOT_EARNED_RE = re.compile(r"\b(?:in progress|preparing|expected|pursuing|planned|studying)\b",
-                            re.IGNORECASE)
+_NOT_EARNED_RE = re.compile(r"\b(?:in[- ]progress|preparing|expected|pursuing|planned|studying|"
+                            r"target(?:ed|ing)?|scheduled|not yet)\b", re.IGNORECASE)
 
 
 def _claimed_text(c: Claim, job: JobContext | None) -> str:
@@ -269,13 +270,14 @@ def _claimed_text(c: Claim, job: JobContext | None) -> str:
     ("Yes" to "LangChain experience?" claims LangChain); nothing at all for "No" (denying it
     isn't claiming it)."""
     text = c.text
-    if c.kind == "answer" and c.question and text.startswith(f"{c.question}: "):
+    choice = c.kind == "answer" and bool(c.question) and text.startswith(f"{c.question}: ")
+    if choice:
         text = text[len(c.question) + 2:]
     if c.kind == "answer" and _DENIAL_RE.fullmatch(text):
         return ""  # (only a bare "No": "No certification, but I led the team" claims plenty)
-    if c.kind == "answer" and c.question:
-        # a "Yes" claims what the question asks, and so does any other choice ("Expert" for
-        # "Your LangChain level?")
+    if choice or (c.kind == "answer" and c.affirmative):
+        # a picked option claims what the question asks ("Expert" for "Your LangChain
+        # level?"); free text claims only what it says, not every word of its question
         text = f"{c.question} {c.detail} {text}"
     return text
 
@@ -297,8 +299,10 @@ def answer_content(answers: Iterable[FormAnswer], questions: Iterable[FormQuesti
             continue
         value = ("Yes" if a.value else "No") if isinstance(a.value, bool) else (
             ", ".join(a.value) if isinstance(a.value, list) else str(a.value))
-        claim = Claim(f"answer:{a.question_id}", value, "answer", [],
-                      q.label if q else "", False, (q.description or "") if q else "")
+        label = q.label if q else ""
+        choice = bool(label) and (isinstance(a.value, bool | list) or bool(q and q.options))
+        claim = Claim(f"answer:{a.question_id}", f"{label}: {value}" if choice else value,
+                      "answer", [], label, False, (q.description or "") if q else "")
         out.append((claim.where, _claimed_text(claim, job)))
     return out
 

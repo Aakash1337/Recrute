@@ -360,31 +360,27 @@ def never_term_pattern(term: str) -> re.Pattern[str]:
 
 
 def never_claim_terms(profile: Profile) -> list[str]:
-    """The do-not-claim entries as short phrases to look for ("LangChain, LlamaIndex (...)")."""
-    return list(dict.fromkeys(t for e in profile.do_not_claim for t in _entry_terms(e)))
+    """The words the do-not-claim check blocks: your explicit terms. (Your entries in prose
+    reach the prompts as written; parsing prose for terms guessed wrong in every new phrasing.)"""
+    return clean_terms(profile.never_terms)
 
 
-def _entry_terms(entry: str) -> list[str]:
-    # quoted words are exactly what's never written: 'Beacon (not "Bacon")' forbids
-    # "Bacon", never "Beacon"
-    quoted = re.findall(r'["\u201c]([^"\u201d]{2,60})["\u201d]', entry)
-    if quoted:
-        if _CORRECTION_RE.fullmatch(entry):
-            return [q.strip() for q in quoted if q.strip()]
-        # and any name left outside the quotes: 'Never claim "LangChain" or LlamaIndex'
-        rest = re.sub(r'["\u201c][^"\u201d]*["\u201d]', " ", entry)
-        names = re.findall(r"\b(?:[A-Z][a-z]*[A-Z0-9]\w*|[A-Z]{2,}\w*|[A-Z][a-z]+\d\w*)\b", rest)
-        return [q.strip() for q in quoted if q.strip()] + names
-    # ("Do not claim Kubernetes", "No Kubernetes": the instruction isn't the term)
-    entry = re.sub(r"^\s*(?:never|do not|don't|no)\s+(?:(?:write|claim|say|use|mention|list|"
-                   r"call it)\s+)?(?:that\s+)?", "", entry, flags=re.IGNORECASE)
-    head = re.split(r"\s*[(:;\u2014]|\s+-\s+", entry)[0].strip(" .")
-    parts = [x.strip() for x in head.split(",")]
-    if len(parts) > 1 and all(len(x.split()) == 1 for x in parts):
-        return [x for x in parts if x]  # a list of names: "LangChain, LlamaIndex, LangGraph"
-    if head and len(head.split()) <= 5:
-        return [head]  # one phrase: "AWS Certified Security, Specialty"
-    return []
+_INSTRUCTION_RE = re.compile(r"^\s*(?:never|do not|don't|no|avoid)\s+(?:(?:write|claim|say|use|"
+                             r"mention|list|call it)\s+)?(?:that\s+)?", re.IGNORECASE)
+
+
+def clean_terms(terms: list[str]) -> list[str]:
+    """Explicit terms, tidied: no quotes or instruction words around them, "X or Y" as two."""
+    out = []
+    for raw in terms:
+        t = _INSTRUCTION_RE.sub("", plain_quotes(raw)).strip(" .,;:'\"`")
+        for part in re.split(r"\s+or\s+", t):
+            part = part.strip(" .,;:'\"`")
+            if part and len(part.split()) <= 6:
+                out.append(part)
+    return list(dict.fromkeys(out))
+
+
 
 
 def profile_texts(profile: Profile) -> list[str]:
@@ -403,7 +399,8 @@ def profile_texts(profile: Profile) -> list[str]:
             for x in v:
                 walk(x)
 
-    walk(profile.model_dump(mode="json", exclude={"rules", "do_not_claim", "unconfirmed"}))
+    walk(profile.model_dump(
+        mode="json", exclude={"rules", "do_not_claim", "never_terms", "unconfirmed"}))
     return out
 
 

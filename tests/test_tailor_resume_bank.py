@@ -14,13 +14,15 @@ from recrute.schemas import (
     Project,
     ResumeSelection,
 )
-from recrute.tailor.common import never_claim_terms, profile_texts, rules_note
+from recrute.tailor.common import clean_terms, never_claim_terms, profile_texts, rules_note
 from recrute.tailor.ingest import _clean_text, hold_unconfirmed
 
 
 def _bank() -> Profile:
     return Profile(
         name="Ada", rules=["No hyphens in compound modifiers.", "Leave LinkedIn off."],
+        never_terms=["LangChain", "LlamaIndex", "LangGraph", "LLM fine tuning",
+                     "Leading a whole team"],
         do_not_claim=["LangChain, LlamaIndex, LangGraph (LangGraph4j was optional)",
                       "LLM fine tuning", "Leading a whole team (leads projects only)"],
         experience=[
@@ -88,7 +90,8 @@ def test_your_rules_reach_what_the_llm_writes():
     from recrute.tailor.select import select_resume
 
     profile = make_profile().model_copy(update={"rules": ["No hyphens in compound modifiers."],
-                                                "do_not_claim": ["LangChain"]})
+                                                "do_not_claim": ["LangChain"],
+                                                "never_terms": ["LangChain"]})
     note = rules_note(profile)
     assert "No hyphens in compound modifiers." in note and "LangChain" in note
     router = FakeRouter({"cover": {"paragraphs": ["Body."], "cited_ids": []}})
@@ -142,7 +145,7 @@ def test_a_name_never_to_use_is_never_claimed():
 
     rules = ["HERALD: describe the sales agent's capabilities without naming it.",
              "Describe capabilities, never the HERALD name; no production claims."]
-    assert _never_names(["HubSpot"], rules) == ["HubSpot", "HERALD"]
+    assert _never_names(rules) == ["HERALD"]
 
 
 def test_a_certification_keeps_its_marker_not_the_note_around_it():
@@ -153,23 +156,15 @@ def test_a_certification_keeps_its_marker_not_the_note_around_it():
     assert to_profile(ex).certifications[0].name == "HTB CPTS (In progress)"
 
 
-def test_never_claim_terms_from_a_real_ingest():
-    """Exactly what one ingest produced: the word before a parenthesis was taken as the term, so
-    the flagship project 'Beacon' itself would have been blocked."""
-    p = Profile(do_not_claim=[
-        'Never write "managed a team" or "led the engineering team".',
-        'No "shipped" or "in production" language; nothing has gone to production.',
-        'Beacon (not "Bacon")', 'Orbit (not "Orbitt")', "LLM fine tuning",
-        "LangChain, LlamaIndex, LangGraph (LangGraph4j was optional, not confirmed as used)",
-        "Production Python at scale (most production work is Java/Kotlin)", "HubSpot",
-        "Leading a whole team (leads projects only)",
-        "AWS Certified Security, Specialty: Target end of Dec 2026; do not list until passed",
-        "Never frame it as a function he built."])
-    terms = never_claim_terms(p)
-    assert "Beacon" not in terms and "Orbit" not in terms and "Specialty" not in terms
-    assert {"Bacon", "Orbitt", "managed a team", "led the engineering team", "LangChain",
-            "LlamaIndex", "LangGraph", "LLM fine tuning", "HubSpot", "Leading a whole team",
-            "AWS Certified Security, Specialty", "Production Python at scale"} <= set(terms)
+def test_explicit_terms_are_tidied():
+    """Re-audit: quotes, instruction words and "X or Y" defeated term parsing every round, so
+    the check now uses explicit terms; these are only tidied."""
+    assert clean_terms(['"Bacon"', "'shipped'", "Kubernetes or Docker", "Never claim LangChain",
+                        "Don\u2019t claim Terraform", "managed a team", "AWS Certified Security, "
+                        "Specialty"]) == ["Bacon", "shipped", "Kubernetes", "Docker", "LangChain",
+                                          "Terraform", "managed a team",
+                                          "AWS Certified Security, Specialty"]
+
 
 
 def test_status_confirm_is_held():
@@ -189,14 +184,14 @@ def test_a_name_from_a_rule_that_says_without_naming_it():
 
     rules = ["HERALD: describe the sales agent's capabilities without naming it, so a reader "
              "does not think they are buying Acme's existing IP."]
-    assert _never_names([], rules) == ["HERALD"]
+    assert _never_names(rules) == ["HERALD"]
 
 
 def test_prompts_name_the_wrong_form_only():
     """The raw entry 'Beacon (not "Bacon")' in a prompt could read as 'avoid Beacon'."""
     from recrute.tailor.verify import _never_rule
 
-    p = Profile(do_not_claim=['Beacon (not "Bacon")', "HubSpot"])
+    p = Profile(do_not_claim=['Beacon (not "Bacon")', "HubSpot"], never_terms=["Bacon", "HubSpot"])
     for text in (rules_note(p), _never_rule(p)):
         assert "Bacon" in text and "HubSpot" in text and "Beacon" not in text
 
@@ -207,7 +202,7 @@ def test_your_own_fact_using_a_never_term_is_pointed_out_at_ingest():
     from recrute.tailor.ingest import never_claim_conflicts
     from recrute.tailor.verify import Claim, deterministic_flags
 
-    p = Profile(do_not_claim=['No "shipped" or "in production" language'],
+    p = Profile(never_terms=["shipped", "in production"],
                 experience=[Experience(id="e", company="Acme", title="Engineer", bullets=[
                     ProfileItem(id="b1", text="Found development URLs in production.")])])
     assert [f.where for f in never_claim_conflicts(p)] == ["profile:b1"]
@@ -261,7 +256,7 @@ def test_unchanged_resume_content_is_checked_against_the_never_list():
     from recrute.schemas import SelectedEntry
     from recrute.tailor.verify import deterministic_flags
 
-    p = Profile(do_not_claim=["LangChain"], skills={"AI": ["LangChain", "RAG"]},
+    p = Profile(never_terms=["LangChain"], skills={"AI": ["LangChain", "RAG"]},
                 experience=[Experience(id="e", company="Acme", title="Engineer", bullets=[
                     ProfileItem(id="b1", text="Built agents with LangChain.")])])
     sel = ResumeSelection(experience=[SelectedEntry(id="e", bullet_ids=["b1"])],
@@ -277,7 +272,7 @@ def test_denying_a_never_term_is_not_claiming_it(value, blocked):
     """Audit: 'Do you have LangChain experience?: No' was blocked for naming LangChain."""
     from recrute.tailor.verify import collect_claims, deterministic_flags
 
-    p = Profile(do_not_claim=["LangChain"])
+    p = Profile(never_terms=["LangChain"])
     q = FormQuestion(id="q", label="Do you have experience with LangChain?", type="select",
                      options=["Yes", "No", "Yes, daily"])
     claims = collect_claims(p, answers=[FormAnswer(question_id="q", value=value,
@@ -292,7 +287,7 @@ def test_a_forbidden_term_is_blocked_even_when_it_is_the_employers_name():
     from recrute.tailor.common import JobContext
     from recrute.tailor.verify import answer_content, deterministic_flags
 
-    p = Profile(do_not_claim=["HubSpot"])
+    p = Profile(never_terms=["HubSpot"])
     job = JobContext(title="Security Engineer", company="HubSpot", description="")
     other = answer_content([FormAnswer(question_id="q", value="I built workflows using HubSpot.",
                                        source="answer_bank")],
@@ -387,13 +382,6 @@ def test_loading_a_profile_holds_markers_it_still_carries(tmp_path):
     assert loaded.extra == [] and loaded.unconfirmed
 
 
-@pytest.mark.parametrize("entry,terms", [
-    ("Do not claim Kubernetes", ["Kubernetes"]), ("No Kubernetes", ["Kubernetes"]),
-    ("Never say led a team", ["led a team"]), ("Never claim LangChain", ["LangChain"])])
-def test_instruction_phrasing_isnt_the_term(entry, terms):
-    assert never_claim_terms(Profile(do_not_claim=[entry])) == terms
-
-
 def test_every_entry_reaches_the_prompts_as_written():
     """Audit: 'Never claim "LangChain" or LlamaIndex' lost LlamaIndex from every prompt."""
     p = Profile(do_not_claim=['Never claim "LangChain" or LlamaIndex'])
@@ -406,7 +394,7 @@ def test_every_entry_reaches_the_prompts_as_written():
 def test_only_a_bare_no_is_a_denial(value, blocked):
     from recrute.tailor.verify import collect_claims, deterministic_flags
 
-    p = Profile(do_not_claim=["LangChain", 'never "led the engineering team"'])
+    p = Profile(never_terms=["LangChain", "led the engineering team"])
     q = FormQuestion(id="q", label="Your LangChain experience?", type="text")
     if value == "Expert":
         q = FormQuestion(id="q", label="Your LangChain level?", type="select",
@@ -420,7 +408,7 @@ def test_saved_answers_are_checked_too():
     """Audit (high): an answer-bank or profile answer skipped the do-not-claim check."""
     from recrute.tailor.verify import answer_content, deterministic_flags
 
-    p = Profile(do_not_claim=["LangChain"])
+    p = Profile(never_terms=["LangChain"])
     qs = [FormQuestion(id="q", label="Tell us about your agents"),
           FormQuestion(id="n", label="Do you use LangChain?", type="select",
                        options=["Yes", "No"])]
@@ -436,7 +424,7 @@ def test_printed_fields_are_checked_and_unprinted_ones_are_not():
     from recrute.schemas import Education, SelectedEntry
     from recrute.tailor.verify import deterministic_flags
 
-    p = Profile(name="Ada", headline="LangChain developer", do_not_claim=["LangChain", "shipped"],
+    p = Profile(name="Ada", headline="LangChain developer", never_terms=["LangChain", "shipped"],
                 education=[Education(id="ed", school="U", degree="M.S.",
                                      details=["Thesis on LangChain"])],
                 projects=[Project(id="pr", name="Range", summary="never shipped to clients",
@@ -477,25 +465,17 @@ def test_more_marker_phrasings_in_notes(context):
 def test_spelling_variants_of_a_never_term_are_blocked(text):
     from recrute.tailor.verify import Claim, deterministic_flags
 
-    p = Profile(do_not_claim=["LLM fine tuning"])
+    p = Profile(never_terms=["LLM fine tuning"])
     flags = deterministic_flags(p, [Claim("cover_letter", text, "cover_letter", [])])
     assert any("never to claim" in f.reason for f in flags)
 
-
-def test_a_name_outside_the_quotes_is_a_term_too():
-    """Re-audit (high): 'Never claim "LangChain" or LlamaIndex' lost LlamaIndex everywhere."""
-    assert never_claim_terms(Profile(do_not_claim=['Never claim "LangChain" or LlamaIndex'])) \
-        == ["LangChain", "LlamaIndex"]
-    assert never_claim_terms(Profile(do_not_claim=[
-        'No "shipped" or "in production" language; nothing has gone to production.'])) \
-        == ["shipped", "in production"]
 
 
 @pytest.mark.parametrize("value", ["0", "0 years", "0 yrs"])
 def test_zero_experience_is_a_denial(value):
     from recrute.tailor.verify import collect_claims, deterministic_flags
 
-    p = Profile(do_not_claim=["LangChain"])
+    p = Profile(never_terms=["LangChain"])
     q = FormQuestion(id="q", label="Years of experience with LangChain?", type="number")
     claims = collect_claims(p, answers=[FormAnswer(question_id="q", value=value,
                                                    source="llm_new")], questions=[q])
@@ -534,7 +514,7 @@ def test_held_items_are_flagged_at_ingest(tmp_path):
     router = FakeRouter({"extract": {
         "name": "Ada", "headline": "", "email": "", "phone": "", "location": "", "links": [],
         "summary": "", "skills": [], "projects": [], "education": [], "certifications": [],
-        "awards": [], "extra": [], "rules": [], "do_not_claim": [],
+        "awards": [], "extra": [], "rules": [], "do_not_claim": [], "never_terms": [],
         "experience": [{"company": "Acme", "title": "Engineer", "location": "", "start": "",
                         "end": "", "summary": "", "bullets": [
                             {"text": "Ran IR. [confirm]", "tags": [], "metrics": [],
@@ -564,3 +544,108 @@ def test_contact_details_in_the_do_not_claim_list_stay_out_of_prompts():
                                                    "HubSpot"])
     note = rules_note(p)
     assert "HubSpot" in note and "ada.old@example.com" not in note
+
+
+
+def test_ingest_takes_the_explicit_terms():
+    from recrute.tailor.ingest import _Extracted, to_profile
+
+    p = to_profile(_Extracted.model_validate({
+        "do_not_claim": ["Never claim Kubernetes or Docker"],
+        "never_terms": ["Kubernetes", "Docker"],
+        "rules": ["HERALD: describe its capabilities without naming it."]}))
+    assert p.do_not_claim == ["Never claim Kubernetes or Docker"]
+    assert p.never_terms == ["Kubernetes", "Docker", "HERALD"]
+
+
+def test_a_bullet_whose_marker_was_dropped_is_caught_in_the_source():
+    """Re-audit (high): only skills and certifications had this backstop."""
+    from recrute.schemas import Education
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(
+        experience=[Experience(id="e", company="Acme", title="Engineer", bullets=[
+            ProfileItem(id="b1", text="Reduced MTTR by 40% across the SOC."),
+            ProfileItem(id="b2", text="Built detection rules.")]),
+            Experience(id="e2", company="Initech", title="Analyst")],
+        projects=[Project(id="p", name="Range", summary="A cyber range.", tech=["Go", "Rust"])],
+        education=[Education(id="ed", school="U", degree="M.S. Cybersecurity")])
+    src = ("Acme Engineer\n- Reduced MTTR by 40% across the SOC. [confirm number]\n"
+           "- Built detection rules.\nInitech Analyst\n[confirm exact title]\n"
+           "Range: Go, Rust (confirm)\nM.S. Cybersecurity (TBD)")
+    held = hold_marked_in_source(p, src)
+    assert [e.id for e in held.experience] == ["e"]
+    assert [b.id for b in held.experience[0].bullets] == ["b2"]
+    assert held.projects[0].tech == ["Go"] and held.education == []
+    # a marker on the name itself holds the project; mentions elsewhere don't count
+    assert hold_marked_in_source(p, "Range [confirm]: a cyber range.").projects == []
+    table_row = "Table: Bedrock Range (Beacon: confirm) Used"
+    assert len(hold_marked_in_source(p, table_row).projects) == 1
+    assert hold_marked_in_source(Profile(skills={"Dev": ["Git"]}),
+                                 "Repo: tools, GitHub [confirm]").skills == {"Dev": ["Git"]}
+
+
+def test_a_skill_marked_in_a_comma_list_is_caught():
+    """Re-audit: a length limit skipped the usual one-line skills list."""
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(skills={"Cloud": ["AWS", "Terraform", "Kubernetes", "Docker"]})
+    src = "Skills: AWS, Terraform, Kubernetes [confirm], Docker, Ansible, Python, Go, Rust"
+    assert hold_marked_in_source(p, src).skills == {"Cloud": ["AWS", "Terraform", "Docker"]}
+
+
+@pytest.mark.parametrize("text", ["Built triage rules that decide whether alerts escalate.",
+                                  "Automated checks to confirm each host was patched.",
+                                  "Wrote scripts to confirm whether patches applied."])
+def test_decide_and_confirm_in_prose_are_not_markers(text):
+    p = hold_unconfirmed(Profile(
+        extra=[ProfileItem(id="x", text=text)],
+        experience=[Experience(id="e", company="Acme", title="Engineer", summary=text)]))
+    assert len(p.extra) == 1 and len(p.experience) == 1
+
+
+@pytest.mark.parametrize("summary", ["Unverified", "Needs confirmation", "TBD"])
+def test_a_short_status_summary_holds_its_entry(summary):
+    p = hold_unconfirmed(Profile(
+        experience=[Experience(id="e", company="Acme", title="Engineer", summary=summary)],
+        projects=[Project(id="p", name="Range", summary=summary)]))
+    assert p.experience == [] and p.projects == []
+
+
+def test_free_text_answers_dont_inherit_the_question():
+    """Re-audit: 'Describe your experience with frameworks such as LangChain' answered without
+    LangChain was blocked for the question's words."""
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    p = Profile(never_terms=["LangChain"])
+    q = FormQuestion(id="q", label="Describe your experience with frameworks such as LangChain",
+                     type="textarea")
+    claims = collect_claims(p, answers=[FormAnswer(question_id="q", value="I build agents "
+                                                   "directly on the Bedrock API.",
+                                                   source="llm_new")], questions=[q])
+    assert not any("never to claim" in f.reason for f in deterministic_flags(p, claims))
+
+
+@pytest.mark.parametrize("cert", [Certification(id="c", name="HTB CPTS", date="Expected 2027"),
+                                  Certification(id="c", name="HTB CPTS (in-progress)"),
+                                  Certification(id="c", name="HTB CPTS", date="Target Dec 2026")])
+def test_a_cert_not_yet_earned_by_its_date_cannot_back_a_yes(cert):
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    p = Profile(certifications=[cert])
+    q = FormQuestion(id="q", label="Do you hold the HTB CPTS certification?", type="select",
+                     options=["Yes", "No"])
+    claims = collect_claims(p, answers=[FormAnswer(question_id="q", value="Yes",
+                                                   source="llm_new")], questions=[q])
+    assert any(f.severity == "block" for f in deterministic_flags(p, claims))
+
+
+def test_a_rule_to_leave_a_link_off_is_applied_in_the_header():
+    """Re-audit: 'LinkedIn: left off every resume' was only a suggestion to the LLM."""
+    from recrute.tailor.render import contact_line
+
+    p = Profile(name="Ada", email="ada@example.com",
+                links={"linkedin": "linkedin.com/in/ada", "github": "github.com/ada"},
+                rules=["LinkedIn: left off every resume. The profile is sparse."])
+    texts = [c["text"] for c in contact_line(p)]
+    assert "github.com/ada" in texts and not any("linkedin" in t for t in texts)

@@ -110,7 +110,9 @@ class Profile(BaseModel):
     extra: list[ProfileItem] = Field(default_factory=list)  # talks, publications, volunteering
     # From your source's own instructions. None of these is ever evidence for a claim.
     rules: list[str] = Field(default_factory=list)  # how to write about you ("no hyphens ...")
-    do_not_claim: list[str] = Field(default_factory=list)  # never claimed ("LangChain")
+    do_not_claim: list[str] = Field(default_factory=list)  # your words on what's never claimed
+    # the exact words or names those forbid, one each ("LangChain"): what the check blocks
+    never_terms: list[str] = Field(default_factory=list)
     # held back until you confirm them (the source marks them [confirm], "decide whether", ...)
     unconfirmed: list[str] = Field(default_factory=list)
 
