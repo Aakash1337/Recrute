@@ -361,6 +361,18 @@ def never_term_pattern(term: str) -> re.Pattern[str]:
                       re.IGNORECASE)
 
 
+# A certification that isn't held (yet, or any more).
+NOT_EARNED_RE = re.compile(r"\b(?:in[- ]progress|preparing|expected|pursuing|planned|studying|"
+                           r"target(?:ed|ing)?|scheduled|not yet|expired|lapsed)\b", re.IGNORECASE)
+
+
+def cert_line(c) -> str:
+    """A certification as an LLM sees it: with its issuer and date ("Expected 2027" says it isn't
+    held yet)."""
+    extra = ", ".join(x for x in (c.issuer, c.date) if x)
+    return f"{c.name} ({extra})" if extra else c.name
+
+
 def never_claim_terms(profile: Profile) -> list[str]:
     """The words the do-not-claim check blocks: your explicit terms. (Your entries in prose
     reach the prompts as written; parsing prose for terms guessed wrong in every new phrasing.)"""
@@ -444,9 +456,7 @@ def background_facts(profile: Profile, *, name: bool = True) -> str:
     if names := degree_names(profile):
         lines.append(f"Degree names: {names}")
     # (its date and issuer too: "Expected 2027" is what says it isn't held yet)
-    lines += [f"Certification: {c.name}" + (f" ({', '.join(x for x in (c.issuer, c.date) if x)})"
-                                            if c.issuer or c.date else "")
-              for c in profile.certifications]
+    lines += [f"Certification: {cert_line(c)}" for c in profile.certifications]
     lines += [f"Skills ({cat}): {', '.join(skills)}" for cat, skills in profile.skills.items()
               if skills]
     return "\n".join(lines)

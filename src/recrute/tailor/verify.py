@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from recrute.schemas import FormAnswer, FormQuestion, Profile, ResumeSelection, VerifierFlag
 from recrute.tailor.common import (
+    NOT_EARNED_RE,
     STR,
     Completer,
     JobContext,
@@ -176,9 +177,8 @@ def deterministic_flags(profile: Profile, claims: list[Claim], *, job: JobContex
     job_names = [job.title, job.company] if job else []
     background = background_facts(profile)
     flags: list[VerifierFlag] = []
-    flags += _unearned_flags(profile, [*((c.where, c.text) for c in claims
-                                         if c.kind != "answer" or not c.question
-                                         or not c.text.startswith(f"{c.question}: ")),
+    # (every claim, choices included: picking "HTB CPTS" for "Which do you hold?" claims it)
+    flags += _unearned_flags(profile, [*((c.where, _claimed_text(c, job)) for c in claims),
                                        *rendered])
     for where, text in [*((c.where, _claimed_text(c, job)) for c in claims),
                         *rendered]:  # (your own list: no evidence makes these claimable)
@@ -265,30 +265,44 @@ class _Flags(BaseModel):
     flags: list[_Flag] = []
 
 
-_NOT_EARNED_RE = re.compile(r"\b(?:in[- ]progress|preparing|expected|pursuing|planned|studying|"
-                            r"target(?:ed|ing)?|scheduled|not yet|expired|lapsed)\b", re.IGNORECASE)
+_NOT_EARNED_RE = NOT_EARNED_RE
+# "pursuing the CPTS", "CPTS (in progress)", "CPTS, expected 2027": attached to the mention
+_PROGRESS_BEFORE = re.compile(r"(?:pursuing|preparing for|working (?:toward|towards|on)|studying "
+                              r"for|planning(?: to take)?|scheduled for|registered for)\s+"
+                              r"(?:the\s+|an?\s+|my\s+)?$", re.IGNORECASE)
+
+
+def _cert_names(name: str) -> list[str]:
+    """How a certification may be named: in full, and by its acronym ("CPTS")."""
+    core = re.sub(r"\s*\([^()]*\)", "", name).strip()
+    acronyms = [a for a in re.findall(r"\(([A-Z][A-Z0-9+-]{2,})\)", name)]
+    return [n for n in (core, *acronyms) if len(n) >= 3]
 
 
 def _unearned_flags(profile: Profile, texts: list[tuple[str, str]]) -> list[VerifierFlag]:
-    """A certification not held yet (in progress, expected, expired) named without such a
-    qualifier nearby states it as held: "I hold the CPTS" is false while it's "(in progress)"."""
+    """A certification not held (in progress, expected, expired), named without its status
+    attached to that very mention, states it as held: "I hold the CPTS" is false while it's
+    "(in progress)". (A status word elsewhere in the sentence is about something else.)"""
     flags = []
     for c in profile.certifications:
         if not _NOT_EARNED_RE.search(f"{c.name} {c.issuer} {c.date}"):
             continue
-        core = re.sub(r"\s*\([^()]*\)", "", c.name).strip()
-        if len(core) < 3:
-            continue
-        rx = re.compile(rf"(?<![\w]){re.escape(core)}(?![A-Za-z0-9_])", re.IGNORECASE)
-        for where, text in texts:
-            for m in rx.finditer(text or ""):
-                near = text[max(0, m.start() - 60):m.end() + 60]
-                if not _NOT_EARNED_RE.search(near):
-                    flags.append(VerifierFlag(
-                        where=where, text=core, severity="block",
-                        reason=f"'{core}' isn't held yet ({c.date or c.name}): say so, or "
-                               "leave it out"))
-                    break
+        for name in _cert_names(c.name):
+            rx = re.compile(rf"(?<![\w]){re.escape(name)}(?![A-Za-z0-9_])", re.IGNORECASE)
+            for where, text in texts:
+                for m in rx.finditer(text or ""):
+                    after, before = text[m.end():m.end() + 40], text[max(0, m.start() - 40):
+                                                                     m.start()]
+                    attached = _PROGRESS_BEFORE.search(before) or re.match(
+                        r"\s*(?:\([^()]*\b(?:in[- ]progress|expected|pending|planned|scheduled|"
+                        r"preparing|pursuing|expired|lapsed)\b[^()]*\)|[,\u2014-]?\s*(?:in[- ]"
+                        r"progress|expected|pending|planned|scheduled)\b)", after, re.IGNORECASE)
+                    if not attached:
+                        flags.append(VerifierFlag(
+                            where=where, text=name, severity="block",
+                            reason=f"'{name}' isn't held ({c.date or c.name}): say so right "
+                                   "next to it, or leave it out"))
+                        break
     return flags
 
 
@@ -302,9 +316,12 @@ def _claimed_text(c: Claim, job: JobContext | None) -> str:
         text = text[len(c.question) + 2:]
     if c.kind == "answer" and _DENIAL_RE.fullmatch(text):
         return ""  # (only a bare "No": "No certification, but I led the team" claims plenty)
-    if choice or (c.kind == "answer" and c.affirmative):
+    if (choice or (c.kind == "answer" and c.affirmative)) and not (
+            choice and text and text.lower() in f"{c.question} {c.detail}".lower()):
         # a picked option claims what the question asks ("Expert" for "Your LangChain
-        # level?"); free text claims only what it says, not every word of its question
+        # level?"), unless it names one of the question's own alternatives (picking "Bedrock"
+        # from "LangChain, LlamaIndex or Bedrock?" claims Bedrock only); free text claims only
+        # what it says
         text = f"{c.question} {c.detail} {text}"
     return text
 

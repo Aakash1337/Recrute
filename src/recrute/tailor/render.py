@@ -61,9 +61,10 @@ def hidden_links(profile: Profile) -> set[str]:
     """Links your rules say to leave off ("LinkedIn: left off every resume")."""
     off = re.compile(r"\b(?:left off|leave (?:\w+ )?off|omit|not listed|never list|don't list|"
                      r"do not list|exclude)\b", re.IGNORECASE)
+    clauses = [c for r in profile.rules for c in re.split(r"[;.]\s+|\s+but\s+", r)]
     return {label for label in profile.links
-            if any(re.search(rf"\b{re.escape(label)}\b", r, re.IGNORECASE) and off.search(r)
-                   for r in profile.rules)}
+            if any(re.search(rf"\b{re.escape(label)}\b", c, re.IGNORECASE) and off.search(c)
+                   for c in clauses)}
 
 
 def contact_line(profile: Profile) -> list[dict[str, str]]:

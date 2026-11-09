@@ -34,6 +34,7 @@ from recrute.schemas import (
     VerifierFlag,
 )
 from recrute.tailor.common import (
+    NOT_EARNED_RE,
     STR,
     STRS,
     Completer,
@@ -281,9 +282,7 @@ def to_profile(ex: _Extracted) -> Profile:
     # never on a name the source marks unconfirmed, whose note hold_unconfirmed must still see)
     certs = [
         Certification(id=_unique(f"cert-{slugify(c.name, 40)}", used),
-                      **{**c.model_dump(), "name": c.name if _UNCONFIRMED_RE.search(
-                          " ".join([c.name, c.issuer, c.date, c.credential_id]))
-                         else re.sub(r"\(([^;()]+);[^()]*\)", r"(\1)", c.name)})
+                      **{**c.model_dump(), "name": _clean_cert_name(c.name)})
         for c in ex.certifications
     ]
 
@@ -313,6 +312,18 @@ def to_profile(ex: _Extracted) -> Profile:
         do_not_claim=[d.strip() for d in ex.do_not_claim if d.strip()],
         never_terms=clean_terms([*ex.never_terms, *_never_names(ex.rules)]),
     ))
+
+
+def _clean_cert_name(name: str) -> str:
+    """"CPTS (In progress; always keep the qualifier)" -> "CPTS (In progress)": a note to the
+    writer goes, but never a marker or status ("(expired; decide whether to list)" stays)."""
+    def tidy(m: re.Match) -> str:
+        head, tail = m.group(1), m.group(2)
+        if _UNCONFIRMED_RE.search(f"({tail})") or _NOTE_MARKER_RE.search(tail) or (
+                NOT_EARNED_RE.search(tail) and not NOT_EARNED_RE.search(head)):
+            return m.group(0)  # (a marker, or a status the head doesn't state yet)
+        return f"({head})"
+    return re.sub(r"\(([^;()]+);([^()]*)\)", tidy, name)
 
 
 def _never_names(rules: list[str]) -> list[str]:
@@ -353,11 +364,37 @@ _NOTE_MARKER_RE = re.compile(
     r"\bun(?:confirmed|verified)\b|\bunidentified\b|\btb[dc]\b|\bdo not (?:list|claim|use)\b|"
     r"\b(?:to be|yet to be|pending|needs?|awaiting)\s+(?:confirm\w*|verif\w*)\b|"
     r"^\s*(?:confirm|verify)\s*$|\bnot (?:yet )?(?:confirmed|verified|identified)\b|\bno readme\b|"
-    r"\bdecide whether\b|\bcheck before claiming\b|"
+    r"\bdecide whether\b|\bcheck before claiming\b|\bverify\b|"
     # in a note, "confirm" itself, however it's phrased ("Confirm. Check before claiming",
     # "Transcribe on X: confirm."); never "confirmed"
     r"\bconfirm\b",
     re.IGNORECASE)
+
+
+def _plain_line(line: str) -> str:
+    """A source line without list, heading or emphasis markup: "### **Range** [confirm]"."""
+    ln = " ".join(plain_quotes(line).split())
+    ln = re.sub(r"(\*\*|__|`)", "", ln)
+    ln = re.sub(r"(?<![\w*])[*_](\S[^*_]*?)[*_](?![\w*])", r"\1", ln)
+    prev = None
+    while prev != ln:
+        prev, ln = ln, re.sub(r"^(?:#+|\d+[.)]|[-\u2022*+>])\s*", "", ln)
+    return ln
+
+
+def _note_after(rest: str) -> str:
+    """The bracketed note right after an item, whole (brackets matched), or ""."""
+    m = re.match(r"\s*([\[(])", rest)
+    if not m:
+        return ""
+    close = {"[": "]", "(": ")"}[m.group(1)]
+    depth = 0
+    for i in range(m.start(1), len(rest)):
+        depth += rest[i] == m.group(1)
+        depth -= rest[i] == close
+        if depth == 0:
+            return rest[m.start(1):i + 1]
+    return rest[m.start(1):]
 
 
 def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
@@ -366,9 +403,7 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
     ("Reduced MTTR by 40% [confirm number]", "Kubernetes [confirm]"), or on the line just below
     it, holds it. A long bracketed note after a heading is about a whole section, not a list item
     of the same name ("Incident response [confirm whether each incident ...]")."""
-    # (list and heading markup off: "## Range [confirm]", "1. Reduced ...", "> ...")
-    lines = [re.sub(r"^(?:#+|\d+[.)]|[-\u2022*+>])\s*", "", " ".join(plain_quotes(ln).split()))
-             for ln in source_text.splitlines()]
+    lines = [_plain_line(ln) for ln in source_text.splitlines()]
 
     def marked_in_source(text: str, *, listed: bool = False, within: str = "",
                          name: bool = False, roles: bool = False,
@@ -393,10 +428,10 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
             for m in rx.finditer(ln):
                 rest = ln[m.end():] if listed or len(text) <= 60 \
                     else ln[m.start() + len(" ".join(text.split())):]
-                if listed:  # a list item: only a note right after it ("AWS Security
-                    # Specialty [confirm]" says nothing about the skill "AWS")
-                    rest = rest if re.match(r"\s*[\[(]", rest) else ""
-                    rest = re.split(r"[,|;\u2022]", rest, maxsplit=1)[0]
+                if listed:  # a list item: only a note right after it, read whole ("AWS
+                    # Security Specialty [confirm]" says nothing about the skill "AWS"; "CKA
+                    # (confirm exam date, issuer)" is one note, commas and all)
+                    rest = _note_after(rest)
                 elif name:  # a name: up to its description ("Range [confirm]: a range")
                     rest = re.split(r"[:|\u2022]", rest, maxsplit=1)[0]
                 note = _UNCONFIRMED_RE.search(rest)
@@ -406,6 +441,15 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
                 if not listed and re.match(r"[\[(]", below) and _UNCONFIRMED_RE.match(below):
                     return True
         return False
+
+    def source_status(name: str) -> str:
+        rx = re.compile(rf"(?:^|[,:|;\u2022]\s*){re.escape(name.strip())}(?![\w-])", re.IGNORECASE)
+        for ln in lines:
+            for m in rx.finditer(ln):
+                note = _note_after(ln[m.end():]) or ln[m.end():m.end() + 40]
+                if hit := NOT_EARNED_RE.search(note):
+                    return hit.group(0)
+        return ""
 
     held = list(profile.unconfirmed)
 
@@ -458,8 +502,12 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
     for c in profile.certifications:
         if marked_in_source(c.name, listed=True, long_notes=True):
             held.append(f"certification: {c.name} (marked in the source)")
-        else:
-            certs.append(c)
+            continue
+        # a status the transcription lost ("CKA (in progress)" -> "CKA"): put back
+        if not NOT_EARNED_RE.search(f"{c.name} {c.issuer} {c.date}") and \
+                (status := source_status(c.name)):
+            c = c.model_copy(update={"name": f"{c.name} ({status})"})
+        certs.append(c)
     return profile.model_copy(update={
         "experience": experience, "projects": projects, "education": education,
         "skills": skills, "certifications": certs,
@@ -539,7 +587,8 @@ def hold_unconfirmed(profile: Profile) -> Profile:
                                                                    p.bullets)}))
     certs = []
     for c in profile.certifications:
-        if marked(c.name, c.issuer, c.date, c.credential_id):
+        # (its parenthetical is a note, not prose: "(expired; decide whether to list)")
+        if noted(c.name, c.issuer, c.date, c.credential_id):
             held.append(note("certification", c.name))
         else:
             certs.append(c)
@@ -1075,6 +1124,14 @@ def ingest_resume(paths: Paths, router: Completer, *, apply: bool = False) -> In
     profile = hold_marked_in_source(profile, source_text)
     flags = check_against_source(profile, source_text, trusted=trusted)
     flags += never_claim_conflicts(profile)
+    from recrute.tailor.common import never_term_pattern
+
+    flags += [VerifierFlag(where="profile.do_not_claim", text=entry[:200], severity="warn",
+                           reason="no never-term covers this, so only the writing prompts see "
+                                  "it: add the exact word to never_terms to have it blocked")
+              for entry in profile.do_not_claim
+              if not any(never_term_pattern(t).search(plain_quotes(entry))
+                         for t in profile.never_terms)]
     flags += [VerifierFlag(where="profile.unconfirmed", text=u[:200], severity="warn",
                            reason="held back: the source marks it unconfirmed. Confirm it there "
                                   "and ingest again to use it")

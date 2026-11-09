@@ -21,6 +21,7 @@ from recrute.tailor.common import (
     Completer,
     JobContext,
     arr,
+    cert_line,
     keywords,
     obj,
     parse_llm,
@@ -153,7 +154,7 @@ def profile_digest(profile: Profile, job: JobContext, ranks: dict[str, float], *
                   for ed in profile.education]
     if profile.certifications:
         lines.append("CERTIFICATIONS")
-        lines += [f"[{c.id}] {c.name}" for c in profile.certifications]
+        lines += [f"[{c.id}] {cert_line(c)}" for c in profile.certifications]
     lines.append("SKILLS: " + ", ".join(all_skills(profile)))
     return "\n".join(lines)
 

@@ -664,7 +664,7 @@ def test_a_cert_not_held_yet_cannot_be_stated_as_held_in_prose(text, blocked):
     p = Profile(certifications=[Certification(id="c", name="HTB CPTS", date="Expected 2027"),
                                 Certification(id="s", name="CompTIA Security+")])
     flags = deterministic_flags(p, [Claim("cover_letter", text, "cover_letter", [])])
-    assert any("isn't held yet" in f.reason for f in flags) is blocked
+    assert any("isn't held" in f.reason for f in flags) is blocked
 
 
 def test_the_llm_sees_a_certs_date():
@@ -751,3 +751,102 @@ def test_confirm_in_a_note_is_a_marker_however_phrased(context):
     p = hold_unconfirmed(Profile(extra=[ProfileItem(id="x", text="Transcribe, Polly on Beacon",
                                                     context=context)]))
     assert p.extra == []
+
+
+@pytest.mark.parametrize("value", [["HTB CPTS"], "HTB CPTS", "CPTS"])
+def test_picking_an_unheld_cert_as_held_is_blocked(value):
+    """Re-audit (high): a choice answer naming it skipped every check."""
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    p = Profile(certifications=[Certification(
+        id="c", name="HTB Certified Penetration Tester Specialist (CPTS)", date="Expected 2027")])
+    q = FormQuestion(id="q", label="Which certifications do you hold?", type="multiselect"
+                     if isinstance(value, list) else "select",
+                     options=["HTB CPTS", "CPTS", "Security+"])
+    claims = collect_claims(p, answers=[FormAnswer(question_id="q", value=value,
+                                                   source="llm_new")], questions=[q])
+    assert any("isn't held" in f.reason for f in deterministic_flags(p, claims))
+
+
+@pytest.mark.parametrize("name,kept", [
+    ("OSCP (expired; decide whether to list)", None),
+    ("AWS SAA (in progress; verify by the exam date)", None),
+    ('HTB CPTS (In progress; always keep the "in progress" qualifier)', "HTB CPTS (In progress)"),
+    ("CEH (2021; expired)", "CEH (2021; expired)")])
+def test_cert_name_cleanup_never_erases_a_marker_or_status(name, kept):
+    """Re-audit (high): everything after the first ';' was dropped."""
+    from recrute.tailor.ingest import _Extracted, to_profile
+
+    p = to_profile(_Extracted.model_validate({"certifications": [{"name": name}]}))
+    assert [c.name for c in p.certifications] == ([kept] if kept else [])
+
+
+def test_a_note_with_commas_is_read_whole():
+    """Re-audit (high): '(confirm exam date, issuer)' was cut at its comma."""
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(certifications=[Certification(id="c", name="CKA")],
+                skills={"Cloud": ["Kubernetes", "AWS"]})
+    src = "CKA (confirm exam date, issuer)\nSkills: Kubernetes (confirm level, years), AWS"
+    held = hold_marked_in_source(p, src)
+    assert held.certifications == [] and held.skills == {"Cloud": ["AWS"]}
+
+
+def test_a_status_the_transcription_lost_is_put_back():
+    """Re-audit (high): 'CKA (in progress)' transcribed as 'CKA' became a held credential."""
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(certifications=[Certification(id="c", name="CKA"),
+                                Certification(id="s", name="Security+")])
+    held = hold_marked_in_source(p, "Certifications: CKA (in progress), Security+")
+    assert [c.name for c in held.certifications] == ["CKA (in progress)", "Security+"]
+
+
+@pytest.mark.parametrize("text", ["I hold the HTB CPTS and am pursuing the OSCP next.",
+                                  "Certified: HTB CPTS. Preparing incident response playbooks.",
+                                  "I hold the CPTS."])
+def test_a_status_word_elsewhere_doesnt_excuse_the_claim(text):
+    """Re-audit: any status word within 60 characters, for anything, let it through."""
+    from recrute.tailor.verify import Claim, deterministic_flags
+
+    p = Profile(certifications=[Certification(
+        id="c", name="HTB Certified Penetration Tester Specialist (CPTS)", date="Expected 2027"),
+        Certification(id="h", name="HTB CPTS", date="Expected 2027")])
+    flags = deterministic_flags(p, [Claim("cover_letter", text, "cover_letter", [])])
+    assert any("isn't held" in f.reason for f in flags)
+
+
+def test_picking_one_alternative_doesnt_claim_the_others():
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    p = Profile(never_terms=["LangChain"])
+    q = FormQuestion(id="q", label="Which have you used: LangChain, LlamaIndex or Bedrock?",
+                     type="select", options=["LangChain", "LlamaIndex", "Bedrock"])
+    claims = collect_claims(p, answers=[FormAnswer(question_id="q", value="Bedrock",
+                                                   source="llm_new")], questions=[q])
+    assert not any("never to claim" in f.reason for f in deterministic_flags(p, claims))
+
+
+def test_a_link_rule_hides_only_its_own_link():
+    from recrute.tailor.render import contact_line
+
+    p = Profile(name="Ada", links={"linkedin": "linkedin.com/in/ada", "github": "github.com/ada"},
+                rules=["Leave LinkedIn off; include GitHub."])
+    texts = [c["text"] for c in contact_line(p)]
+    assert "github.com/ada" in texts and not any("linkedin" in t for t in texts)
+
+
+@pytest.mark.parametrize("src", ["### **Range** [confirm]", "- **Range** [confirm]: a range"])
+def test_the_backstop_reads_through_bold_markdown(src):
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(projects=[Project(id="p", name="Range", summary="A range.")])
+    assert hold_marked_in_source(p, src).projects == []
+
+
+def test_the_resume_prompt_sees_a_certs_date():
+    from recrute.tailor.select import profile_digest
+
+    p = make_profile().model_copy(update={"certifications": [Certification(
+        id="c", name="HTB CPTS", date="Expected 2027")]})
+    assert "Expected 2027" in profile_digest(p, make_job(), {})
