@@ -582,3 +582,47 @@ def test_a_combined_citizenship_and_authorization_question_stays_yours(us_role):
     assert classify_question(q) in SENSITIVE_KINDS
     bank = make_bank().model_copy(update={"work_authorization": _NO})
     assert match_question(q, bank, us_role=us_role) is None
+
+
+@pytest.mark.parametrize("city,state", [("Allentown, PA", "Pennsylvania"),
+                                        ("Harrisburg, PA", "Pennsylvania"),
+                                        ("Panama City, PA", None)])
+def test_a_pennsylvania_town_reads_as_its_us_state(city, state):
+    """'Harrisburg, PA' wasn't US (PA alone may be Panama), so no state, country or phone
+    country could come from it."""
+    from recrute.tailor.answers import state_from_city
+
+    assert state_from_city(city) == state
+
+
+@pytest.mark.parametrize("race,answer", [("Asian (Not Hispanic or Latino)", "No"),
+                                         ("White (Not Hispanic or Latino)", "No"),
+                                         ("Hispanic or Latino", "Yes"),
+                                         ("decline", "Decline To Self Identify")])
+def test_the_hispanic_question_reads_the_race_answers_own_words(race, answer):
+    """The documented 'White (Not Hispanic or Latino)' never answered 'Are you Hispanic/Latino?':
+    its parenthesis was dropped before reading it."""
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"eeo": bank.eeo.model_copy(update={"race_ethnicity": race})})
+    q = FormQuestion(id="q", label="Are you Hispanic/Latino?", type="select",
+                     options=["Yes", "No", "Decline To Self Identify"])
+    a = match_question(q, bank)
+    assert (a.value if a else None) == answer
+
+
+def test_a_state_picker_for_where_you_live_gets_your_state():
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"contact": bank.contact.model_copy(
+        update={"current_city": "Harrisburg, PA"})})
+    q = FormQuestion(id="q", label="Where are you located?", type="select",
+                     options=["Alabama", "Alaska", "Pennsylvania", "Texas"])
+    a = match_question(q, bank)
+    assert a is not None and a.value == "Pennsylvania"

@@ -84,7 +84,8 @@ _US_CITIES = frozenset("""san francisco|los angeles|san diego|san jose|palo alto
 sunnyvale|menlo park|redwood city|santa clara|santa monica|oakland|berkeley|irvine|milpitas|
 cupertino|fremont|pasadena|sacramento|south san francisco|san mateo|foster city|el segundo|
 seattle|bellevue|redmond|kirkland|tacoma|spokane|boston|cambridge|somerville|waltham|
-burlington|chicago|evanston|atlanta|alpharetta|philadelphia|pittsburgh|arlington|reston|
+burlington|chicago|evanston|atlanta|alpharetta|philadelphia|pittsburgh|state college|
+harrisburg|allentown|arlington|reston|
 mclean|herndon|richmond|alexandria|chantilly|tysons|denver|boulder|colorado springs|
 indianapolis|baltimore|columbia|bethesda|rockville|annapolis|fort meade|nashville|memphis|
 charlotte|raleigh|durham|chapel hill|minneapolis|st. paul|saint paul|phoenix|scottsdale|tempe|

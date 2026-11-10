@@ -1101,8 +1101,13 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
             return bank.salary.free_text or None
         case "eeo_gender":
             return bank.eeo.gender or "decline"
-        case "eeo_race" | "eeo_hispanic":
+        case "eeo_race":
             return bank.eeo.race_ethnicity or "decline"
+        case "eeo_hispanic":
+            # "Asian (Not Hispanic or Latino)": the part about Hispanic origin answers it
+            race = bank.eeo.race_ethnicity or "decline"
+            part = re.search(r"\(([^()]*\b(?:hispanic|latin[oax])\b[^()]*)\)", race, re.IGNORECASE)
+            return part.group(1) if part else race
         case "eeo_veteran":
             return bank.eeo.veteran_status or "decline"
         case "eeo_disability":
@@ -1119,6 +1124,10 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
         case "email" | "phone" | "linkedin" | "github" | "portfolio":
             return getattr(c, kind) or None
         case "city":
+            # a picker of states ("Where are you located?": Alabama, Alaska, ...): your state
+            state = state_from_city(c.current_city)
+            if q.options and state and state in q.options and c.current_city not in q.options:
+                return state
             return c.current_city or None
         case "phone_country":
             return phone_country(c.phone, c.country or country_from_city(c.current_city))
