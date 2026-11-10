@@ -38,6 +38,7 @@ from recrute.tailor.common import (
     parse_llm,
     plain_quotes,
     profile_texts,
+    truncate,
 )
 
 ClaimKind = Literal["rewrite", "summary", "cover_letter", "answer"]
@@ -307,10 +308,16 @@ def _status_attached(text: str, end: int, names: list[str]) -> bool:
             break  # (some other note: "(Hack The Box)", then ", expected 2027" may follow)
         rest = rest[rest.index(note) + len(note):]
     rest = re.sub(r"^\s*[\[(][^\[\]()]{0,60}[\])]", "", rest)  # an issuer note: "(Hack The Box)"
-    # (", which is in progress", " - currently studying", ", still pending")
-    return bool(re.match(r"\s*[,:;\u2013\u2014-]?\s*(?:(?:which|that) (?:is|was) )?"
-                         r"(?:currently |still |now )?(?:" + _NOT_EARNED_RE.pattern + ")", rest,
-                         re.IGNORECASE))
+    # (", currently in progress", ", still pending"; never an adjective: "targeted at senior
+    # testers", "expected of every tester")
+    if re.match(r"\s*[,:;\u2013\u2014-]?\s*(?:currently |still |now )?(?:" + _NOT_EARNED_RE.pattern
+                + r")(?!\s+(?:at|of)\b)", rest, re.IGNORECASE):
+        return True
+    # ", which is in progress": a status, in the present ("which was" is history)
+    return bool(re.match(r"\s*,?\s*(?:which|that) is (?:currently |still |now )?(?:in[- ]progress|"
+                         r"pending|underway|not yet (?:held|earned|passed|complete[d]?)|being "
+                         r"(?:pursued|studied)|(?:expected|scheduled|planned) (?:for|in|by) )",
+                         rest, re.IGNORECASE))
 
 
 def _unearned_flags(profile: Profile, texts: list[tuple[str, str]]) -> list[VerifierFlag]:
@@ -469,27 +476,59 @@ def _saved_evidence(claims: list[Claim], saved: Iterable[tuple[str, str]],
     return "PREVIOUSLY APPROVED ANSWERS\n" + "\n".join(lines) + "\n" if lines else ""
 
 
-def _uncited_support(profile: Profile, claims: list[Claim], limit: int = 12) -> list[str]:
-    """Profile items backing what a claim says beyond its own citations: a summary that cites
-    the role but names "Regional Defense Finals 2026" is backed by the award saying so. Shown to the
-    verifier too, which otherwise blocks a true claim for a missing citation (the code check
-    still warns about it)."""
+def _stem(word: str) -> str:
+    for suffix in ("ing", "ed", "es", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+            return word[:-len(suffix)]
+    return word
+
+
+def _uncited_support(profile: Profile, claims: list[Claim], per_claim: int = 3,
+                     limit: int = 24) -> list[str]:
+    """Profile items backing what a claim says beyond its own citations, shown to the verifier
+    too: it otherwise blocks a true claim for a missing citation (the code check still warns).
+    Per claim, the few items backing most of what its citations lack (names, numbers: "...
+    Finals 2026" is the award, not every bullet from 2026), then those worded most like it
+    ("defending against live red teams": the bullet that says so)."""
     background = background_facts(profile)
-    items = {i: SupportIndex.of(_item_support(profile, i)) for i in profile.all_items()}
+    all_items = profile.all_items()
+    items = {i: SupportIndex.of(_item_support(profile, i)) for i in all_items}
+    words = {i: {_stem(w) for w in keywords(" ".join([it.text, it.context, *it.metrics]))}
+             for i, it in all_items.items()}
     out: dict[str, None] = {}
     for c in claims:
         own = SupportIndex.of([t for cid in c.cited_ids for t in _item_support(profile, cid)]
                               + [background])
-        for u in find_unsupported(c.text, own):
-            forms = {f for _, fs in number_forms(u.token) for f in fs} \
-                if u.kind == "number" else set()
-            for i, idx in items.items():
-                backs = idx.has_number(forms) if forms else idx.has_term(u.token)
-                if backs and i not in out and i not in c.cited_ids:
-                    out[i] = None
-                    if len(out) >= limit:
-                        return list(out)
-    return list(out)
+        misses = [(u.token, {f for _, fs in number_forms(u.token) for f in fs}
+                   if u.kind == "number" else set()) for u in find_unsupported(c.text, own)]
+        said = {_stem(w) for w in keywords(c.text)}
+        ranked = []
+        for i, idx in items.items():
+            if i in c.cited_ids:
+                continue
+            backs = sum(1 for tok, forms in misses
+                        if (idx.has_number(forms) if forms else idx.has_term(tok)))
+            alike = len(said & words[i])
+            if backs or alike >= 3:
+                ranked.append((backs, alike, i))
+        for _, _, i in sorted(ranked, reverse=True)[:per_claim]:
+            out[i] = None
+    return list(out)[:limit]
+
+
+def _source_lines(profile: Profile, ids: Iterable[str]) -> list[str]:
+    """The verifier's sources: each item with its metrics and notes (the evidence it was chosen
+    for), entry headers as they are."""
+    items = profile.all_items()
+    out = []
+    for i in dict.fromkeys(ids):
+        it = items.get(i)
+        if it is None:
+            out += item_lines(profile, [i])
+            continue
+        extra = "; ".join(x for x in [*it.metrics, truncate(it.context, 600)] if x)
+        out.append(f"[{i}] {it.text}" + (f" ({extra})" if extra else ""))
+    return out
 
 
 def llm_flags(profile: Profile, claims: list[Claim], router: Completer,
@@ -509,7 +548,7 @@ def llm_flags(profile: Profile, claims: list[Claim], router: Completer,
                                   saved=evidence,
                                   saved_rule=(_SAVED_RULE if evidence else "")
                                   + _never_rule(profile),
-                                  sources="\n".join(item_lines(profile, cited)) or "(none)",
+                                  sources="\n".join(_source_lines(profile, cited)) or "(none)",
                                   claims="\n".join(claim_lines))
     raw = parse_llm(_Flags, router.complete("verify", prompt, schema=VERIFY_SCHEMA,
                                             system=VERIFY_SYSTEM), "verifier")

@@ -245,15 +245,28 @@ def _unique(base: str, used: set[str]) -> str:
     return cand
 
 
+# A pointer to elsewhere in the bank ("(see Projects)", "(see the assistant below)") is a note
+# to whoever reads the bank, never resume text: it goes to the item's context.
+_XREF_RE = re.compile(r"\s*\((?:see|cf\.?)\s[^()]*\)", re.IGNORECASE)
+
+
+def _split_xref(text: str, context: str) -> tuple[str, str]:
+    refs = [m.group(0).strip() for m in _XREF_RE.finditer(text)]
+    if not refs:
+        return text.strip(), context.strip()
+    return _XREF_RE.sub("", text).strip(), " ".join([context.strip(), *refs]).strip()
+
+
 def _items(prefix: str, raw: list[_Item], used: set[str]) -> list[ProfileItem]:
     out = []
     for i, it in enumerate(raw, 1):
         if not it.text.strip():
             continue
-        out.append(ProfileItem(id=_unique(f"{prefix}-b{i}", used), text=it.text.strip(),
+        text, context = _split_xref(it.text, it.context)
+        out.append(ProfileItem(id=_unique(f"{prefix}-b{i}", used), text=text,
                                tags=[t.strip().lower() for t in it.tags if t.strip()],
                                metrics=[m for m in it.metrics if m.strip()],
-                               context=it.context.strip()))
+                               context=context))
     return out
 
 
@@ -289,9 +302,10 @@ def to_profile(ex: _Extracted) -> Profile:
 
     def standalone(prefix: str, raw: list[_Item]) -> list[ProfileItem]:
         return [
-            ProfileItem(id=_unique(f"{prefix}-{slugify(it.text, 24)}", used), text=it.text.strip(),
+            ProfileItem(id=_unique(f"{prefix}-{slugify(it.text, 24)}", used),
+                        text=_split_xref(it.text, it.context)[0],
                         tags=[t.lower() for t in it.tags], metrics=it.metrics,
-                        context=it.context.strip())
+                        context=_split_xref(it.text, it.context)[1])
             for it in raw if it.text.strip()
         ]
 

@@ -144,3 +144,117 @@ def test_a_status_in_a_which_clause_is_attached(text, blocked):
         Certification(id="s", name="CompTIA Security+")])
     flags = deterministic_flags(p, [Claim("cover_letter", text, "cover_letter", [])])
     assert any("isn't held" in f.reason for f in flags) is blocked
+
+
+def test_a_pointer_elsewhere_in_the_bank_never_reaches_a_resume():
+    """'... later given a voice mode (see Acme Austin).' printed as written on a resume."""
+    from recrute.tailor.ingest import _Extracted, to_profile
+
+    p = to_profile(_Extracted.model_validate({
+        "projects": [{"name": "Range", "bullets": [
+            {"text": "Correlates feeds with assets; later given a voice mode (see Acme Austin).",
+             "context": "Built in 2025."}]}],
+        "awards": [{"text": "Maintained playbooks (see Projects)"}],
+        "experience": [{"company": "Acme", "title": "Engineer", "bullets": [
+            {"text": "Ran triage (seen by the CISO weekly)."}]}]}))
+    b = p.projects[0].bullets[0]
+    assert b.text == "Correlates feeds with assets; later given a voice mode."
+    assert "(see Acme Austin)" in b.context and "Built in 2025." in b.context
+    assert p.awards[0].text == "Maintained playbooks" and "(see Projects)" in p.awards[0].context
+    assert p.experience[0].bullets[0].text == "Ran triage (seen by the CISO weekly)."
+
+
+def test_the_verifier_sees_the_bullet_worded_like_an_uncited_claim():
+    """'defending against live professional red teams' was blocked: the bullet saying so wasn't
+    cited, and the claim has no name or number to look it up by."""
+    from recrute.tailor.verify import Claim, llm_flags
+
+    p = Profile(experience=[Experience(id="e1", company="Northfield Cyber Club",
+                                       title="Blue Team Captain", bullets=[
+        ProfileItem(id="b1", text="Captained the blue team at the finals."),
+        ProfileItem(id="b2", text="Defended assigned networks against live professional red "
+                                  "teams over 8 hour engagements."),
+        ProfileItem(id="b3", text="Organized weekly study sessions.")])])
+    router = FakeRouter({"verify": {"flags": []}})
+    llm_flags(p, [Claim("resume.summary", "Blue team captain defending against live "
+                        "professional red teams.", "summary", ["b1"])], router)
+    sources = router.calls[0][1].split("SOURCES", 1)[1].split("CLAIMS", 1)[0]
+    assert "[b2]" in sources and "[b3]" not in sources
+
+
+@pytest.mark.parametrize("label,answer", [
+    ("Region (State/County/Province)", "Texas"),
+    ("State/Region", "Texas"),
+    ("State or Province", "Texas"),
+    ("Region", None)])  # (EMEA / Americas?)
+def test_a_state_field_by_its_other_names(label, answer):
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    a = match_question(FormQuestion(id="q", label=label, type="text"), make_bank())
+    assert (a.value if a else None) == answer
+
+
+@pytest.mark.parametrize("options,answer", [
+    (["United States of America", "Ireland", "Israel"], "United States of America"),
+    (["USA", "Canada"], "USA"),
+    (["Canada", "Mexico"], None)])
+def test_the_country_pickers_name_for_the_us(options, answer):
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    q = FormQuestion(id="q", label="Country", type="select", options=options)
+    a = match_question(q, make_bank())
+    assert (a.value if a else None) == answer
+
+
+def test_a_common_year_doesnt_crowd_out_the_real_evidence():
+    """Re-audit: twelve bullets from 2026 used up the evidence budget before the award."""
+    from recrute.tailor.verify import Claim, llm_flags
+
+    p = Profile(experience=[Experience(id="e1", company="Acme", title="Engineer", bullets=[
+        ProfileItem(id=f"b{n}", text=f"Shipped release {n} in 2026.") for n in range(12)])],
+        awards=[ProfileItem(id="a1", text="Regional Defense Finals 2026")])
+    router = FakeRouter({"verify": {"flags": []}})
+    llm_flags(p, [Claim("resume.summary", "Captain at Regional Defense Finals 2026.", "summary",
+                        ["e1"])], router)
+    sources = router.calls[0][1].split("SOURCES", 1)[1].split("CLAIMS", 1)[0]
+    assert "[a1]" in sources and sources.count("Shipped release") <= 2
+
+
+def test_the_verifier_sees_an_items_metrics():
+    """Re-audit: the evidence was in the award's metrics, which the prompt left out."""
+    from recrute.tailor.verify import Claim, llm_flags
+
+    p = Profile(awards=[ProfileItem(id="a1", text="Regional Defense Finals",
+                                    metrics=["Ranked 7th of 42 teams."])])
+    router = FakeRouter({"verify": {"flags": []}})
+    llm_flags(p, [Claim("resume.summary", "Placed 7th of 42 teams at Regional Defense Finals.",
+                        "summary", [])], router)
+    assert "Ranked 7th of 42 teams." in router.calls[0][1].split("CLAIMS", 1)[0]
+
+
+@pytest.mark.parametrize("text,blocked", [
+    ("I hold the HTB CPTS, which was in progress last year.", True),
+    ("I hold the HTB CPTS, which is targeted at senior pentesters.", True),
+    ("I earned the HTB CPTS, which is expected of every senior tester.", True),
+    ("HTB CPTS, targeted at senior pentesters.", True),
+    ("HTB CPTS, which is expected in 2027.", False),
+    ("HTB CPTS, which is not yet earned.", False)])
+def test_only_a_present_status_qualifies_a_mention(text, blocked):
+    from recrute.schemas import Certification
+    from recrute.tailor.verify import Claim, deterministic_flags
+
+    p = Profile(certifications=[Certification(id="c", name="HTB CPTS (in progress)")])
+    flags = deterministic_flags(p, [Claim("cover_letter", text, "cover_letter", [])])
+    assert any("isn't held" in f.reason for f in flags) is blocked
+
+
+@pytest.mark.parametrize("label", [
+    "Will you now or in the future require UK employers to provide sponsorship?",
+    "Will you now or in the future require Acme Canada to provide sponsorship?",
+    "Will you now or in the future require Canada to provide sponsorship?"])
+def test_another_countrys_sponsor_is_yours_to_answer(label):
+    assert sponsorship_answer(label, _NO) is None

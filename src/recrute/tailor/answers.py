@@ -271,7 +271,8 @@ _FIELD_RULES: list[tuple[str, re.Pattern[str]]] = [
                           r"phone (number )?country( code)?"),
         ("country", r"(current )?country( of (current )?residence)?|country you (live|reside) in|"
                     r"(current )?country of residence"),
-        ("us_state", r"(current )?state( of residence)?|state/province|"
+        ("us_state", r"(current )?state( of residence)?|state ?/ ?(province|region)|"
+                     r"state or (province|region)|state ?/ ?county ?/ ?province|"
                      r"(please )?select the state (where|in which) you (currently )?(reside|live)"),
         ("phone", r"((mobile|cell|home|primary) )?(phone|telephone)( number)?|"
                   r"(mobile|cell)( number)?"),
@@ -478,6 +479,8 @@ def classify_question(q: FormQuestion) -> str | None:
         return "citizenship"  # "Country (of citizenship)": residence says nothing about it
     if core == "country" and re.search(r"\b(phone|dialing|calling)\b", q.description, re.I):
         return "phone_country"  # e.g. Greenhouse's picker next to the phone number
+    if core == "region" and re.search(r"\(\s*state\b", q.label, re.IGNORECASE):
+        core = "state"  # "Region (State/County/Province)"; a bare "Region" may be EMEA
     if q.type not in ("checkbox", "multiselect"):  # "Email me about openings" is not a field
         for kind, rx in _FIELD_RULES:
             if rx.fullmatch(core):
@@ -523,8 +526,10 @@ _SCOPE = rf"(?P<scope>{_S_BOTH}|{_S_NOW}|{_S_FUT})"
 _US = r"(?:the )?(?:united states(?: of america)?|u\.?s\.?(?:a\.?)?|usa|us)"
 _WHAT = (r"(?:(?:employer|company|visa|immigration|work visa|employment visa|h-?1b(?: visa)?) )?"
          r"sponsorship|visa support|an? (?:employer|company) to sponsor (?:you|your visa)|"
-         # "require us / Acme to provide (immigration-related support or) sponsorship"
-         r"(?:us|the company|[a-z0-9&.'-]+(?: [a-z0-9&.'-]+)?) to provide (?:immigration[- ]"
+         # "require us / Acme to provide (immigration-related support or) sponsorship": one
+         # name or "us", never "UK employers" or "Acme Canada"
+         r"(?P<sponsor>us|the company|the employer|an employer|your employer|[a-z0-9&.'-]+) "
+         r"to provide (?:immigration[- ]"
          r"related support or |visa support or )?(?:visa |immigration |employment )?"
          r"sponsorship")
 _PURPOSE = (rf"(?:for (?:an? )?(?:employment |work )?visa(?: status)?|for employment(?: visa"
@@ -588,6 +593,11 @@ def sponsorship_answer(label: str, wa: WorkAuthorization, *, scope_from: str | N
     without = None if need else _SPONSOR_WITHOUT_RE.fullmatch(t)
     if not (need or without):
         return None
+    from recrute.location import _FOREIGN, _FOREIGN_AMERICAS
+
+    sponsor = (need or without).groupdict().get("sponsor") or ""
+    if _FOREIGN.search(sponsor) or _FOREIGN_AMERICAS.search(sponsor):
+        return None  # ("require Canada to provide sponsorship": another country's question)
     if need:
         n1, f1 = _scope_of(need.group("s1"))
         n2, f2 = _scope_of(need.group("s2"))
@@ -1069,7 +1079,12 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
         case "phone_country":
             return phone_country(c.phone, c.country or country_from_city(c.current_city))
         case "country":
-            return c.country or country_from_city(c.current_city)
+            country = c.country or country_from_city(c.current_city)
+            # the picker's one name for the US ("United States of America", "USA")
+            us = [o for o in q.options if o.strip().casefold().rstrip(".") in _US_NAMES]
+            if country and country.strip().casefold().rstrip(".") in _US_NAMES and len(us) == 1:
+                return us[0]
+            return country
         case "us_state":
             return state_from_city(c.current_city)
     return None  # citizenship: deliberately not answered from the bank
