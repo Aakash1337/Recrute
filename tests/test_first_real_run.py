@@ -582,3 +582,176 @@ def test_a_combined_citizenship_and_authorization_question_stays_yours(us_role):
     assert classify_question(q) in SENSITIVE_KINDS
     bank = make_bank().model_copy(update={"work_authorization": _NO})
     assert match_question(q, bank, us_role=us_role) is None
+
+
+@pytest.mark.parametrize("city,state", [("Allentown, PA", "Pennsylvania"),
+                                        ("Harrisburg, PA", "Pennsylvania"),
+                                        ("Panama City, PA", None)])
+def test_a_pennsylvania_town_reads_as_its_us_state(city, state):
+    """'Harrisburg, PA' wasn't US (PA alone may be Panama), so no state, country or phone
+    country could come from it."""
+    from recrute.tailor.answers import state_from_city
+
+    assert state_from_city(city) == state
+
+
+@pytest.mark.parametrize("race,answer", [("Asian (Not Hispanic or Latino)", "No"),
+                                         ("White (Not Hispanic or Latino)", "No"),
+                                         ("Hispanic or Latino", "Yes"),
+                                         ("decline", "Decline To Self Identify")])
+def test_the_hispanic_question_reads_the_race_answers_own_words(race, answer):
+    """The documented 'White (Not Hispanic or Latino)' never answered 'Are you Hispanic/Latino?':
+    its parenthesis was dropped before reading it."""
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"eeo": bank.eeo.model_copy(update={"race_ethnicity": race})})
+    q = FormQuestion(id="q", label="Are you Hispanic/Latino?", type="select",
+                     options=["Yes", "No", "Decline To Self Identify"])
+    a = match_question(q, bank)
+    assert (a.value if a else None) == answer
+
+
+def test_a_state_picker_for_where_you_live_gets_your_state():
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"contact": bank.contact.model_copy(
+        update={"current_city": "Harrisburg, PA"})})
+    q = FormQuestion(id="q", label="Where are you located?", type="select",
+                     options=["Alabama", "Alaska", "Pennsylvania", "Texas"])
+    a = match_question(q, bank)
+    assert a is not None and a.value == "Pennsylvania"
+
+
+def test_a_combined_race_picker_takes_your_exact_answer():
+    """Re-audit: only the Hispanic part was offered to a combined picker holding the whole."""
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"eeo": bank.eeo.model_copy(
+        update={"race_ethnicity": "White (Not Hispanic or Latino)"})})
+    q = FormQuestion(id="q", label="Race / Ethnicity / Hispanic origin", type="select",
+                     options=["Hispanic or Latino", "White (Not Hispanic or Latino)",
+                              "Asian (Not Hispanic or Latino)", "Decline to self-identify"])
+    a = match_question(q, bank)
+    assert a is not None and a.value == "White (Not Hispanic or Latino)"
+
+
+def test_a_race_answer_silent_on_hispanic_origin_doesnt_answer_it_in_text():
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"eeo": bank.eeo.model_copy(update={"race_ethnicity": "Asian"})})
+    q = FormQuestion(id="q", label="Are you Hispanic or Latino?", type="text")
+    assert match_question(q, bank) is None
+
+
+@pytest.mark.parametrize("text,blocked", [
+    ("I hold Security+, and HTB Certified Penetration Tester Specialist (CPTS) is in progress.",
+     False),
+    ("HTB CPTS is expected in 2027.", False),
+    ("HTB CPTS is a hard exam that I passed.", True),
+    ("HTB CPTS is expected to impress.", True)])
+def test_a_plain_is_status_after_a_mention_is_attached(text, blocked):
+    """A truthful '... (CPTS) is in progress.' was blocked: only 'which is' was read."""
+    from recrute.schemas import Certification
+    from recrute.tailor.verify import Claim, deterministic_flags
+
+    p = Profile(certifications=[Certification(
+        id="c", name="HTB Certified Penetration Tester Specialist (CPTS) (in progress)"),
+        Certification(id="s", name="CompTIA Security+")])
+    flags = deterministic_flags(p, [Claim("cover_letter", text, "cover_letter", [])])
+    assert any("isn't held" in f.reason for f in flags) is blocked
+
+
+def test_a_combined_race_picker_ignores_case():
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"eeo": bank.eeo.model_copy(
+        update={"race_ethnicity": "white (not hispanic or latino)"})})
+    q = FormQuestion(id="q", label="Race / Ethnicity / Hispanic origin", type="select",
+                     options=["Hispanic or Latino", "White (Not Hispanic or Latino)"])
+    a = match_question(q, bank)
+    assert a is not None and a.value == "White (Not Hispanic or Latino)"
+
+
+@pytest.mark.parametrize("decline", ["I don't wish to answer", "Decline to self-identify"])
+def test_any_declining_race_answer_declines_the_hispanic_question(decline):
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"eeo": bank.eeo.model_copy(update={"race_ethnicity": decline})})
+    q = FormQuestion(id="q", label="Are you Hispanic/Latino?", type="select",
+                     options=["Yes", "No", "Decline To Self Identify"])
+    a = match_question(q, bank)
+    assert a is not None and a.value == "Decline To Self Identify"
+
+
+def test_the_questions_own_status_words_dont_excuse_a_yes():
+    """Re-audit: 'CPTS is expected for this role' in the question excused a 'Yes'."""
+    from recrute.schemas import Certification
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    p = Profile(certifications=[Certification(id="c", name="HTB CPTS (in progress)")])
+    q = FormQuestion(id="q", label="HTB CPTS is expected for this role. Do you hold it?",
+                     type="select", options=["Yes", "No"])
+    claims = collect_claims(p, answers=[FormAnswer(question_id="q", value="Yes",
+                                                   source="llm_new")], questions=[q])
+    assert any("isn't held" in f.reason for f in deterministic_flags(p, claims))
+
+
+@pytest.mark.parametrize("race,answer", [("Decline (Not Hispanic or Latino)",
+                                          "Decline To Self Identify"),
+                                         ("No answer", None)])
+def test_a_refusal_or_a_bare_no_isnt_read_as_hispanic_origin(race, answer):
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"eeo": bank.eeo.model_copy(update={"race_ethnicity": race})})
+    q = FormQuestion(id="q", label="Are you Hispanic/Latino?", type="select",
+                     options=["Yes", "No", "Decline To Self Identify"])
+    a = match_question(q, bank)
+    assert (a.value if a else None) == answer
+
+
+def test_a_location_picker_of_offices_isnt_taken_for_states():
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"contact": bank.contact.model_copy(
+        update={"current_city": "Seattle, WA"})})
+    q = FormQuestion(id="q", label="Where are you located?", type="select",
+                     options=["Washington", "London", "Remote"])
+    a = match_question(q, bank)
+    assert a is None or a.value != "Washington"
+
+
+def test_a_yes_to_are_you_pursuing_it_is_truthful():
+    """Re-audit: removing every status word from the question blocked this truthful 'Yes'."""
+    from recrute.schemas import Certification
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    p = Profile(certifications=[Certification(id="c", name="HTB CPTS (in progress)")])
+    q = FormQuestion(id="q", label="Are you currently pursuing the HTB CPTS?", type="select",
+                     options=["Yes", "No"])
+    claims = collect_claims(p, answers=[FormAnswer(question_id="q", value="Yes",
+                                                   source="llm_new")], questions=[q])
+    assert not any("isn't held" in f.reason for f in deterministic_flags(p, claims))

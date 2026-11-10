@@ -317,8 +317,10 @@ def _status_attached(text: str, end: int, names: list[str]) -> bool:
     if re.match(r"\s*[,:;\u2013\u2014-]?\s*(?:currently |still |now )?(?:" + _NOT_EARNED_RE.pattern
                 + r")(?!\s+(?:at|of)\b)", rest, re.IGNORECASE):
         return True
-    # ", which is in progress": a status, in the present ("which was" is history)
-    return bool(re.match(r"\s*,?\s*(?:which|that) is (?:currently |still |now )?(?:in[- ]progress|"
+    # ", which is in progress", "(CPTS) is in progress": a status, in the present ("which
+    # was" is history)
+    return bool(re.match(r"\s*,?\s*(?:(?:which|that) )?is (?:currently |still |now )?"
+                         r"(?:in[- ]progress|"
                          r"pending|underway|not yet (?:held|earned|passed|complete[d]?)|being "
                          r"(?:pursued|studied)|(?:expected|scheduled|planned) (?:for|in|by) )",
                          rest, re.IGNORECASE))
@@ -381,7 +383,13 @@ def _claimed_text(c: Claim, job: JobContext | None) -> str:
         # level?"), unless it names one of the question's own alternatives (picking "Bedrock"
         # from "LangChain, LlamaIndex or Bedrock?" claims Bedrock only); free text claims only
         # what it says
-        text = f"{c.question} {c.detail} {text}"
+        # (the question's description of the role never excuses your answer: "CPTS is expected
+        # for this role. Do you hold it?" + "Yes" claims you hold it; but "Are you pursuing the
+        # CPTS?" + "Yes" is you pursuing it)
+        asked = re.sub(r"\b(?:in[- ]progress|expected|planned|scheduled|pending|target(?:ed|ing)?|"
+                       r"not yet|expired|lapsed)\b", " ", f"{c.question} {c.detail}",
+                       flags=re.IGNORECASE)
+        text = f"{asked} {text}"
     return text
 
 
