@@ -253,8 +253,33 @@ _XREF_RE = re.compile(r"\s*\((?:see|cf\.?)\s[^()]*\)", re.IGNORECASE)
 def _split_xref(text: str, context: str) -> tuple[str, str]:
     refs = [m.group(0).strip() for m in _XREF_RE.finditer(text)]
     if not refs:
-        return text.strip(), context.strip()
-    return _XREF_RE.sub("", text).strip(), " ".join([context.strip(), *refs]).strip()
+        return text, context
+    new = [r for r in refs if r not in context]
+    return " ".join(_XREF_RE.sub("", text).split()), " ".join([context.strip(), *new]).strip()
+
+
+def move_xrefs(profile: Profile) -> Profile:
+    """Every "(see ...)" pointer out of what a resume can print: into an item's notes, and out
+    of role and project summaries. Run AFTER the source backstop, which finds each item's
+    source line by its words as transcribed."""
+    def items(group: list[ProfileItem]) -> list[ProfileItem]:
+        out = []
+        for it in group:
+            text, context = _split_xref(it.text, it.context)
+            out.append(it.model_copy(update={"text": text, "context": context}))
+        return out
+
+    def summary(text: str) -> str:
+        return _split_xref(text, "")[0] if text else text
+
+    return profile.model_copy(update={
+        "experience": [e.model_copy(update={"summary": summary(e.summary),
+                                            "bullets": items(e.bullets)})
+                       for e in profile.experience],
+        "projects": [p.model_copy(update={"summary": summary(p.summary),
+                                          "bullets": items(p.bullets)})
+                     for p in profile.projects],
+        "awards": items(profile.awards), "extra": items(profile.extra)})
 
 
 def _items(prefix: str, raw: list[_Item], used: set[str]) -> list[ProfileItem]:
@@ -262,11 +287,10 @@ def _items(prefix: str, raw: list[_Item], used: set[str]) -> list[ProfileItem]:
     for i, it in enumerate(raw, 1):
         if not it.text.strip():
             continue
-        text, context = _split_xref(it.text, it.context)
-        out.append(ProfileItem(id=_unique(f"{prefix}-b{i}", used), text=text,
+        out.append(ProfileItem(id=_unique(f"{prefix}-b{i}", used), text=it.text.strip(),
                                tags=[t.strip().lower() for t in it.tags if t.strip()],
                                metrics=[m for m in it.metrics if m.strip()],
-                               context=context))
+                               context=it.context.strip()))
     return out
 
 
@@ -302,10 +326,9 @@ def to_profile(ex: _Extracted) -> Profile:
 
     def standalone(prefix: str, raw: list[_Item]) -> list[ProfileItem]:
         return [
-            ProfileItem(id=_unique(f"{prefix}-{slugify(it.text, 24)}", used),
-                        text=_split_xref(it.text, it.context)[0],
+            ProfileItem(id=_unique(f"{prefix}-{slugify(it.text, 24)}", used), text=it.text.strip(),
                         tags=[t.lower() for t in it.tags], metrics=it.metrics,
-                        context=_split_xref(it.text, it.context)[1])
+                        context=it.context.strip())
             for it in raw if it.text.strip()
         ]
 
@@ -1222,7 +1245,7 @@ def ingest_resume(paths: Paths, router: Completer, *, apply: bool = False) -> In
         trusted = {i.context for i in old.all_items().values() if i.context}
 
     cert_names = {c.name for c in profile.certifications}
-    profile = hold_marked_in_source(profile, source_text)
+    profile = move_xrefs(hold_marked_in_source(profile, source_text))
     flags = check_against_source(profile, source_text, trusted=trusted)
     flags += [VerifierFlag(where="profile.certifications", text=c.name, severity="warn",
                            reason="its status was put back from the source (the transcription "

@@ -10,6 +10,7 @@ from recrute.schemas import (
     FormQuestion,
     Profile,
     ProfileItem,
+    Project,
 )
 from recrute.tailor.answers import (
     WorkAuthorization,
@@ -118,6 +119,8 @@ def test_the_country_within_which_you_apply_is_the_us_for_a_us_role():
 
 @pytest.mark.parametrize("locations,us_only", [
     (["Columbus", "Columbus, Ohio, United States"], True),
+    (["Cambridge", "Cambridge, MA"], False),
+    (["Remote", "Remote, US"], False),
     (["Columbus"], False),
     (["Remote", "Austin, TX"], False),
     (["Austin, TX", "Toronto, ON, Canada"], False),
@@ -148,20 +151,33 @@ def test_a_status_in_a_which_clause_is_attached(text, blocked):
 
 def test_a_pointer_elsewhere_in_the_bank_never_reaches_a_resume():
     """'... later given a voice mode (see Acme Austin).' printed as written on a resume."""
-    from recrute.tailor.ingest import _Extracted, to_profile
+    from recrute.tailor.ingest import move_xrefs
 
-    p = to_profile(_Extracted.model_validate({
-        "projects": [{"name": "Range", "bullets": [
-            {"text": "Correlates feeds with assets; later given a voice mode (see Acme Austin).",
-             "context": "Built in 2025."}]}],
-        "awards": [{"text": "Maintained playbooks (see Projects)"}],
-        "experience": [{"company": "Acme", "title": "Engineer", "bullets": [
-            {"text": "Ran triage (seen by the CISO weekly)."}]}]}))
+    p = move_xrefs(Profile(
+        projects=[Project(id="p", name="Range", summary="A cyber range (see Experience).",
+                          bullets=[ProfileItem(id="b", text="Correlates feeds with assets; later "
+                                               "given a voice mode (see Acme Austin).",
+                                               context="Built in 2025.")])],
+        awards=[ProfileItem(id="a", text="Maintained playbooks (see Projects)")],
+        experience=[Experience(id="e", company="Acme", title="Engineer", bullets=[
+            ProfileItem(id="c", text="Ran triage (seen by the CISO weekly).")])]))
     b = p.projects[0].bullets[0]
     assert b.text == "Correlates feeds with assets; later given a voice mode."
     assert "(see Acme Austin)" in b.context and "Built in 2025." in b.context
+    assert p.projects[0].summary == "A cyber range."
     assert p.awards[0].text == "Maintained playbooks" and "(see Projects)" in p.awards[0].context
     assert p.experience[0].bullets[0].text == "Ran triage (seen by the CISO weekly)."
+
+
+def test_a_pointer_doesnt_hide_a_source_marker():
+    """Re-audit: moving the pointer first changed the words the source backstop looks for."""
+    from recrute.tailor.ingest import hold_marked_in_source, move_xrefs
+
+    p = Profile(experience=[Experience(id="e", company="Acme", title="Engineer", bullets=[
+        ProfileItem(id="b", text="Ran triage (see Projects) weekly.")])])
+    out = move_xrefs(hold_marked_in_source(
+        p, "Acme, Engineer\n- Ran triage (see Projects) weekly. [confirm scope]"))
+    assert out.experience[0].bullets == []
 
 
 def test_the_verifier_sees_the_bullet_worded_like_an_uncited_claim():
@@ -258,3 +274,57 @@ def test_only_a_present_status_qualifies_a_mention(text, blocked):
     "Will you now or in the future require Canada to provide sponsorship?"])
 def test_another_countrys_sponsor_is_yours_to_answer(label):
     assert sponsorship_answer(label, _NO) is None
+
+
+def test_rewrites_dont_use_up_the_summarys_evidence():
+    """Re-audit (high): rewrites come first and filled the evidence budget before the summary
+    got any (a small budget here stands for a long resume)."""
+    from recrute.tailor.verify import Claim, _uncited_support
+
+    p = Profile(experience=[Experience(id="e1", company="Acme", title="Engineer", bullets=[
+        ProfileItem(id=f"b{n}", text=f"Hardened gateway{n} relay{n} beacon{n} cluster.")
+        for n in range(6)])],
+        awards=[ProfileItem(id="a1", text="Regional Defense Finals 2026")])
+    claims = [Claim(f"resume.bullet:b{n}", f"Hardened gateway{n + 1} relay{n + 1} beacon{n + 1} "
+                    "cluster.", "rewrite", [f"b{n}"]) for n in range(5)]
+    claims.append(Claim("resume.summary", "Captain at Regional Defense Finals 2026.", "summary",
+                        ["e1"]))
+    assert "a1" in _uncited_support(p, claims, limit=3)
+
+
+def test_a_rewrite_gets_no_other_items_as_evidence():
+    """Re-audit: a rewrite naming another item's facts would have been shown that item."""
+    from recrute.tailor.verify import Claim, llm_flags
+
+    p = Profile(experience=[Experience(id="e1", company="Acme", title="Engineer", bullets=[
+        ProfileItem(id="b1", text="Ran triage.")])],
+        awards=[ProfileItem(id="a1", text="Regional Defense Finals 2026")])
+    router = FakeRouter({"verify": {"flags": []}})
+    llm_flags(p, [Claim("resume.bullet:b1", "Ran triage at Regional Defense Finals 2026.",
+                        "rewrite", ["b1"])], router)
+    assert "[a1]" not in router.calls[0][1].split("CLAIMS", 1)[0]
+
+
+def test_an_extra_bullet_shows_whose_it_is():
+    """Re-audit: an uncited bullet reached the verifier without its role or company."""
+    from recrute.tailor.verify import Claim, llm_flags
+
+    p = Profile(experience=[
+        Experience(id="e1", company="Acme", title="Engineer", bullets=[
+            ProfileItem(id="b1", text="Shipped the billing service.")]),
+        Experience(id="e2", company="Northfield Cyber Club", title="Blue Team Captain", bullets=[
+            ProfileItem(id="b2", text="Defended networks against live professional red teams.")])])
+    router = FakeRouter({"verify": {"flags": []}})
+    llm_flags(p, [Claim("resume.summary", "At Acme I defended networks against live "
+                        "professional red teams.", "summary", ["e1"])], router)
+    assert "[b2] (Blue Team Captain @ Northfield Cyber Club) Defended" in router.calls[0][1]
+
+
+def test_your_city_says_nothing_about_citizenship():
+    """Re-audit: spelling out 'United States' made 'United States citizen' look supported."""
+    from recrute.tailor.verify import Claim, deterministic_flags
+
+    p = Profile(name="Ada Lovelace", location="Austin, TX")
+    flags = deterministic_flags(p, [Claim("cover_letter", "As a United States citizen I can "
+                                          "start at once.", "cover_letter", [])])
+    assert any(f.severity == "block" for f in flags)

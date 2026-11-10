@@ -496,7 +496,11 @@ def _uncited_support(profile: Profile, claims: list[Claim], per_claim: int = 3,
     words = {i: {_stem(w) for w in keywords(" ".join([it.text, it.context, *it.metrics]))}
              for i, it in all_items.items()}
     out: dict[str, None] = {}
-    for c in claims:
+    # (a rewrite stands on its own bullet: another item's facts must not move onto it; the
+    # summary and letter go first, then answers)
+    order = {"summary": 0, "cover_letter": 1}
+    for c in sorted((c for c in claims if c.kind != "rewrite"),
+                    key=lambda c: order.get(c.kind, 2)):
         own = SupportIndex.of([t for cid in c.cited_ids for t in _item_support(profile, cid)]
                               + [background])
         misses = [(u.token, {f for _, fs in number_forms(u.token) for f in fs}
@@ -518,8 +522,10 @@ def _uncited_support(profile: Profile, claims: list[Claim], per_claim: int = 3,
 
 def _source_lines(profile: Profile, ids: Iterable[str]) -> list[str]:
     """The verifier's sources: each item with its metrics and notes (the evidence it was chosen
-    for), entry headers as they are."""
+    for) and, for a bullet, the role or project it belongs to; entry headers as they are."""
     items = profile.all_items()
+    owner = {b.id: f"{e.title} @ {e.company}" for e in profile.experience for b in e.bullets}
+    owner |= {b.id: f"project {p.name}" for p in profile.projects for b in p.bullets}
     out = []
     for i in dict.fromkeys(ids):
         it = items.get(i)
@@ -527,7 +533,8 @@ def _source_lines(profile: Profile, ids: Iterable[str]) -> list[str]:
             out += item_lines(profile, [i])
             continue
         extra = "; ".join(x for x in [*it.metrics, truncate(it.context, 600)] if x)
-        out.append(f"[{i}] {it.text}" + (f" ({extra})" if extra else ""))
+        where = f"({owner[i]}) " if i in owner else ""
+        out.append(f"[{i}] {where}{it.text}" + (f" ({extra})" if extra else ""))
     return out
 
 

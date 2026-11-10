@@ -102,11 +102,14 @@ def _us_only(locations: list[str]) -> bool:
 
     locs = [loc.strip() for loc in locations if loc and loc.strip()]
     us = [loc for loc in locs if us_exclusive(loc)]
-    # a bare office name that is the city of another listed US location is that place ("Columbus"
-    # beside "Columbus, Ohio, United States")
-    cities = {loc.split(",")[0].strip().casefold() for loc in us if "," in loc}
-    return bool(us) and all(loc in us or ("," not in loc and loc.casefold() in cities)
-                            for loc in locs)
+    # a bare office name that is the city of another listed location saying "United States" is
+    # that place ("Columbus" beside "Columbus, Ohio, United States"); never "Cambridge" beside
+    # "Cambridge, MA" (there's one in the UK) or a word like "Remote"
+    cities = {loc.split(",")[0].strip().casefold() for loc in us
+              if "," in loc and re.search(r"\b(united states|usa)\b", loc, re.IGNORECASE)}
+    generic = {"remote", "hybrid", "anywhere", "onsite", "on-site", "in office", "flexible"}
+    return bool(us) and all(
+        loc in us or ("," not in loc and loc.casefold() in cities - generic) for loc in locs)
 
 
 @dataclass
@@ -463,13 +466,14 @@ def item_lines(profile: Profile, ids: Iterable[str], *, ctx_chars: int = 300) ->
 
 
 def _place_names(location: str) -> str:
-    """A US location's state and country spelled out: "Columbus, OH" is also "Columbus, Ohio"."""
+    """A US location's state spelled out: "Columbus, OH" is also "Columbus, Ohio". (Not the
+    country: living there says nothing about citizenship or work authorization.)"""
     from recrute.location import US_STATES, us_exclusive
 
     m = re.search(r",\s*([A-Z]{2})\b", location)
     if not (m and m.group(1) in US_STATES and us_exclusive(location)):
         return ""
-    return f" ({US_STATES[m.group(1)]}, United States)"
+    return f" ({US_STATES[m.group(1)]})"
 
 
 def background_facts(profile: Profile, *, name: bool = True) -> str:
