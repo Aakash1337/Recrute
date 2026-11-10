@@ -376,3 +376,63 @@ def test_a_heading_label_with_its_question_in_the_description(label, description
                      options=["Yes", "No"])
     a = match_question(q, bank)
     assert (a.value if a else None) == answer
+
+
+def test_a_rewrite_cant_lean_on_the_summarys_extra_evidence():
+    """Re-audit (high): the award fetched for the summary sat in the one shared SOURCES list, so a
+    rewrite moving it onto an unrelated bullet passed."""
+    from recrute.tailor.verify import Claim, llm_flags
+
+    p = Profile(experience=[Experience(id="e1", company="Acme", title="Engineer", bullets=[
+        ProfileItem(id="b1", text="Ran triage.")])],
+        awards=[ProfileItem(id="a1", text="Regional Defense Finals 2026")])
+    router = FakeRouter({"verify": {"flags": []}})
+    llm_flags(p, [Claim("resume.bullet:b1", "Ran triage that won Regional Defense Finals 2026.",
+                        "rewrite", ["b1", "e1"]),
+                  Claim("resume.summary", "Captain at Regional Defense Finals 2026.", "summary",
+                        ["e1"])], router)
+    prompt = router.calls[0][1]
+    sources = prompt.split("\nSOURCES\n", 1)[1].split("OTHER PROFILE ITEMS", 1)[0]
+    other = prompt.split("OTHER PROFILE ITEMS", 1)[1].split("CLAIMS", 1)[0]
+    assert "[a1]" not in sources and "[a1]" in other
+    assert "never for a bullet rewrite" in other
+    assert "moved onto it is a block" in prompt
+
+
+def test_a_pointer_holding_a_marker_still_holds_its_item():
+    """Re-audit: dropping '(see Projects; confirm scope)' from the source dropped its marker."""
+    from recrute.tailor.ingest import hold_marked_in_source, strip_xrefs
+
+    p = Profile(experience=[Experience(id="e", company="Acme", title="Engineer", bullets=[
+        ProfileItem(id="b", text="Reduced alert noise by 40%.")])])
+    out = hold_marked_in_source(
+        p, "Acme, Engineer\n- Reduced alert noise by 40%. (see Projects; confirm number)")
+    assert out.experience[0].bullets == []
+    kept = strip_xrefs(Profile(awards=[ProfileItem(id="a", text="Won the finals (see Projects; "
+                                                   "confirm year)")]))
+    assert "confirm year" in kept.awards[0].text
+
+
+def test_a_saved_item_with_a_pointer_still_matches_on_reingest():
+    """Re-audit: a saved profile from before pointers were dropped still has them."""
+    from recrute.tailor.ingest import merge_profiles
+
+    old = Profile(experience=[Experience(id="e", company="Acme", title="Engineer", bullets=[
+        ProfileItem(id="old-1", text="Ran triage (see the Range project for details).",
+                    tags=["soc"], context="My own note.")])])
+    new = Profile(experience=[Experience(id="e", company="Acme", title="Engineer", bullets=[
+        ProfileItem(id="new-1", text="Ran triage.")])])
+    b = merge_profiles(new, old).experience[0].bullets[0]
+    assert (b.id, b.tags, b.context) == ("old-1", ["soc"], "My own note.")
+
+
+def test_pointers_leave_the_summary_headline_and_education_too():
+    from recrute.schemas import Education
+    from recrute.tailor.ingest import strip_xrefs
+
+    p = strip_xrefs(Profile(summary="Security engineer (see Experience).",
+                            headline="Engineer (see below)",
+                            education=[Education(id="u", school="Northfield", details=[
+                                "Thesis on triage (see Projects)", "(see Projects)"])]))
+    assert (p.summary, p.headline) == ("Security engineer.", "Engineer")
+    assert p.education[0].details == ["Thesis on triage"]

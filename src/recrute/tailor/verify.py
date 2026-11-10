@@ -247,8 +247,12 @@ Report only problems:
   credential, outcome, responsibility or personal fact that the facts don't contain).
 - warn: supported but inflated or stretched (e.g. "led" where the source says "helped", broader
   scope or stronger result than the source).
-Anything supported by the SOURCES or PROFILE FACTS is fine (even if not cited): do NOT report
-it. Rewording with the same meaning is fine; statements about the job or company are fine.
+Anything supported by the SOURCES, OTHER PROFILE ITEMS or PROFILE FACTS is fine (even if not
+cited), except as below: do NOT report it. Rewording with the same meaning is fine; statements
+about the job or company are fine.
+- A [resume.bullet:...] claim rewrites ONE bullet: it must be supported by the bullet it cites
+  and that bullet's role or project. A fact from any other item (another bullet, an award, an
+  OTHER PROFILE ITEM) moved onto it is a block, even though that item is in the profile.
 {saved_rule}
 where = the claim's [where]; text = the offending phrase; reason = short. No problems: flags=[].
 
@@ -257,7 +261,7 @@ PROFILE FACTS
 {saved}
 SOURCES
 {sources}
-
+{other}
 CLAIMS
 {claims}"""
 
@@ -548,7 +552,7 @@ def llm_flags(profile: Profile, claims: list[Claim], router: Completer,
     if not claims:
         return []
     cited = [i for c in claims for i in c.cited_ids]
-    cited += _uncited_support(profile, claims)
+    other = [i for i in _uncited_support(profile, claims) if i not in cited]
     claim_lines = []
     for c in claims:
         q = f" (Q: {c.question}" + (f" | details: {c.detail}" if c.detail else "") + ")" \
@@ -561,6 +565,10 @@ def llm_flags(profile: Profile, claims: list[Claim], router: Completer,
                                   saved_rule=(_SAVED_RULE if evidence else "")
                                   + _never_rule(profile),
                                   sources="\n".join(_source_lines(profile, cited)) or "(none)",
+                                  other=("OTHER PROFILE ITEMS (evidence for the summary, cover "
+                                         "letter and answers only; never for a bullet rewrite)\n"
+                                         + "\n".join(_source_lines(profile, other)) + "\n")
+                                  if other else "",
                                   claims="\n".join(claim_lines))
     raw = parse_llm(_Flags, router.complete("verify", prompt, schema=VERIFY_SCHEMA,
                                             system=VERIFY_SYSTEM), "verifier")

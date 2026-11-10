@@ -250,8 +250,15 @@ def _unique(base: str, used: set[str]) -> str:
 _XREF_RE = re.compile(r"\s*\((?:see|cf\.?)\s[^()]*\)", re.IGNORECASE)
 
 
+def _without_xrefs(text: str) -> str:
+    """`text` without its pointers, except one holding a marker ("(see Projects; confirm
+    number)" is a note about this item: it stays, to be held)."""
+    return _XREF_RE.sub(lambda m: m.group(0) if _UNCONFIRMED_RE.search(m.group(0))
+                        or _NOTE_MARKER_RE.search(m.group(0)) else "", text)
+
+
 def _drop_xrefs(text: str) -> str:
-    return " ".join(_XREF_RE.sub("", text).split()) if text else text
+    return " ".join(_without_xrefs(text).split()) if text else text
 
 
 def strip_xrefs(profile: Profile) -> Profile:
@@ -263,6 +270,10 @@ def strip_xrefs(profile: Profile) -> Profile:
                 if _drop_xrefs(it.text)]
 
     return profile.model_copy(update={
+        "summary": _drop_xrefs(profile.summary), "headline": _drop_xrefs(profile.headline),
+        "education": [ed.model_copy(update={"details": [d for d in map(_drop_xrefs, ed.details)
+                                                        if d]})
+                      for ed in profile.education],
         "experience": [e.model_copy(update={"summary": _drop_xrefs(e.summary),
                                             "bullets": items(e.bullets)})
                        for e in profile.experience],
@@ -427,7 +438,7 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
     of the same name ("Incident response [confirm whether each incident ...]")."""
     raw = source_text.splitlines()
     # (pointers are dropped from items, so from the source lines they're found in too)
-    lines = [_plain_line(_XREF_RE.sub("", ln)) for ln in raw]
+    lines = [_plain_line(_without_xrefs(ln)) for ln in raw]
     # a marker on a heading holds everything under it, until a heading of its level or above
     # ("## Projects [confirm each before use]" holds each "### Range" below it)
     inherited: list[bool] = []
@@ -982,10 +993,13 @@ def _merge_items(new: list[ProfileItem], old: list[ProfileItem], ids: _Ids,
     remaining = list(old)
     matched: dict[int, ProfileItem] = {}
     for item in new:
-        best = max(remaining, key=lambda o: _similar(o.text, item.text), default=None)
-        if best is not None and _similar(best.text, item.text) < 88:
-            best = next((o for o in remaining if o.id == item.id
-                         and _similar(o.text, item.text) >= 70), None)
+        # (pointer-free on both sides: a saved profile from before pointers were dropped)
+        text = _drop_xrefs(item.text)
+        scores = {id(o): _similar(_drop_xrefs(o.text), text) for o in remaining}
+        best = max(remaining, key=lambda o: scores[id(o)], default=None)
+        if best is not None and scores[id(best)] < 88:
+            best = next((o for o in remaining if o.id == item.id and scores[id(o)] >= 70),
+                        None)
         if best is not None:
             remaining.remove(best)
             matched[id(item)] = best
