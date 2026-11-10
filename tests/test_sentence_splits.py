@@ -12,6 +12,13 @@ import pytest
     ("Works with Acme Inc. on triage. Leads the SOC.",
      ["Works with Acme Inc. on triage.", "Leads the SOC."]),
     ("One. Two? Three.", ["One.", "Two?", "Three."]),
+    ("Engineer. B.Tech. in IT from Riverside. Then more.",
+     ["Engineer.", "B.Tech. in IT from Riverside.", "Then more."]),
+    ("Researcher. Ph.D. in CS. Done.", ["Researcher.", "Ph.D. in CS.", "Done."]),
+    ("I built tools at Acme Inc. I secured networks.",
+     ["I built tools at Acme Inc.", "I secured networks."]),
+    ("Works in the U.S. He leads triage.", ["Works in the U.S.", "He leads triage."]),
+    ("We met Dr. Smith. Then left.", ["We met Dr. Smith.", "Then left."]),
     ("No period at the end", ["No period at the end"])])
 def test_split_sentences(text, sentences):
     from recrute.tailor.common import split_sentences
@@ -38,3 +45,12 @@ def test_a_letter_is_trimmed_by_whole_sentences():
              "Northfield State University in the year it opened.", "Thanks."]
     out = limit_words(paras, 15)
     assert not any(p.rstrip().endswith("M.S.") for p in out)
+
+
+def test_a_letter_keeps_a_whole_sentence_ending_in_an_abbreviation():
+    """Re-audit: 'I built tools at Acme Inc. I secured networks.' was one 'sentence', so
+    trimming it dropped both."""
+    from recrute.tailor.cover_letter import limit_words
+
+    assert limit_words(["I built tools at Acme Inc. I secured networks."], 6) == [
+        "I built tools at Acme Inc."]
