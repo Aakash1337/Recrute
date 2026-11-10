@@ -699,3 +699,46 @@ def test_any_declining_race_answer_declines_the_hispanic_question(decline):
                      options=["Yes", "No", "Decline To Self Identify"])
     a = match_question(q, bank)
     assert a is not None and a.value == "Decline To Self Identify"
+
+
+def test_the_questions_own_status_words_dont_excuse_a_yes():
+    """Re-audit: 'CPTS is expected for this role' in the question excused a 'Yes'."""
+    from recrute.schemas import Certification
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    p = Profile(certifications=[Certification(id="c", name="HTB CPTS (in progress)")])
+    q = FormQuestion(id="q", label="HTB CPTS is expected for this role. Do you hold it?",
+                     type="select", options=["Yes", "No"])
+    claims = collect_claims(p, answers=[FormAnswer(question_id="q", value="Yes",
+                                                   source="llm_new")], questions=[q])
+    assert any("isn't held" in f.reason for f in deterministic_flags(p, claims))
+
+
+@pytest.mark.parametrize("race,answer", [("Decline (Not Hispanic or Latino)",
+                                          "Decline To Self Identify"),
+                                         ("No answer", None)])
+def test_a_refusal_or_a_bare_no_isnt_read_as_hispanic_origin(race, answer):
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"eeo": bank.eeo.model_copy(update={"race_ethnicity": race})})
+    q = FormQuestion(id="q", label="Are you Hispanic/Latino?", type="select",
+                     options=["Yes", "No", "Decline To Self Identify"])
+    a = match_question(q, bank)
+    assert (a.value if a else None) == answer
+
+
+def test_a_location_picker_of_offices_isnt_taken_for_states():
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"contact": bank.contact.model_copy(
+        update={"current_city": "Seattle, WA"})})
+    q = FormQuestion(id="q", label="Where are you located?", type="select",
+                     options=["Washington", "London", "Remote"])
+    a = match_question(q, bank)
+    assert a is None or a.value != "Washington"

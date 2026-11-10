@@ -383,7 +383,10 @@ def _claimed_text(c: Claim, job: JobContext | None) -> str:
         # level?"), unless it names one of the question's own alternatives (picking "Bedrock"
         # from "LangChain, LlamaIndex or Bedrock?" claims Bedrock only); free text claims only
         # what it says
-        text = f"{c.question} {c.detail} {text}"
+        # (the question's own words never excuse your answer: "Do you hold the CPTS? CPTS is
+        # expected for this role" + "Yes" claims you hold it)
+        asked = _NOT_EARNED_RE.sub(" ", f"{c.question} {c.detail}")
+        text = f"{asked} {text}"
     return text
 
 

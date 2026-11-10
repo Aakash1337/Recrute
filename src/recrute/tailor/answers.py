@@ -1105,6 +1105,8 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
             return bank.eeo.race_ethnicity or "decline"
         case "eeo_hispanic":
             race = bank.eeo.race_ethnicity or "decline"
+            if _DECLINE_RE.search(race):  # (a refusal stays a refusal, whatever else it says)
+                return race
             # a combined race/ethnicity picker holding your exact answer (case aside)
             exact = [o for o in q.options if _norm_option(o) == _norm_option(race)]
             if len(exact) == 1:
@@ -1114,7 +1116,9 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
             if part:
                 return part.group(1)
             # (a race answer saying nothing of Hispanic origin doesn't answer it: you do)
-            return race if _DECLINE_RE.search(race) or _polarity("eeo_hispanic", race) else None
+            # ("No answer" is not "not Hispanic": only a race answer naming Hispanic origin)
+            named = re.search(r"\b(?:hispanic|latin[oax])\b", race, re.IGNORECASE)
+            return race if named and _polarity("eeo_hispanic", race) else None
         case "eeo_veteran":
             return bank.eeo.veteran_status or "decline"
         case "eeo_disability":
@@ -1132,8 +1136,13 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
             return getattr(c, kind) or None
         case "city":
             # a picker of states ("Where are you located?": Alabama, Alaska, ...): your state
+            from recrute.location import US_STATES
+
             state = state_from_city(c.current_city)
-            if q.options and state and state in q.options and c.current_city not in q.options:
+            states = set(US_STATES.values())
+            # (only a list that IS states: "Washington" among offices may be the city or DC)
+            if q.options and state and state in q.options and c.current_city not in q.options \
+                    and sum(o in states for o in q.options) * 2 > len(q.options):
                 return state
             return c.current_city or None
         case "phone_country":
