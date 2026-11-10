@@ -491,6 +491,9 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
                 note = _UNCONFIRMED_RE.search(rest)
                 if note and (not listed or long_notes or len(note.group(0)) <= 30):
                     return True
+                # (a pointer kept for its marker is a note: "(see Projects; verify number)")
+                if any(_NOTE_MARKER_RE.search(x) for x in _XREF_RE.findall(rest)):
+                    return True
                 below = lines[n + 1] if n + 1 < len(lines) else ""
                 if not listed and re.match(r"[\[(]", below) and _UNCONFIRMED_RE.match(below):
                     return True
@@ -627,7 +630,8 @@ def hold_unconfirmed(profile: Profile) -> Profile:
         for it in items:
             # (any marked note holds the whole item: "(amount: confirm)" on "$2M budget" is
             # about the very claim that would remain)
-            if marked(it.text) or noted(it.context, *it.metrics):
+            # (a pointer in the text is a note too: "(see Projects; needs confirmation)")
+            if marked(it.text) or noted(it.context, *it.metrics, *_XREF_RE.findall(it.text)):
                 held.append(note(where, it.text, it.context))
             else:
                 out.append(it)
@@ -637,6 +641,7 @@ def hold_unconfirmed(profile: Profile) -> Profile:
     for e in profile.experience:
         where = f"{e.title} @ {e.company}"
         if marked(e.title, e.summary, e.company, e.location, e.start, e.end) or \
+                noted(*_XREF_RE.findall(e.summary)) or \
                 _STATUS_ONLY_RE.fullmatch(e.summary) or _INSTRUCTION_SUMMARY_RE.match(e.summary):
             # (a summary that is just "Unverified", or "Confirm exact title on record.")
             held.append(note(where, f"the whole role ({e.start} to {e.end})", e.summary))
@@ -645,8 +650,8 @@ def hold_unconfirmed(profile: Profile) -> Profile:
         experience.append(e.model_copy(update={"bullets": keep_items(where, e.bullets)}))
     projects = []
     for p in profile.projects:
-        if marked(p.name, p.summary, p.url) or _STATUS_ONLY_RE.fullmatch(p.summary) or \
-                _INSTRUCTION_SUMMARY_RE.match(p.summary):
+        if marked(p.name, p.summary, p.url) or noted(*_XREF_RE.findall(p.summary)) or \
+                _STATUS_ONLY_RE.fullmatch(p.summary) or _INSTRUCTION_SUMMARY_RE.match(p.summary):
             held.append(note(f"project {p.name}", p.summary or p.name))
             held.extend(note(f"project {p.name}", b.text, b.context) for b in p.bullets)
             continue

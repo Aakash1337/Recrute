@@ -475,7 +475,7 @@ def classify_question(q: FormQuestion) -> str | None:
     """The bank/profile field a question asks for, or None (-> grounded LLM drafting)."""
     if q.type == "file":
         return None
-    if _HEADING_LABEL.fullmatch(clean_label(q.label).strip(" :*")) and q.description.strip():
+    if _is_heading(q):
         # "Authorization": the question is the description
         q = q.model_copy(update={"label": q.description, "description": ""})
     core = field_core(q.label)
@@ -530,12 +530,11 @@ _SCOPE = rf"(?P<scope>{_S_BOTH}|{_S_NOW}|{_S_FUT})"
 _US = r"(?:the )?(?:united states(?: of america)?|u\.?s\.?(?:a\.?)?|usa|us)"
 _WHAT = (r"(?:(?:employer|company|visa|immigration|work visa|employment visa|h-?1b(?: visa)?) )?"
          r"sponsorship|visa support|an? (?:employer|company) to sponsor (?:you|your visa)|"
-         # "require us / Acme to provide (immigration-related support or) sponsorship": one
-         # name or "us", never "UK employers" or "Acme Canada"
+         # "require us / Acme to provide sponsorship": one name or "us", never "UK employers"
+         # or "Acme Canada". ("Immigration-related support" is broader, e.g. a STEM OPT
+         # training plan: yours to answer.)
          r"(?P<sponsor>us|the company|the employer|an employer|your employer|[a-z0-9&.'-]+) "
-         r"to provide (?:immigration[- ]"
-         r"related support or |visa support or )?(?:visa |immigration |employment )?"
-         r"sponsorship")
+         r"to provide (?:visa support or )?(?:visa |immigration |employment )?sponsorship")
 _PURPOSE = (rf"(?:for (?:an? )?(?:employment |work )?visa(?: status)?|for employment(?: visa"
             rf"(?: status)?)?|for (?:an? )?h-?1b(?: visa)?|to (?:legally |lawfully )?work"
             rf"(?: in {_US}| for us| here)?|in order to employ you)")
@@ -950,6 +949,13 @@ _NEGATED_Q = re.compile(r"\b(not|n't|never|unable|without)\b", re.IGNORECASE)
 # you authorized to legally work in the US?"
 _HEADING_LABEL = re.compile(r"((work|legal|employment|visa) )?(authori[sz]ation|eligibility|"
                             r"sponsorship)( status)?", re.IGNORECASE)
+def _is_heading(q: FormQuestion) -> bool:
+    """The label only names the topic and the question is in the description. Read as written:
+    "Work Authorization (without sponsorship)" qualifies the question, it isn't a heading."""
+    raw = " ".join(q.label.replace("*", " ").split()).strip(" :")
+    return bool(_HEADING_LABEL.fullmatch(raw)) and bool(q.description.strip())
+
+
 _PLAIN_WORK_AUTH = re.compile(
     r"(?:(are you |is the candidate )?(currently )?(legally )?(authori[sz]ed|eligible|permitted)"
     r" to (legally |lawfully )?(work|be employed)( lawfully)?|"
@@ -1046,7 +1052,7 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
         case "sponsorship":  # the whole question: conditions often sit in the description
             if not is_yes_no(q):
                 return None
-            if _HEADING_LABEL.fullmatch(label.strip(" :*")) and q.description.strip():
+            if _is_heading(q):
                 # "Sponsorship" + the question
                 return sponsorship_answer(q.description, wa, company=company, us_role=us_role)
             return sponsorship_answer(_full_question(q), wa, scope_from=q.label,
@@ -1055,7 +1061,7 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
         case "work_auth":
             if not is_yes_no(q):
                 return None
-            if _HEADING_LABEL.fullmatch(label.strip(" :*")) and q.description.strip():
+            if _is_heading(q):
                 return work_auth_answer(q.description, wa)  # "Authorization" + the question
             return work_auth_answer(_full_question(q), wa)
         case "relocate":

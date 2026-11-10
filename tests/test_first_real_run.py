@@ -85,8 +85,7 @@ _LATER = WorkAuthorization(authorized_to_work_in_us=True, requires_sponsorship_n
 
 @pytest.mark.parametrize("label", [
     "Do you now, or will you in the future, require sponsorship?",
-    "Will you now or in the future require Acme to provide immigration-related support or "
-    "sponsorship in order to employ you?",
+    "Will you now or in the future require Acme to provide sponsorship in order to employ you?",
     "Will you now or in the future require us to provide sponsorship?"])
 def test_common_sponsorship_phrasings_are_answered(label):
     assert sponsorship_answer(label, _NO, company="Acme Corp", us_role=True) is False
@@ -107,9 +106,12 @@ def test_a_named_sponsor_must_be_this_us_employer(label, us_role):
 @pytest.mark.parametrize("label", [
     "Do you now, or will you in the future, require sponsorship to work in Canada?",
     "Do you now, or did you in the past, require sponsorship?",
-    "Will you now or in the future require Acme to provide relocation support?"])
+    "Will you now or in the future require Acme to provide relocation support?",
+    # (broader than sponsorship: a STEM OPT training plan is immigration-related support)
+    "Will you now or in the future require Acme to provide immigration-related support or "
+    "sponsorship in order to employ you?"])
 def test_other_sponsorship_questions_stay_yours(label):
-    assert sponsorship_answer(label, _NO) is None
+    assert sponsorship_answer(label, _NO, company="Acme Corp", us_role=True) is None
 
 
 @pytest.mark.parametrize("label,answer", [
@@ -436,3 +438,41 @@ def test_pointers_leave_the_summary_headline_and_education_too():
                                 "Thesis on triage (see Projects)", "(see Projects)"])]))
     assert (p.summary, p.headline) == ("Security engineer.", "Engineer")
     assert p.education[0].details == ["Thesis on triage"]
+
+
+@pytest.mark.parametrize("label", ["Work Authorization (without sponsorship)",
+                                   "Work Authorization [for any employer]",
+                                   "Authorization (permanent)"])
+def test_a_qualified_heading_is_not_a_bare_heading(label):
+    """Re-audit: brackets were dropped before deciding a label was just a heading."""
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank().model_copy(update={"work_authorization": _LATER})
+    q = FormQuestion(id="q", label=label, description="Are you authorized to work in the US?",
+                     type="radio", options=["Yes", "No"])
+    assert match_question(q, bank) is None
+
+
+@pytest.mark.parametrize("note", ["needs confirmation", "verify", "decide whether to list"])
+def test_a_pointer_kept_for_its_marker_holds_its_item(note):
+    """Re-audit: a pointer kept for 'needs confirmation' didn't hold its item, and printed."""
+    from recrute.tailor.ingest import _Extracted, strip_xrefs, to_profile
+
+    p = strip_xrefs(to_profile(_Extracted.model_validate({
+        "awards": [{"text": f"Won the finals (see Projects; {note})"},
+                   {"text": "Ran the club (see Projects)"}]})))
+    assert [a.text for a in p.awards] == ["Ran the club"]
+    assert any("Won the finals" in u for u in p.unconfirmed)
+
+
+@pytest.mark.parametrize("note", ["verify number", "decide whether to use"])
+def test_the_backstop_reads_a_marker_in_a_pointer(note):
+    from recrute.tailor.ingest import hold_marked_in_source
+
+    p = Profile(experience=[Experience(id="e", company="Acme", title="Engineer", bullets=[
+        ProfileItem(id="b", text="Reduced alert noise by 40%.")])])
+    out = hold_marked_in_source(
+        p, f"Acme, Engineer\n- Reduced alert noise by 40%. (see Projects; {note})")
+    assert out.experience[0].bullets == []
