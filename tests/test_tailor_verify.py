@@ -1,4 +1,5 @@
 import copy
+import re
 
 import pytest
 from test_tailor_support import SELECT_OUT, FakeRouter, make_job, make_profile
@@ -111,7 +112,8 @@ def test_llm_pass_merged_with_deterministic():
     claims = collect_claims(profile, sel)
     flags = verify(profile, claims, router=router, job=make_job())
     prompt = router.calls[0][1]
-    assert "[exp-northwind-health-b2] Wrote 12 Sigma" in prompt  # cited source included
+    # cited source included, with the role it belongs to
+    assert re.search(r"\[exp-northwind-health-b2\] \([^)]* @ [^)]*\) Wrote 12 Sigma", prompt)
     assert "[resume.bullet:exp-northwind-health-b2] cites" in prompt
     by_text = {f.text: f for f in flags}
     assert by_text["Led a team"].severity == "block"

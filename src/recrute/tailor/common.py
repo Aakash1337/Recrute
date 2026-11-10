@@ -100,8 +100,16 @@ def _us_only(locations: list[str]) -> bool:
     """Every listed location is in the US and only the US (not "Worldwide", "US / Canada")."""
     from recrute.location import us_exclusive
 
-    locs = [loc for loc in locations if loc and loc.strip()]
-    return bool(locs) and all(us_exclusive(loc) for loc in locs)
+    locs = [loc.strip() for loc in locations if loc and loc.strip()]
+    us = [loc for loc in locs if us_exclusive(loc)]
+    # a bare office name that is the city of another listed location saying "United States" is
+    # that place ("Columbus" beside "Columbus, Ohio, United States"); never "Cambridge" beside
+    # "Cambridge, MA" (there's one in the UK) or a word like "Remote"
+    cities = {loc.split(",")[0].strip().casefold() for loc in us
+              if "," in loc and re.search(r"\b(united states|usa)\b", loc, re.IGNORECASE)}
+    generic = {"remote", "hybrid", "anywhere", "onsite", "on-site", "in office", "flexible"}
+    return bool(us) and all(
+        loc in us or ("," not in loc and loc.casefold() in cities - generic) for loc in locs)
 
 
 @dataclass
@@ -457,6 +465,17 @@ def item_lines(profile: Profile, ids: Iterable[str], *, ctx_chars: int = 300) ->
     return out
 
 
+def _place_names(location: str) -> str:
+    """A US location's state spelled out: "Columbus, OH" is also "Columbus, Ohio". (Not the
+    country: living there says nothing about citizenship or work authorization.)"""
+    from recrute.location import US_STATES, us_exclusive
+
+    m = re.search(r",\s*([A-Z]{2})\b", location)
+    if not (m and m.group(1) in US_STATES and us_exclusive(location)):
+        return ""
+    return f" ({US_STATES[m.group(1)]})"
+
+
 def background_facts(profile: Profile, *, name: bool = True) -> str:
     """Compact non-bullet facts: roles, education, certifications, skills. `name=False` for what
     goes to the LLM, which has no use for it (a letter's body has no greeting or sign-off)."""
@@ -464,7 +483,7 @@ def background_facts(profile: Profile, *, name: bool = True) -> str:
     if profile.headline:
         lines.append(f"Headline: {profile.headline}")
     if profile.location:
-        lines.append(f"Location: {profile.location}")
+        lines.append(f"Location: {profile.location}{_place_names(profile.location)}")
     lines += [f"Role: {e.title} @ {e.company} ({e.start}–{e.end or 'present'})"
               for e in profile.experience]
     lines += [f"Project: {p.name}" + (f" ({', '.join(p.tech)})" if p.tech else "")

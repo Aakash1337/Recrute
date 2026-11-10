@@ -245,6 +245,44 @@ def _unique(base: str, used: set[str]) -> str:
     return cand
 
 
+# A pointer to elsewhere in the bank ("(see Projects)", "(see the assistant below)") is a note
+# to whoever reads the bank, never resume text, and says nothing of its own: it's dropped.
+_XREF_RE = re.compile(r"\s*\((?:see|cf\.?)\s[^()]*\)", re.IGNORECASE)
+
+
+def _without_xrefs(text: str) -> str:
+    """`text` without its pointers, except one holding a marker ("(see Projects; confirm
+    number)" is a note about this item: it stays, to be held)."""
+    return _XREF_RE.sub(lambda m: m.group(0) if _UNCONFIRMED_RE.search(m.group(0))
+                        or _NOTE_MARKER_RE.search(m.group(0)) else "", text)
+
+
+def _drop_xrefs(text: str) -> str:
+    return " ".join(_without_xrefs(text).split()) if text else text
+
+
+def strip_xrefs(profile: Profile) -> Profile:
+    """Every "(see ...)" pointer out of what a resume can print: bullets, awards, extras, role
+    and project summaries. Before the merge with your saved profile (whose text has none), and
+    the source backstop drops them from the source too."""
+    def items(group: list[ProfileItem]) -> list[ProfileItem]:
+        return [it.model_copy(update={"text": _drop_xrefs(it.text)}) for it in group
+                if _drop_xrefs(it.text)]
+
+    return profile.model_copy(update={
+        "summary": _drop_xrefs(profile.summary), "headline": _drop_xrefs(profile.headline),
+        "education": [ed.model_copy(update={"details": [d for d in map(_drop_xrefs, ed.details)
+                                                        if d]})
+                      for ed in profile.education],
+        "experience": [e.model_copy(update={"summary": _drop_xrefs(e.summary),
+                                            "bullets": items(e.bullets)})
+                       for e in profile.experience],
+        "projects": [p.model_copy(update={"summary": _drop_xrefs(p.summary),
+                                          "bullets": items(p.bullets)})
+                     for p in profile.projects],
+        "awards": items(profile.awards), "extra": items(profile.extra)})
+
+
 def _items(prefix: str, raw: list[_Item], used: set[str]) -> list[ProfileItem]:
     out = []
     for i, it in enumerate(raw, 1):
@@ -399,7 +437,8 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
     it, holds it. A long bracketed note after a heading is about a whole section, not a list item
     of the same name ("Incident response [confirm whether each incident ...]")."""
     raw = source_text.splitlines()
-    lines = [_plain_line(ln) for ln in raw]
+    # (pointers are dropped from items, so from the source lines they're found in too)
+    lines = [_plain_line(_without_xrefs(ln)) for ln in raw]
     # a marker on a heading holds everything under it, until a heading of its level or above
     # ("## Projects [confirm each before use]" holds each "### Range" below it)
     inherited: list[bool] = []
@@ -451,6 +490,9 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
                     rest = re.split(r"[:|\u2022]", rest, maxsplit=1)[0]
                 note = _UNCONFIRMED_RE.search(rest)
                 if note and (not listed or long_notes or len(note.group(0)) <= 30):
+                    return True
+                # (a pointer kept for its marker is a note: "(see Projects; verify number)")
+                if any(_NOTE_MARKER_RE.search(x) for x in _XREF_RE.findall(rest)):
                     return True
                 below = lines[n + 1] if n + 1 < len(lines) else ""
                 if not listed and re.match(r"[\[(]", below) and _UNCONFIRMED_RE.match(below):
@@ -588,7 +630,8 @@ def hold_unconfirmed(profile: Profile) -> Profile:
         for it in items:
             # (any marked note holds the whole item: "(amount: confirm)" on "$2M budget" is
             # about the very claim that would remain)
-            if marked(it.text) or noted(it.context, *it.metrics):
+            # (a pointer in the text is a note too: "(see Projects; needs confirmation)")
+            if marked(it.text) or noted(it.context, *it.metrics, *_XREF_RE.findall(it.text)):
                 held.append(note(where, it.text, it.context))
             else:
                 out.append(it)
@@ -598,6 +641,7 @@ def hold_unconfirmed(profile: Profile) -> Profile:
     for e in profile.experience:
         where = f"{e.title} @ {e.company}"
         if marked(e.title, e.summary, e.company, e.location, e.start, e.end) or \
+                noted(*_XREF_RE.findall(e.summary)) or \
                 _STATUS_ONLY_RE.fullmatch(e.summary) or _INSTRUCTION_SUMMARY_RE.match(e.summary):
             # (a summary that is just "Unverified", or "Confirm exact title on record.")
             held.append(note(where, f"the whole role ({e.start} to {e.end})", e.summary))
@@ -606,8 +650,8 @@ def hold_unconfirmed(profile: Profile) -> Profile:
         experience.append(e.model_copy(update={"bullets": keep_items(where, e.bullets)}))
     projects = []
     for p in profile.projects:
-        if marked(p.name, p.summary, p.url) or _STATUS_ONLY_RE.fullmatch(p.summary) or \
-                _INSTRUCTION_SUMMARY_RE.match(p.summary):
+        if marked(p.name, p.summary, p.url) or noted(*_XREF_RE.findall(p.summary)) or \
+                _STATUS_ONLY_RE.fullmatch(p.summary) or _INSTRUCTION_SUMMARY_RE.match(p.summary):
             held.append(note(f"project {p.name}", p.summary or p.name))
             held.extend(note(f"project {p.name}", b.text, b.context) for b in p.bullets)
             continue
@@ -954,10 +998,13 @@ def _merge_items(new: list[ProfileItem], old: list[ProfileItem], ids: _Ids,
     remaining = list(old)
     matched: dict[int, ProfileItem] = {}
     for item in new:
-        best = max(remaining, key=lambda o: _similar(o.text, item.text), default=None)
-        if best is not None and _similar(best.text, item.text) < 88:
-            best = next((o for o in remaining if o.id == item.id
-                         and _similar(o.text, item.text) >= 70), None)
+        # (pointer-free on both sides: a saved profile from before pointers were dropped)
+        text = _drop_xrefs(item.text)
+        scores = {id(o): _similar(_drop_xrefs(o.text), text) for o in remaining}
+        best = max(remaining, key=lambda o: scores[id(o)], default=None)
+        if best is not None and scores[id(best)] < 88:
+            best = next((o for o in remaining if o.id == item.id and scores[id(o)] >= 70),
+                        None)
         if best is not None:
             remaining.remove(best)
             matched[id(item)] = best
@@ -1193,7 +1240,7 @@ def ingest_resume(paths: Paths, router: Completer, *, apply: bool = False) -> In
     source_text = "\n\n".join(f"=== {name} ===\n{text}" for name, text in sources)
     raw = router.complete("extract", EXTRACT_PROMPT.format(source=source_text),
                           schema=EXTRACT_SCHEMA, system=EXTRACT_SYSTEM)
-    profile = to_profile(parse_llm(_Extracted, raw, "profile ingest"))
+    profile = strip_xrefs(to_profile(parse_llm(_Extracted, raw, "profile ingest")))
     ensure_unique_ids(profile)
 
     target = profile_path(paths)

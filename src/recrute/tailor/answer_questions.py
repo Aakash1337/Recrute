@@ -587,7 +587,8 @@ def answer_questions(questions: list[FormQuestion], *, profile: Profile, bank: A
                                     value=_fit_length(cover_letter_text, q.max_length),
                                     source="default", confidence=0.8, needs_review=False)
             continue
-        hit = match_question(q, bank, priority=priority, us_role=bool(job and job.us_only))
+        hit = match_question(q, bank, priority=priority, us_role=bool(job and job.us_only),
+                             company=job.company if job else "")
         if hit is None and not _bank_decides(q, bank):
             hit = profile_answer(q, profile)
         if hit is not None:

@@ -33,10 +33,12 @@ from recrute.tailor.common import (
     never_claim_lines,
     never_claim_terms,
     never_term_pattern,
+    number_forms,
     obj,
     parse_llm,
     plain_quotes,
     profile_texts,
+    truncate,
 )
 
 ClaimKind = Literal["rewrite", "summary", "cover_letter", "answer"]
@@ -245,8 +247,12 @@ Report only problems:
   credential, outcome, responsibility or personal fact that the facts don't contain).
 - warn: supported but inflated or stretched (e.g. "led" where the source says "helped", broader
   scope or stronger result than the source).
-Anything supported by the SOURCES or PROFILE FACTS is fine (even if not cited): do NOT report
-it. Rewording with the same meaning is fine; statements about the job or company are fine.
+Anything supported by the SOURCES, OTHER PROFILE ITEMS or PROFILE FACTS is fine (even if not
+cited), except as below: do NOT report it. Rewording with the same meaning is fine; statements
+about the job or company are fine.
+- A [resume.bullet:...] claim rewrites ONE bullet: it must be supported by the bullet it cites
+  and that bullet's role or project. A fact from any other item (another bullet, an award, an
+  OTHER PROFILE ITEM) moved onto it is a block, even though that item is in the profile.
 {saved_rule}
 where = the claim's [where]; text = the offending phrase; reason = short. No problems: flags=[].
 
@@ -255,7 +261,7 @@ PROFILE FACTS
 {saved}
 SOURCES
 {sources}
-
+{other}
 CLAIMS
 {claims}"""
 
@@ -306,8 +312,16 @@ def _status_attached(text: str, end: int, names: list[str]) -> bool:
             break  # (some other note: "(Hack The Box)", then ", expected 2027" may follow)
         rest = rest[rest.index(note) + len(note):]
     rest = re.sub(r"^\s*[\[(][^\[\]()]{0,60}[\])]", "", rest)  # an issuer note: "(Hack The Box)"
-    return bool(re.match(r"\s*[,:;\u2013\u2014-]?\s*(?:" + _NOT_EARNED_RE.pattern + ")", rest,
-                         re.IGNORECASE))
+    # (", currently in progress", ", still pending"; never an adjective: "targeted at senior
+    # testers", "expected of every tester")
+    if re.match(r"\s*[,:;\u2013\u2014-]?\s*(?:currently |still |now )?(?:" + _NOT_EARNED_RE.pattern
+                + r")(?!\s+(?:at|of)\b)", rest, re.IGNORECASE):
+        return True
+    # ", which is in progress": a status, in the present ("which was" is history)
+    return bool(re.match(r"\s*,?\s*(?:which|that) is (?:currently |still |now )?(?:in[- ]progress|"
+                         r"pending|underway|not yet (?:held|earned|passed|complete[d]?)|being "
+                         r"(?:pursued|studied)|(?:expected|scheduled|planned) (?:for|in|by) )",
+                         rest, re.IGNORECASE))
 
 
 def _unearned_flags(profile: Profile, texts: list[tuple[str, str]]) -> list[VerifierFlag]:
@@ -466,11 +480,79 @@ def _saved_evidence(claims: list[Claim], saved: Iterable[tuple[str, str]],
     return "PREVIOUSLY APPROVED ANSWERS\n" + "\n".join(lines) + "\n" if lines else ""
 
 
+def _stem(word: str) -> str:
+    for suffix in ("ing", "ed", "es", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+            return word[:-len(suffix)]
+    return word
+
+
+# (a whole letter states more facts than an answer)
+_PER_CLAIM = {"cover_letter": 8, "summary": 4}
+
+
+def _uncited_support(profile: Profile, claims: list[Claim], limit: int = 24) -> list[str]:
+    """Profile items backing what a claim says beyond its own citations, shown to the verifier
+    too: it otherwise blocks a true claim for a missing citation (the code check still warns).
+    Per claim, the few items backing most of what its citations lack (names, numbers: "...
+    Finals 2026" is the award, not every bullet from 2026), then those worded most like it
+    ("defending against live red teams": the bullet that says so)."""
+    background = background_facts(profile)
+    all_items = profile.all_items()
+    items = {i: SupportIndex.of(_item_support(profile, i)) for i in all_items}
+    words = {i: {_stem(w) for w in keywords(" ".join([it.text, it.context, *it.metrics]))}
+             for i, it in all_items.items()}
+    out: dict[str, None] = {}
+    # (a rewrite stands on its own bullet: another item's facts must not move onto it; the
+    # summary and letter go first, then answers)
+    order = {"summary": 0, "cover_letter": 1}
+    for c in sorted((c for c in claims if c.kind != "rewrite"),
+                    key=lambda c: order.get(c.kind, 2)):
+        own = SupportIndex.of([t for cid in c.cited_ids for t in _item_support(profile, cid)]
+                              + [background])
+        # (an answer's subject may sit in its question's help text)
+        text = f"{c.text} {c.detail}" if c.kind == "answer" else c.text
+        misses = [(u.token, {f for _, fs in number_forms(u.token) for f in fs}
+                   if u.kind == "number" else set()) for u in find_unsupported(text, own)]
+        said = {_stem(w) for w in keywords(text)}
+        ranked = []
+        for i, idx in items.items():
+            if i in c.cited_ids:
+                continue
+            backs = sum(1 for tok, forms in misses
+                        if (idx.has_number(forms) if forms else idx.has_term(tok)))
+            alike = len(said & words[i])
+            if backs or alike >= 3:
+                ranked.append((backs, alike, i))
+        for _, _, i in sorted(ranked, reverse=True)[:_PER_CLAIM.get(c.kind, 3)]:
+            out[i] = None
+    return list(out)[:limit]
+
+
+def _source_lines(profile: Profile, ids: Iterable[str]) -> list[str]:
+    """The verifier's sources: each item with its metrics and notes (the evidence it was chosen
+    for) and, for a bullet, the role or project it belongs to; entry headers as they are."""
+    items = profile.all_items()
+    owner = {b.id: f"{e.title} @ {e.company}" for e in profile.experience for b in e.bullets}
+    owner |= {b.id: f"project {p.name}" for p in profile.projects for b in p.bullets}
+    out = []
+    for i in dict.fromkeys(ids):
+        it = items.get(i)
+        if it is None:
+            out += item_lines(profile, [i])
+            continue
+        extra = "; ".join(x for x in [*it.metrics, truncate(it.context, 600)] if x)
+        where = f"({owner[i]}) " if i in owner else ""
+        out.append(f"[{i}] {where}{it.text}" + (f" ({extra})" if extra else ""))
+    return out
+
+
 def llm_flags(profile: Profile, claims: list[Claim], router: Completer,
               saved: Iterable[tuple[str, str]] = ()) -> list[VerifierFlag]:
     if not claims:
         return []
     cited = [i for c in claims for i in c.cited_ids]
+    other = [i for i in _uncited_support(profile, claims) if i not in cited]
     claim_lines = []
     for c in claims:
         q = f" (Q: {c.question}" + (f" | details: {c.detail}" if c.detail else "") + ")" \
@@ -482,7 +564,11 @@ def llm_flags(profile: Profile, claims: list[Claim], router: Completer,
                                   saved=evidence,
                                   saved_rule=(_SAVED_RULE if evidence else "")
                                   + _never_rule(profile),
-                                  sources="\n".join(item_lines(profile, cited)) or "(none)",
+                                  sources="\n".join(_source_lines(profile, cited)) or "(none)",
+                                  other=("OTHER PROFILE ITEMS (evidence for the summary, cover "
+                                         "letter and answers only; never for a bullet rewrite)\n"
+                                         + "\n".join(_source_lines(profile, other)) + "\n")
+                                  if other else "",
                                   claims="\n".join(claim_lines))
     raw = parse_llm(_Flags, router.complete("verify", prompt, schema=VERIFY_SCHEMA,
                                             system=VERIFY_SYSTEM), "verifier")
