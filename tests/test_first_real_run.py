@@ -626,3 +626,30 @@ def test_a_state_picker_for_where_you_live_gets_your_state():
                      options=["Alabama", "Alaska", "Pennsylvania", "Texas"])
     a = match_question(q, bank)
     assert a is not None and a.value == "Pennsylvania"
+
+
+def test_a_combined_race_picker_takes_your_exact_answer():
+    """Re-audit: only the Hispanic part was offered to a combined picker holding the whole."""
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"eeo": bank.eeo.model_copy(
+        update={"race_ethnicity": "White (Not Hispanic or Latino)"})})
+    q = FormQuestion(id="q", label="Race / Ethnicity / Hispanic origin", type="select",
+                     options=["Hispanic or Latino", "White (Not Hispanic or Latino)",
+                              "Asian (Not Hispanic or Latino)", "Decline to self-identify"])
+    a = match_question(q, bank)
+    assert a is not None and a.value == "White (Not Hispanic or Latino)"
+
+
+def test_a_race_answer_silent_on_hispanic_origin_doesnt_answer_it_in_text():
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank()
+    bank = bank.model_copy(update={"eeo": bank.eeo.model_copy(update={"race_ethnicity": "Asian"})})
+    q = FormQuestion(id="q", label="Are you Hispanic or Latino?", type="text")
+    assert match_question(q, bank) is None
