@@ -1105,14 +1105,16 @@ def _bank_raw(kind: str, q: FormQuestion, bank: AnswerBank,
             return bank.eeo.race_ethnicity or "decline"
         case "eeo_hispanic":
             race = bank.eeo.race_ethnicity or "decline"
-            if race in q.options:  # a combined race/ethnicity picker holding your exact answer
-                return race
+            # a combined race/ethnicity picker holding your exact answer (case aside)
+            exact = [o for o in q.options if _norm_option(o) == _norm_option(race)]
+            if len(exact) == 1:
+                return exact[0]
             # "Asian (Not Hispanic or Latino)": the part about Hispanic origin answers it
             part = re.search(r"\(([^()]*\b(?:hispanic|latin[oax])\b[^()]*)\)", race, re.IGNORECASE)
             if part:
                 return part.group(1)
             # (a race answer saying nothing of Hispanic origin doesn't answer it: you do)
-            return race if race == "decline" or _polarity("eeo_hispanic", race) else None
+            return race if _DECLINE_RE.search(race) or _polarity("eeo_hispanic", race) else None
         case "eeo_veteran":
             return bank.eeo.veteran_status or "decline"
         case "eeo_disability":
