@@ -89,8 +89,19 @@ _LATER = WorkAuthorization(authorized_to_work_in_us=True, requires_sponsorship_n
     "sponsorship in order to employ you?",
     "Will you now or in the future require us to provide sponsorship?"])
 def test_common_sponsorship_phrasings_are_answered(label):
-    assert sponsorship_answer(label, _NO) is False
-    assert sponsorship_answer(label, _LATER) is True
+    assert sponsorship_answer(label, _NO, company="Acme Corp", us_role=True) is False
+    assert sponsorship_answer(label, _LATER, company="Acme Corp", us_role=True) is True
+
+
+@pytest.mark.parametrize("label,us_role", [
+    ("Will you now or in the future require us to provide sponsorship?", False),
+    ("Will you now or in the future require Qatar to provide sponsorship?", True),
+    ("Will you now or in the future require U.K. to provide sponsorship?", True),
+    ("Will you now or in the future require Initech to provide sponsorship?", True)])
+def test_a_named_sponsor_must_be_this_us_employer(label, us_role):
+    """Re-audit: any one word was taken for the sponsor, and the job's country never checked
+    ("require us to provide sponsorship" is what a non-US employer asks too)."""
+    assert sponsorship_answer(label, _NO, company="Acme Corp", us_role=us_role) is None
 
 
 @pytest.mark.parametrize("label", [
@@ -151,33 +162,51 @@ def test_a_status_in_a_which_clause_is_attached(text, blocked):
 
 def test_a_pointer_elsewhere_in_the_bank_never_reaches_a_resume():
     """'... later given a voice mode (see Acme Austin).' printed as written on a resume."""
-    from recrute.tailor.ingest import move_xrefs
+    from recrute.tailor.ingest import strip_xrefs
 
-    p = move_xrefs(Profile(
+    p = strip_xrefs(Profile(
         projects=[Project(id="p", name="Range", summary="A cyber range (see Experience).",
                           bullets=[ProfileItem(id="b", text="Correlates feeds with assets; later "
                                                "given a voice mode (see Acme Austin).",
                                                context="Built in 2025.")])],
-        awards=[ProfileItem(id="a", text="Maintained playbooks (see Projects)")],
+        awards=[ProfileItem(id="a", text="Maintained playbooks (see Projects)"),
+                ProfileItem(id="x", text="(see Projects)")],
         experience=[Experience(id="e", company="Acme", title="Engineer", bullets=[
             ProfileItem(id="c", text="Ran triage (seen by the CISO weekly).")])]))
     b = p.projects[0].bullets[0]
     assert b.text == "Correlates feeds with assets; later given a voice mode."
-    assert "(see Acme Austin)" in b.context and "Built in 2025." in b.context
+    assert b.context == "Built in 2025."  # (your note untouched)
     assert p.projects[0].summary == "A cyber range."
-    assert p.awards[0].text == "Maintained playbooks" and "(see Projects)" in p.awards[0].context
+    assert [a.text for a in p.awards] == ["Maintained playbooks"]  # (nothing left: dropped)
     assert p.experience[0].bullets[0].text == "Ran triage (seen by the CISO weekly)."
 
 
 def test_a_pointer_doesnt_hide_a_source_marker():
-    """Re-audit: moving the pointer first changed the words the source backstop looks for."""
-    from recrute.tailor.ingest import hold_marked_in_source, move_xrefs
+    """Re-audit: without its pointer, the item no longer matched its source line, whose
+    marker the transcription had dropped."""
+    from recrute.tailor.ingest import hold_marked_in_source, strip_xrefs
 
-    p = Profile(experience=[Experience(id="e", company="Acme", title="Engineer", bullets=[
-        ProfileItem(id="b", text="Ran triage (see Projects) weekly.")])])
-    out = move_xrefs(hold_marked_in_source(
-        p, "Acme, Engineer\n- Ran triage (see Projects) weekly. [confirm scope]"))
+    bullet = ProfileItem(id="b", text="Ran triage (see Projects) weekly.")
+    p = strip_xrefs(Profile(experience=[Experience(id="e", company="Acme", title="Engineer",
+                                                   bullets=[bullet])]))
+    out = hold_marked_in_source(
+        p, "Acme, Engineer\n- Ran triage (see Projects) weekly. [confirm scope]")
     assert out.experience[0].bullets == []
+
+
+def test_a_reingest_keeps_your_notes_on_an_item_with_a_pointer():
+    """Re-audit: the new text kept its pointer while the saved one had none, so the merge lost
+    the id, tags and note."""
+    from recrute.tailor.ingest import merge_profiles, strip_xrefs
+
+    old = Profile(experience=[Experience(id="e", company="Acme", title="Engineer", bullets=[
+        ProfileItem(id="old-1", text="Ran triage.", tags=["soc"], context="My own note.")])])
+    new = strip_xrefs(Profile(experience=[Experience(id="e", company="Acme", title="Engineer",
+                                                     bullets=[ProfileItem(
+                                                         id="new-1", text="Ran triage "
+                                                         "(see the Acme Austin role).")])]))
+    b = merge_profiles(new, old).experience[0].bullets[0]
+    assert (b.id, b.tags, b.context) == ("old-1", ["soc"], "My own note.")
 
 
 def test_the_verifier_sees_the_bullet_worded_like_an_uncited_claim():
@@ -237,7 +266,7 @@ def test_a_common_year_doesnt_crowd_out_the_real_evidence():
     llm_flags(p, [Claim("resume.summary", "Captain at Regional Defense Finals 2026.", "summary",
                         ["e1"])], router)
     sources = router.calls[0][1].split("SOURCES", 1)[1].split("CLAIMS", 1)[0]
-    assert "[a1]" in sources and sources.count("Shipped release") <= 2
+    assert "[a1]" in sources and sources.count("Shipped release") <= 3
 
 
 def test_the_verifier_sees_an_items_metrics():
@@ -328,3 +357,22 @@ def test_your_city_says_nothing_about_citizenship():
     flags = deterministic_flags(p, [Claim("cover_letter", "As a United States citizen I can "
                                           "start at once.", "cover_letter", [])])
     assert any(f.severity == "block" for f in flags)
+
+
+@pytest.mark.parametrize("label,description,answer", [
+    ("Authorization", "Are you authorized to legally work in the US?", "Yes"),
+    ("Are you authorized to legally work in the US?", "", "Yes"),
+    ("Sponsorship", "Will you now or in the future require visa sponsorship?", "No"),
+    ("Work Authorization", "Are you authorized to work in Canada?", None),
+    ("Authorization", "", None)])
+def test_a_heading_label_with_its_question_in_the_description(label, description, answer):
+    """'Authorization' with the question under it was left blank: only the label was read."""
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    bank = make_bank().model_copy(update={"work_authorization": _NO})
+    q = FormQuestion(id="q", label=label, description=description, type="radio",
+                     options=["Yes", "No"])
+    a = match_question(q, bank)
+    assert (a.value if a else None) == answer

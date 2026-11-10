@@ -246,37 +246,27 @@ def _unique(base: str, used: set[str]) -> str:
 
 
 # A pointer to elsewhere in the bank ("(see Projects)", "(see the assistant below)") is a note
-# to whoever reads the bank, never resume text: it goes to the item's context.
+# to whoever reads the bank, never resume text, and says nothing of its own: it's dropped.
 _XREF_RE = re.compile(r"\s*\((?:see|cf\.?)\s[^()]*\)", re.IGNORECASE)
 
 
-def _split_xref(text: str, context: str) -> tuple[str, str]:
-    refs = [m.group(0).strip() for m in _XREF_RE.finditer(text)]
-    if not refs:
-        return text, context
-    new = [r for r in refs if r not in context]
-    return " ".join(_XREF_RE.sub("", text).split()), " ".join([context.strip(), *new]).strip()
+def _drop_xrefs(text: str) -> str:
+    return " ".join(_XREF_RE.sub("", text).split()) if text else text
 
 
-def move_xrefs(profile: Profile) -> Profile:
-    """Every "(see ...)" pointer out of what a resume can print: into an item's notes, and out
-    of role and project summaries. Run AFTER the source backstop, which finds each item's
-    source line by its words as transcribed."""
+def strip_xrefs(profile: Profile) -> Profile:
+    """Every "(see ...)" pointer out of what a resume can print: bullets, awards, extras, role
+    and project summaries. Before the merge with your saved profile (whose text has none), and
+    the source backstop drops them from the source too."""
     def items(group: list[ProfileItem]) -> list[ProfileItem]:
-        out = []
-        for it in group:
-            text, context = _split_xref(it.text, it.context)
-            out.append(it.model_copy(update={"text": text, "context": context}))
-        return out
-
-    def summary(text: str) -> str:
-        return _split_xref(text, "")[0] if text else text
+        return [it.model_copy(update={"text": _drop_xrefs(it.text)}) for it in group
+                if _drop_xrefs(it.text)]
 
     return profile.model_copy(update={
-        "experience": [e.model_copy(update={"summary": summary(e.summary),
+        "experience": [e.model_copy(update={"summary": _drop_xrefs(e.summary),
                                             "bullets": items(e.bullets)})
                        for e in profile.experience],
-        "projects": [p.model_copy(update={"summary": summary(p.summary),
+        "projects": [p.model_copy(update={"summary": _drop_xrefs(p.summary),
                                           "bullets": items(p.bullets)})
                      for p in profile.projects],
         "awards": items(profile.awards), "extra": items(profile.extra)})
@@ -436,7 +426,8 @@ def hold_marked_in_source(profile: Profile, source_text: str) -> Profile:
     it, holds it. A long bracketed note after a heading is about a whole section, not a list item
     of the same name ("Incident response [confirm whether each incident ...]")."""
     raw = source_text.splitlines()
-    lines = [_plain_line(ln) for ln in raw]
+    # (pointers are dropped from items, so from the source lines they're found in too)
+    lines = [_plain_line(_XREF_RE.sub("", ln)) for ln in raw]
     # a marker on a heading holds everything under it, until a heading of its level or above
     # ("## Projects [confirm each before use]" holds each "### Range" below it)
     inherited: list[bool] = []
@@ -1230,7 +1221,7 @@ def ingest_resume(paths: Paths, router: Completer, *, apply: bool = False) -> In
     source_text = "\n\n".join(f"=== {name} ===\n{text}" for name, text in sources)
     raw = router.complete("extract", EXTRACT_PROMPT.format(source=source_text),
                           schema=EXTRACT_SCHEMA, system=EXTRACT_SYSTEM)
-    profile = to_profile(parse_llm(_Extracted, raw, "profile ingest"))
+    profile = strip_xrefs(to_profile(parse_llm(_Extracted, raw, "profile ingest")))
     ensure_unique_ids(profile)
 
     target = profile_path(paths)
@@ -1245,7 +1236,7 @@ def ingest_resume(paths: Paths, router: Completer, *, apply: bool = False) -> In
         trusted = {i.context for i in old.all_items().values() if i.context}
 
     cert_names = {c.name for c in profile.certifications}
-    profile = move_xrefs(hold_marked_in_source(profile, source_text))
+    profile = hold_marked_in_source(profile, source_text)
     flags = check_against_source(profile, source_text, trusted=trusted)
     flags += [VerifierFlag(where="profile.certifications", text=c.name, severity="warn",
                            reason="its status was put back from the source (the transcription "

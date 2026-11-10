@@ -483,8 +483,11 @@ def _stem(word: str) -> str:
     return word
 
 
-def _uncited_support(profile: Profile, claims: list[Claim], per_claim: int = 3,
-                     limit: int = 24) -> list[str]:
+# (a whole letter states more facts than an answer)
+_PER_CLAIM = {"cover_letter": 8, "summary": 4}
+
+
+def _uncited_support(profile: Profile, claims: list[Claim], limit: int = 24) -> list[str]:
     """Profile items backing what a claim says beyond its own citations, shown to the verifier
     too: it otherwise blocks a true claim for a missing citation (the code check still warns).
     Per claim, the few items backing most of what its citations lack (names, numbers: "...
@@ -503,9 +506,11 @@ def _uncited_support(profile: Profile, claims: list[Claim], per_claim: int = 3,
                     key=lambda c: order.get(c.kind, 2)):
         own = SupportIndex.of([t for cid in c.cited_ids for t in _item_support(profile, cid)]
                               + [background])
+        # (an answer's subject may sit in its question's help text)
+        text = f"{c.text} {c.detail}" if c.kind == "answer" else c.text
         misses = [(u.token, {f for _, fs in number_forms(u.token) for f in fs}
-                   if u.kind == "number" else set()) for u in find_unsupported(c.text, own)]
-        said = {_stem(w) for w in keywords(c.text)}
+                   if u.kind == "number" else set()) for u in find_unsupported(text, own)]
+        said = {_stem(w) for w in keywords(text)}
         ranked = []
         for i, idx in items.items():
             if i in c.cited_ids:
@@ -515,7 +520,7 @@ def _uncited_support(profile: Profile, claims: list[Claim], per_claim: int = 3,
             alike = len(said & words[i])
             if backs or alike >= 3:
                 ranked.append((backs, alike, i))
-        for _, _, i in sorted(ranked, reverse=True)[:per_claim]:
+        for _, _, i in sorted(ranked, reverse=True)[:_PER_CLAIM.get(c.kind, 3)]:
             out[i] = None
     return list(out)[:limit]
 
