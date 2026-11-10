@@ -25,6 +25,7 @@ from recrute.tailor.common import (
     obj,
     parse_llm,
     rules_note,
+    split_sentences,
     truncate,
     word_count,
 )
@@ -175,7 +176,7 @@ def limit_words(paragraphs: list[str], max_words: int) -> list[str]:
     while sum(word_count(p) for p in paras) > max_words:
         body = range(1, len(paras) - 1) if len(paras) >= 3 else range(len(paras))
         i = max(body, key=lambda k: word_count(paras[k]))
-        sentences = re.split(r"(?<=[.!?])\s+", paras[i])
+        sentences = split_sentences(paras[i])
         if len(sentences) > 1:
             paras[i] = " ".join(sentences[:-1])
         else:

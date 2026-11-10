@@ -8,7 +8,6 @@ skills must exist in the profile, and the result is trimmed to a page budget.
 from __future__ import annotations
 
 import math
-import re
 from collections import Counter
 from typing import Any
 
@@ -26,6 +25,7 @@ from recrute.tailor.common import (
     obj,
     parse_llm,
     rules_note,
+    split_sentences,
     truncate,
 )
 
@@ -221,7 +221,7 @@ def validate_selection(profile: Profile, raw: _Selection | dict[str, Any]) -> Re
     canon = {s.lower(): s for s in all_skills(profile)}
     skills = list(dict.fromkeys(canon[s.strip().lower()] for s in raw.skills
                                 if s.strip().lower() in canon))[:18]
-    sentences = re.split(r"(?<=[.!?])\s+", " ".join(raw.summary.split()))
+    sentences = split_sentences(raw.summary)
     summary = " ".join(sentences[:2]).strip() or profile.summary
     return ResumeSelection(
         summary=summary,
