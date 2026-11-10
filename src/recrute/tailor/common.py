@@ -187,6 +187,27 @@ _QUOTES = str.maketrans({"\u2019": "'", "\u2018": "'", "\u02bc": "'", "\u201c": 
                          "\u201d": '"'})
 
 
+# A period that ends an abbreviation, not a sentence: "M.S.", "U.S.", "e.g.", "Inc."
+_ABBREV_END = re.compile(r"(?:\b(?:[A-Za-z]\.){2,}|\b(?:e\.g|i\.e|etc|vs|inc|ltd|corp|co|dr|mr|"
+                         r"mrs|ms|jr|sr|st|no|approx)\.)$", re.IGNORECASE)
+
+
+def split_sentences(text: str) -> list[str]:
+    """Sentences of `text`, not split after an abbreviation: "... captain. M.S. in Security
+    from Northfield." is two sentences, not three."""
+    text = " ".join(text.split())
+    out, start = [], 0
+    for m in re.finditer(r"[.!?](?=\s)", text):
+        piece = text[start:m.end()]
+        if m.group(0) == "." and _ABBREV_END.search(piece):
+            continue
+        out.append(piece.strip())
+        start = m.end()
+    if text[start:].strip():
+        out.append(text[start:].strip())
+    return [s for s in out if s]
+
+
 def plain_quotes(text: str) -> str:
     """Typographic quotes as plain ones: "Acme\u2019s" and "Acme's" are the same word."""
     return text.translate(_QUOTES)
