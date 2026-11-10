@@ -524,7 +524,13 @@ def _uncited_support(profile: Profile, claims: list[Claim], limit: int = 24) -> 
             alike = len(said & words[i])
             if backs or alike >= 3:
                 ranked.append((backs, alike, i))
-        for _, _, i in sorted(ranked, reverse=True)[:_PER_CLAIM.get(c.kind, 3)]:
+        # the items backing most of what its citations lack, then the two worded most like it
+        # (a summary whose only missing term is "CI/CD" still gets the bullet saying it
+        # "defended networks against live professional red teams")
+        backing = [i for b, _, i in sorted(ranked, reverse=True) if b][:_PER_CLAIM.get(c.kind, 3)]
+        alike = [i for a, _, i in sorted(((a, b, i) for b, a, i in ranked), reverse=True)
+                 if a >= 3 and i not in backing][:2]
+        for i in backing + alike:
             out[i] = None
     return list(out)[:limit]
 

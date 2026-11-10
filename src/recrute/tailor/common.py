@@ -100,7 +100,9 @@ def _us_only(locations: list[str]) -> bool:
     """Every listed location is in the US and only the US (not "Worldwide", "US / Canada")."""
     from recrute.location import us_exclusive
 
-    locs = [loc.strip() for loc in locations if loc and loc.strip()]
+    # ("San Francisco, CA • New York, NY • United States" is three places)
+    locs = [part.strip() for loc in locations if loc
+            for part in re.split(r"\s+[\u2022\u00b7]\s+", loc) if part.strip()]
     us = [loc for loc in locs if us_exclusive(loc)]
     # a bare office name that is the city of another listed location saying "United States" is
     # that place ("Columbus" beside "Columbus, Ohio, United States"); never "Cambridge" beside
