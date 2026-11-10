@@ -476,3 +476,109 @@ def test_the_backstop_reads_a_marker_in_a_pointer(note):
     out = hold_marked_in_source(
         p, f"Acme, Engineer\n- Reduced alert noise by 40%. (see Projects; {note})")
     assert out.experience[0].bullets == []
+
+
+@pytest.mark.parametrize("label,us_role,answer", [
+    ("Will you now or will you in the future require employment visa sponsorship to work in the "
+     "country in which the job you're applying for is located?", True, "No"),
+    ("Will you now or will you in the future require employment visa sponsorship to work in the "
+     "country in which the job you're applying for is located?", False, None),
+    ("Are you currently eligible to work in the country in which this job is posted?", True,
+     "Yes")])
+def test_a_legal_question_naming_the_jobs_country_isnt_a_citizenship_field(label, us_role, answer):
+    """Second real run: any question saying 'country' plus 'visa' was taken for a 'Country of
+    citizenship' field and never answered."""
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import classify_question, match_question
+
+    bank = make_bank().model_copy(update={"work_authorization": _NO})
+    q = FormQuestion(id="q", label=label, type="select", options=["Yes", "No"])
+    assert classify_question(q) in ("sponsorship", "work_auth")
+    a = match_question(q, bank, us_role=us_role, company="Acme")
+    assert (a.value if a else None) == answer
+
+
+@pytest.mark.parametrize("label", ["Country of citizenship", "Country (of citizenship)",
+                                   "Which country issued your passport?"])
+def test_a_citizenship_field_is_still_one(label):
+    from recrute.tailor.answers import classify_question
+
+    q = FormQuestion(id="q", label=label, type="select", options=["United States", "India"])
+    assert classify_question(q) == "citizenship"
+
+
+@pytest.mark.parametrize("label", [
+    "Will you now, or in the future, require employment-based visa sponsorship?",
+    "Will you now (or in the future) require visa sponsorship in order to work in the US?",
+    "Will you now or in the future require sponsorship for employment visa status (e.g., H-1B, "
+    "etc.)?"])
+def test_more_plain_sponsorship_wordings(label):
+    assert sponsorship_answer(label, _NO) is False
+    assert sponsorship_answer(label, _LATER) is True
+
+
+def test_an_example_list_naming_a_non_visa_still_stays_yours():
+    assert sponsorship_answer("Will you now or in the future require sponsorship (e.g., H-1B, a "
+                              "Canadian work permit, etc.)?", _NO) is None
+
+
+def test_the_country_for_which_you_applied_is_the_us_for_a_us_role():
+    q = FormQuestion(id="q", label="Are you authorized to work in the country for which you "
+                     "applied?", type="select", options=["Yes", "No"])
+    assert "the United States" in localize_question(q, True).label
+
+
+@pytest.mark.parametrize("locations,us_only", [
+    (["San Francisco, CA • New York, NY • United States", "US"], True),
+    (["Austin, TX • Toronto, ON, Canada"], False)])
+def test_locations_joined_by_bullets_are_each_read(locations, us_only):
+    from recrute.tailor.common import _us_only
+
+    assert _us_only(locations) is us_only
+
+
+def test_a_claim_whose_missing_term_many_items_share_still_gets_the_bullet_worded_like_it():
+    """Second real run: four bullets backing 'CI/CD' used every slot, so the bullet saying
+    'defended networks against live professional red teams' never reached the verifier."""
+    from recrute.tailor.verify import Claim, _uncited_support
+
+    bullets = [ProfileItem(id=f"c{n}", text=f"Hardened CI/CD pipeline {n}.") for n in range(5)]
+    bullets.append(ProfileItem(id="red", text="Defended networks against live professional red "
+                                              "teams over 8 hour engagements."))
+    p = Profile(experience=[Experience(id="e1", company="Acme", title="Engineer",
+                                       bullets=[ProfileItem(id="b1", text="Ran triage."),
+                                                *bullets])])
+    claim = Claim("resume.summary", "Engineer who ran triage and CI/CD work, and defended networks "
+                  "against live professional red teams.", "summary", ["e1", "b1"])
+    assert "red" in _uncited_support(p, [claim])
+
+
+@pytest.mark.parametrize("label,description", [
+    ("Country (employment eligibility)", ""),
+    ("Country", "Country in which you are legally eligible for employment"),
+    ("Country (sponsorship required?)", "")])
+def test_a_country_field_about_where_you_may_work_isnt_answered_from_residence(label,
+                                                                               description):
+    """Re-audit: these got your country of residence, as if they asked where you live."""
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import match_question
+
+    q = FormQuestion(id="q", label=label, description=description, type="select",
+                     options=["United States", "Canada"])
+    assert match_question(q, make_bank(), us_role=True) is None
+
+
+@pytest.mark.parametrize("us_role", [True, False])
+def test_a_combined_citizenship_and_authorization_question_stays_yours(us_role):
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import SENSITIVE_KINDS, classify_question, match_question
+
+    q = FormQuestion(id="q", label="Are you a citizen of the country in which this role is "
+                     "located, or legally authorized to work there?", type="select",
+                     options=["Yes", "No"])
+    assert classify_question(q) in SENSITIVE_KINDS
+    bank = make_bank().model_copy(update={"work_authorization": _NO})
+    assert match_question(q, bank, us_role=us_role) is None

@@ -458,8 +458,10 @@ def saved_relevance(key: str, value: str, questions: list[str]) -> float:
 
 # a place field asking about something other than where you live
 _GEO_KINDS_RE = re.compile(r".*\b(country|state|province|region|nation)\b.*")
+# (a "Country" field asking where you may work, not where you live: "Country (employment
+# eligibility)", "Country (sponsorship required?)")
 _NOT_RESIDENCE = re.compile(r"citizen|nationalit|\bbirth|\bborn\b|passport|\bissu(ed|ing)\b|"
-                            r"\bvisa\b|\bpermit\b", re.I)
+                            r"\bvisa\b|\bpermit\b|sponsor|authori[sz]|eligib|right to work", re.I)
 
 
 def bank_has_fact(q: FormQuestion, bank: AnswerBank) -> bool:
@@ -479,8 +481,13 @@ def classify_question(q: FormQuestion) -> str | None:
         # "Authorization": the question is the description
         q = q.model_copy(update={"label": q.description, "description": ""})
     core = field_core(q.label)
-    if _GEO_KINDS_RE.fullmatch(core) and _NOT_RESIDENCE.search(f"{q.label} {q.description}"):
-        return "citizenship"  # "Country (of citizenship)": residence says nothing about it
+    # "Country (of citizenship)": residence says nothing about it. (Not a sponsorship or
+    # work-authorization question that mentions "the country where the job is".)
+    legal = any(rx.search(clean_label(q.label)) for kind, rx in _SCREEN_RULES
+                if kind in ("sponsorship", "work_auth"))
+    if not legal and _GEO_KINDS_RE.fullmatch(core) and \
+            _NOT_RESIDENCE.search(f"{q.label} {q.description}"):
+        return "citizenship"
     if core == "country" and re.search(r"\b(phone|dialing|calling)\b", q.description, re.I):
         return "phone_country"  # e.g. Greenhouse's picker next to the phone number
     if core == "region" and re.search(r"\(\s*state\b", q.label, re.IGNORECASE):
@@ -528,16 +535,18 @@ _S_BOTH = (rf"(?:{_S_NOW},? (?:or|and) (?:{_S_FUT}|at any time during (?:your|th
            rf"{_S_FUT},? (?:or|and) {_S_NOW})")
 _SCOPE = rf"(?P<scope>{_S_BOTH}|{_S_NOW}|{_S_FUT})"
 _US = r"(?:the )?(?:united states(?: of america)?|u\.?s\.?(?:a\.?)?|usa|us)"
-_WHAT = (r"(?:(?:employer|company|visa|immigration|work visa|employment visa|h-?1b(?: visa)?) )?"
-         r"sponsorship|visa support|an? (?:employer|company) to sponsor (?:you|your visa)|"
+_WHAT = (r"(?:(?:employer|company|visa|immigration|work visa|employment visa|employment-based"
+         r"(?: visa)?|h-?1b(?: visa)?) )?sponsorship|visa support|"
+         r"an? (?:employer|company) to sponsor (?:you|your visa)|"
          # "require us / Acme to provide sponsorship": one name or "us", never "UK employers"
          # or "Acme Canada". ("Immigration-related support" is broader, e.g. a STEM OPT
          # training plan: yours to answer.)
          r"(?P<sponsor>us|the company|the employer|an employer|your employer|[a-z0-9&.'-]+) "
          r"to provide (?:visa support or )?(?:visa |immigration |employment )?sponsorship")
 _PURPOSE = (rf"(?:for (?:an? )?(?:employment |work )?visa(?: status)?|for employment(?: visa"
-            rf"(?: status)?)?|for (?:an? )?h-?1b(?: visa)?|to (?:legally |lawfully )?work"
-            rf"(?: in {_US}| for us| here)?|in order to employ you)")
+            rf"(?: status)?)?|for (?:an? )?h-?1b(?: visa)?|"
+            rf"(?:in order )?to (?:legally |lawfully )?work(?: in {_US}| for us| here)?|"
+            rf"in order to employ you)")
 _US_CONDITION = rf"(?:(?:if|when) (?:you are )?(?:working|employed|hired|located) in {_US} )?"
 _SPONSOR_NEED_RE = re.compile(
     rf"{_US_CONDITION}(?:will|do|would) you (?:{_SCOPE.replace('scope', 's1')} )?(?:ever )?"
@@ -592,7 +601,9 @@ def sponsorship_answer(label: str, wa: WorkAuthorization, *, scope_from: str | N
     t = re.sub(rf"^(do|will) you ({_S_NOW}) or will you ({_S_FUT}) ", r"\1 you \2 or \3 ", t)
     m_ex = _EXAMPLE_RE.search(t)
     if m_ex:
-        if not _VISA_NAMES.fullmatch(m_ex.group("ex").strip(" .")):
+        # ("e.g. h-1b etc.": the list may trail off)
+        ex = re.sub(r"\s*(?:etc\.?|and so on)$", "", m_ex.group("ex").strip(" ."))
+        if not _VISA_NAMES.fullmatch(ex.strip(" .")):
             return None
         t = (t[:m_ex.start()] + t[m_ex.end():]).strip(" ?.:!")
         t = " ".join(t.split())
@@ -1155,8 +1166,11 @@ def _common_answer(q: FormQuestion, bank: AnswerBank) -> tuple[str, bool] | None
 
 _ROLE_COUNTRY = re.compile(
     r"\b(?:the|this) country (?:in which|where) (?:this|the) (?:role|position|job) is "
-    r"(?:located|based|listed)|\bthe country (?:in which|within which|where) you (?:are|will be) "
-    r"(?:applying(?: to work)?|working)|\bwhere (?:this|the) (?:role|position|job) is "
+    r"(?:located|based|listed|posted)|\bthe country (?:in which|where) the (?:role|position|job) "
+    r"you(?:'re| are) applying (?:for|to) is (?:located|based)|"
+    r"\bthe country (?:in which|within which|where) you (?:are|will be) "
+    r"(?:applying(?: to work)?|working)|\bthe country for which you (?:are applying|applied|"
+    r"have applied)|\bwhere (?:this|the) (?:role|position|job) is "
     r"(?:located|based|listed)", re.IGNORECASE)
 
 
