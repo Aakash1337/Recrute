@@ -476,3 +476,33 @@ def test_the_backstop_reads_a_marker_in_a_pointer(note):
     out = hold_marked_in_source(
         p, f"Acme, Engineer\n- Reduced alert noise by 40%. (see Projects; {note})")
     assert out.experience[0].bullets == []
+
+
+@pytest.mark.parametrize("label,us_role,answer", [
+    ("Will you now or will you in the future require employment visa sponsorship to work in the "
+     "country in which the job you're applying for is located?", True, "No"),
+    ("Will you now or will you in the future require employment visa sponsorship to work in the "
+     "country in which the job you're applying for is located?", False, None),
+    ("Are you currently eligible to work in the country in which this job is posted?", True,
+     "Yes")])
+def test_a_legal_question_naming_the_jobs_country_isnt_a_citizenship_field(label, us_role, answer):
+    """Second real run: any question saying 'country' plus 'visa' was taken for a 'Country of
+    citizenship' field and never answered."""
+    from test_tailor_support import make_bank
+
+    from recrute.tailor.answers import classify_question, match_question
+
+    bank = make_bank().model_copy(update={"work_authorization": _NO})
+    q = FormQuestion(id="q", label=label, type="select", options=["Yes", "No"])
+    assert classify_question(q) in ("sponsorship", "work_auth")
+    a = match_question(q, bank, us_role=us_role, company="Acme")
+    assert (a.value if a else None) == answer
+
+
+@pytest.mark.parametrize("label", ["Country of citizenship", "Country (of citizenship)",
+                                   "Which country issued your passport?"])
+def test_a_citizenship_field_is_still_one(label):
+    from recrute.tailor.answers import classify_question
+
+    q = FormQuestion(id="q", label=label, type="select", options=["United States", "India"])
+    assert classify_question(q) == "citizenship"

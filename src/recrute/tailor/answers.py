@@ -479,8 +479,13 @@ def classify_question(q: FormQuestion) -> str | None:
         # "Authorization": the question is the description
         q = q.model_copy(update={"label": q.description, "description": ""})
     core = field_core(q.label)
-    if _GEO_KINDS_RE.fullmatch(core) and _NOT_RESIDENCE.search(f"{q.label} {q.description}"):
-        return "citizenship"  # "Country (of citizenship)": residence says nothing about it
+    # "Country (of citizenship)": residence says nothing about it. (Not a sponsorship or
+    # work-authorization question that mentions "the country where the job is".)
+    legal = any(rx.search(clean_label(q.label)) for kind, rx in _SCREEN_RULES
+                if kind in ("sponsorship", "work_auth"))
+    if not legal and _GEO_KINDS_RE.fullmatch(core) and \
+            _NOT_RESIDENCE.search(f"{q.label} {q.description}"):
+        return "citizenship"
     if core == "country" and re.search(r"\b(phone|dialing|calling)\b", q.description, re.I):
         return "phone_country"  # e.g. Greenhouse's picker next to the phone number
     if core == "region" and re.search(r"\(\s*state\b", q.label, re.IGNORECASE):
@@ -1155,7 +1160,9 @@ def _common_answer(q: FormQuestion, bank: AnswerBank) -> tuple[str, bool] | None
 
 _ROLE_COUNTRY = re.compile(
     r"\b(?:the|this) country (?:in which|where) (?:this|the) (?:role|position|job) is "
-    r"(?:located|based|listed)|\bthe country (?:in which|within which|where) you (?:are|will be) "
+    r"(?:located|based|listed|posted)|\bthe country (?:in which|where) the (?:role|position|job) "
+    r"you(?:'re| are) applying (?:for|to) is (?:located|based)|"
+    r"\bthe country (?:in which|within which|where) you (?:are|will be) "
     r"(?:applying(?: to work)?|working)|\bwhere (?:this|the) (?:role|position|job) is "
     r"(?:located|based|listed)", re.IGNORECASE)
 
