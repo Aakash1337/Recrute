@@ -742,3 +742,16 @@ def test_a_location_picker_of_offices_isnt_taken_for_states():
                      options=["Washington", "London", "Remote"])
     a = match_question(q, bank)
     assert a is None or a.value != "Washington"
+
+
+def test_a_yes_to_are_you_pursuing_it_is_truthful():
+    """Re-audit: removing every status word from the question blocked this truthful 'Yes'."""
+    from recrute.schemas import Certification
+    from recrute.tailor.verify import collect_claims, deterministic_flags
+
+    p = Profile(certifications=[Certification(id="c", name="HTB CPTS (in progress)")])
+    q = FormQuestion(id="q", label="Are you currently pursuing the HTB CPTS?", type="select",
+                     options=["Yes", "No"])
+    claims = collect_claims(p, answers=[FormAnswer(question_id="q", value="Yes",
+                                                   source="llm_new")], questions=[q])
+    assert not any("isn't held" in f.reason for f in deterministic_flags(p, claims))
