@@ -33,6 +33,7 @@ from recrute.tailor.common import (
     never_claim_lines,
     never_claim_terms,
     never_term_pattern,
+    number_forms,
     obj,
     parse_llm,
     plain_quotes,
@@ -306,7 +307,9 @@ def _status_attached(text: str, end: int, names: list[str]) -> bool:
             break  # (some other note: "(Hack The Box)", then ", expected 2027" may follow)
         rest = rest[rest.index(note) + len(note):]
     rest = re.sub(r"^\s*[\[(][^\[\]()]{0,60}[\])]", "", rest)  # an issuer note: "(Hack The Box)"
-    return bool(re.match(r"\s*[,:;\u2013\u2014-]?\s*(?:" + _NOT_EARNED_RE.pattern + ")", rest,
+    # (", which is in progress", " - currently studying", ", still pending")
+    return bool(re.match(r"\s*[,:;\u2013\u2014-]?\s*(?:(?:which|that) (?:is|was) )?"
+                         r"(?:currently |still |now )?(?:" + _NOT_EARNED_RE.pattern + ")", rest,
                          re.IGNORECASE))
 
 
@@ -466,11 +469,35 @@ def _saved_evidence(claims: list[Claim], saved: Iterable[tuple[str, str]],
     return "PREVIOUSLY APPROVED ANSWERS\n" + "\n".join(lines) + "\n" if lines else ""
 
 
+def _uncited_support(profile: Profile, claims: list[Claim], limit: int = 12) -> list[str]:
+    """Profile items backing what a claim says beyond its own citations: a summary that cites
+    the role but names "Regional Defense Finals 2026" is backed by the award saying so. Shown to the
+    verifier too, which otherwise blocks a true claim for a missing citation (the code check
+    still warns about it)."""
+    background = background_facts(profile)
+    items = {i: SupportIndex.of(_item_support(profile, i)) for i in profile.all_items()}
+    out: dict[str, None] = {}
+    for c in claims:
+        own = SupportIndex.of([t for cid in c.cited_ids for t in _item_support(profile, cid)]
+                              + [background])
+        for u in find_unsupported(c.text, own):
+            forms = {f for _, fs in number_forms(u.token) for f in fs} \
+                if u.kind == "number" else set()
+            for i, idx in items.items():
+                backs = idx.has_number(forms) if forms else idx.has_term(u.token)
+                if backs and i not in out and i not in c.cited_ids:
+                    out[i] = None
+                    if len(out) >= limit:
+                        return list(out)
+    return list(out)
+
+
 def llm_flags(profile: Profile, claims: list[Claim], router: Completer,
               saved: Iterable[tuple[str, str]] = ()) -> list[VerifierFlag]:
     if not claims:
         return []
     cited = [i for c in claims for i in c.cited_ids]
+    cited += _uncited_support(profile, claims)
     claim_lines = []
     for c in claims:
         q = f" (Q: {c.question}" + (f" | details: {c.detail}" if c.detail else "") + ")" \

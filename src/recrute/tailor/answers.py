@@ -522,10 +522,14 @@ _S_BOTH = (rf"(?:{_S_NOW},? (?:or|and) (?:{_S_FUT}|at any time during (?:your|th
 _SCOPE = rf"(?P<scope>{_S_BOTH}|{_S_NOW}|{_S_FUT})"
 _US = r"(?:the )?(?:united states(?: of america)?|u\.?s\.?(?:a\.?)?|usa|us)"
 _WHAT = (r"(?:(?:employer|company|visa|immigration|work visa|employment visa|h-?1b(?: visa)?) )?"
-         r"sponsorship|visa support|an? (?:employer|company) to sponsor (?:you|your visa)")
+         r"sponsorship|visa support|an? (?:employer|company) to sponsor (?:you|your visa)|"
+         # "require us / Acme to provide (immigration-related support or) sponsorship"
+         r"(?:us|the company|[a-z0-9&.'-]+(?: [a-z0-9&.'-]+)?) to provide (?:immigration[- ]"
+         r"related support or |visa support or )?(?:visa |immigration |employment )?"
+         r"sponsorship")
 _PURPOSE = (rf"(?:for (?:an? )?(?:employment |work )?visa(?: status)?|for employment(?: visa"
             rf"(?: status)?)?|for (?:an? )?h-?1b(?: visa)?|to (?:legally |lawfully )?work"
-            rf"(?: in {_US}| for us| here)?)")
+            rf"(?: in {_US}| for us| here)?|in order to employ you)")
 _US_CONDITION = rf"(?:(?:if|when) (?:you are )?(?:working|employed|hired|located) in {_US} )?"
 _SPONSOR_NEED_RE = re.compile(
     rf"{_US_CONDITION}(?:will|do|would) you (?:{_SCOPE.replace('scope', 's1')} )?(?:ever )?"
@@ -572,6 +576,8 @@ def sponsorship_answer(label: str, wa: WorkAuthorization, *, scope_from: str | N
     """
     question = scope_from if scope_from is not None else label
     t = _norm_question(question)
+    # "do you now, or will you in the future, require" is "do you now or in the future require"
+    t = re.sub(rf"^(do|will) you ({_S_NOW}) or will you ({_S_FUT}) ", r"\1 you \2 or \3 ", t)
     m_ex = _EXAMPLE_RE.search(t)
     if m_ex:
         if not _VISA_NAMES.fullmatch(m_ex.group("ex").strip(" .")):
@@ -923,7 +929,10 @@ _PLAIN_WORK_AUTH = re.compile(
     r"(?:(are you |is the candidate )?(currently )?(legally )?(authori[sz]ed|eligible|permitted)"
     r" to (work|be employed)( lawfully)?|(do you (currently )?have )?(the )?(legal )?right to "
     r"work) (in|for employment in|within) (the )?(u\.?s\.?a?|united states( of america)?)"
-    r"( (at this time|currently|today))?", re.IGNORECASE)
+    r"( (at this time|currently|today))?|"
+    # "Do you currently have legal US work authorization?"
+    r"(do you (currently )?have )?(legal |valid )?(u\.?s\.?a?|united states) work "
+    r"authori[sz]ation", re.IGNORECASE)
 
 
 def work_auth_answer(label: str, wa: WorkAuthorization) -> bool | None:
@@ -1098,7 +1107,7 @@ def _common_answer(q: FormQuestion, bank: AnswerBank) -> tuple[str, bool] | None
 
 _ROLE_COUNTRY = re.compile(
     r"\b(?:the|this) country (?:in which|where) (?:this|the) (?:role|position|job) is "
-    r"(?:located|based|listed)|\bthe country (?:in which|where) you (?:are|will be) "
+    r"(?:located|based|listed)|\bthe country (?:in which|within which|where) you (?:are|will be) "
     r"(?:applying(?: to work)?|working)|\bwhere (?:this|the) (?:role|position|job) is "
     r"(?:located|based|listed)", re.IGNORECASE)
 
