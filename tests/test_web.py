@@ -59,7 +59,7 @@ def test_lan_and_rebinding_require_token(client):
 def test_queue_decide_and_xss_escaped(client):
     job_id = seed_job()
     page = client.get("/queue")
-    assert "Security Engineer" in page.text and "🛂 no sponsor" in page.text
+    assert "Security Engineer" in page.text and "No visa sponsorship" in page.text
     detail = client.get(f"/jobs/{job_id}")
     assert "<script>alert(1)</script>" not in detail.text  # description is escaped
     r = client.post(f"/jobs/{job_id}/decide", data={"action": "approve"}, headers=HX)
@@ -84,13 +84,13 @@ def test_filtered_restore(client):
 
     job_id = seed_job(status=JobStatus.FILTERED_OUT, filter_reason="title excluded: senior",
                       title="Senior Security Engineer", score=None)
-    assert "title excluded" in client.get("/filtered").text
+    assert "which you chose to leave out" in client.get("/filtered").text
     assert "restored" in client.post(f"/jobs/{job_id}/restore", headers=HX).text
     assert "Senior Security Engineer" in client.get("/queue").text
 
 
 def test_settings_page_and_dict_update(client):
-    assert "Discovery sources" in client.get("/settings").text
+    assert "Job sources" in client.get("/settings").text
     r = client.post("/settings/notify", data={"backend": "ntfy", "ntfy_url": "https://ntfy.sh/t",
                                               "instant_alert_score": "92"}, headers=HX)
     assert "saved" in r.text

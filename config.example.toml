@@ -13,12 +13,13 @@ channel = "chrome"
 headless = false
 
 [llm]
-timeout_seconds = 300
+timeout_seconds = 300   # per call; slow tasks (web research) may ask for more themselves
 
 [llm.providers.claude]
 command = "claude"
 model = ""           # empty = CLI default
 extra_args = []
+web_max_turns = 14   # step cap (--max-turns) for calls that may search/fetch the web
 
 [llm.providers.codex]
 command = "codex"
@@ -27,6 +28,8 @@ extra_args = []      # e.g. ["-c", "model_reasoning_effort=\"low\""]
 
 # task -> "provider" or "provider:model", in order; later ones are fallbacks
 # (e.g. when a usage limit is hit). Lighter models for high-volume tasks save quota.
+# Entries here override the built-in route for that task only: tasks you leave out keep
+# their built-in route (listed below), and tasks without one use "default".
 [llm.routing]
 default = ["claude:sonnet", "codex"]
 triage  = ["codex", "claude:haiku"]
@@ -38,3 +41,6 @@ answers = ["claude:sonnet", "codex"]          # drafting form answers
 classify_email = ["codex", "claude:haiku"]    # inbox tracking
 followup = ["claude:sonnet", "codex"]         # follow-up email drafts
 form_map = ["claude:sonnet", "codex"]         # unknown application forms
+job_brief = ["claude:haiku", "codex"]         # plain-language summary of a posting
+company_research = ["claude:sonnet", "codex"] # public web research on an employer (web tools)
+company_fit = ["claude:haiku", "codex"]       # how the researched company fits you (no tools)

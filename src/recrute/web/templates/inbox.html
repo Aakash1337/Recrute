@@ -1,27 +1,78 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Inbox · Recrute{% endblock %}
+{% block head %}
+<style>
+  .mail-filters { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 0 0 var(--sp-4); }
+  .mail-filters a { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface); color: var(--text-2); font-size: var(--fs-sm); font-weight: 500; text-decoration: none; }
+  .mail-filters a:hover { border-color: var(--border-strong); color: var(--text); }
+  .mail-filters a[aria-current] { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); }
+  .mail-filters .n { font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 400; }
+  .mail-filters a[aria-current] .n { color: inherit; }
+  .mail-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-3); }
+  .mail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 260px); gap: var(--sp-3) var(--sp-5); padding: var(--sp-4); background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--tone, var(--border-strong)); border-radius: var(--r); box-shadow: var(--shadow-sm); scroll-margin-top: calc(var(--nav-h) + var(--sp-3)); }
+  .mail > * { --tone: initial; --tone-soft: initial; --tone-border: initial; }
+  .mail:target { box-shadow: 0 0 0 3px var(--focus-ring); }
+  .mail.is-other { box-shadow: none; background: transparent; }
+  .mail-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); }
+  .mail-head h3 { margin: 0; font-size: var(--fs-md); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  .mail-from { display: flex; flex-wrap: wrap; gap: 0 var(--sp-4); margin: 4px 0 0; font-size: var(--fs-sm); color: var(--text-2); }
+  .mail-from b { color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
+  .mail-summary { margin: var(--sp-2) 0 0; color: var(--text-2); max-width: 75ch; }
+  .mail-match { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: var(--sp-3) 0 0; font-size: var(--fs-sm); }
+  .mail-side { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+  .mail-form { display: grid; gap: 4px; }
+  .mail-form select { width: 100%; min-width: 0; }
+  .mail-form .label { margin-top: 2px; }
+  .mail-form button { margin-top: var(--sp-2); }
+  .mail-side button { width: 100%; }
+  .mail-done { margin: 0; font-size: var(--fs-sm); font-weight: 500; }
+  .mail-result:empty { display: none; }
+  .mail-result { font-size: var(--fs-sm); }
+  .mail-foot { margin-top: var(--sp-4); color: var(--muted); font-size: var(--fs-sm); }
+  @media (max-width: 760px) { .mail { grid-template-columns: minmax(0, 1fr); } }
+</style>
+{% endblock %}
 {% block content %}
-<p class="muted">Job-related emails found in your inbox (read-only). Ambiguous matches need your confirmation before they change a status.</p>
-<table>
-  <tr><th>received</th><th>email</th><th>kind</th><th>job</th><th></th></tr>
-  {% for e in events %}
-  <tr>
-    <td class="muted">{{ e.received_at | ago }}</td>
-    <td><b>{{ e.subject }}</b><br><span class="muted">{{ e.sender }} · {{ e.summary }}</span></td>
-    <td>{{ e.kind }} <span class="muted">{{ '%.0f' % (e.confidence * 100) }}%</span></td>
-    <td>{% if e.job_id and e.job_id in jobs %}{{ jobs[e.job_id].title }}{% else %}<span class="muted">unmatched</span>{% endif %}</td>
-    <td>
-      {% if not e.confirmed and e.kind != 'other' %}
-      <form hx-post="/inbox/{{ e.id }}/confirm" hx-target="this" hx-swap="outerHTML">
-        <select name="job_id"><option value="">(keep match)</option>{% for j in jobs.values() %}<option value="{{ j.id }}" {{ 'selected' if j.id == e.job_id }}>{{ j.title }}</option>{% endfor %}</select>
-        <select name="kind">{% for k in ['confirmation','rejection','interview','assessment','offer','other'] %}<option {{ 'selected' if k == e.kind }}>{{ k }}</option>{% endfor %}</select>
-        <button>Confirm</button>
-      </form>
-      {% endif %}
-    </td>
-  </tr>
-  {% else %}
-  <tr><td colspan="5" class="muted">No job emails yet. Enable inbox tracking in Settings.</td></tr>
+{% call ui.page_header("Inbox", "Replies from employers that Recrute found in your email. It only reads: it never sends, deletes or marks anything. Clear matches update the application by themselves; unsure ones wait here for your OK.") %}
+  <a class="btn" href="/settings#inbox">Inbox settings</a>
+{% endcall %}
+
+{% if state.enabled and state.no_password %}
+{% call ui.alert("warn", "Inbox tracking is on, but no email password is stored yet") %}
+<div class="alert-text">Without it Recrute can't read your mail, so nothing new shows up here. <a href="/settings#inbox">Open the Inbox settings</a> to store the password (for Gmail, an app password). It is kept in this computer's keyring.</div>
+{% endcall %}
+{% elif state.enabled and state.error %}
+{{ ui.error_block(state.error | friendly_error) }}
+{% elif not state.enabled and total %}
+{% call ui.alert("info", "Inbox tracking is off") %}
+<div class="alert-text">No new emails are being read. The ones below were found earlier. <a href="/settings#inbox">Turn it back on in Settings</a>.</div>
+{% endcall %}
+{% endif %}
+
+{% if total %}
+<nav class="mail-filters" aria-label="Show">
+  {% for f in filters %}
+  <a href="/inbox{{ '' if f.key == 'all' else '?show=' ~ f.key }}"{% if f.key == show %} aria-current="true"{% endif %}>{{ f.label }} <span class="n">{{ f.count }}</span></a>
   {% endfor %}
-</table>
+</nav>
+{% if rows %}
+<ul class="mail-list">
+  {% for r in rows %}{% include "_inbox_row.html" %}{% endfor %}
+</ul>
+<p class="mail-foot">
+  Emails that need your check come first, then the newest.
+  {% if state.enabled and state.last_checked %}Inbox last checked {{ ui.when(state.last_checked) }}.{% endif %}
+  {% if capped %}Showing the latest {{ rows | length }}.{% endif %}
+</p>
+{% elif show == "check" %}
+{{ ui.empty_state("Nothing needs your check", "Every email Recrute found is already matched to an application or set aside.", "/inbox", "Show all emails") }}
+{% else %}
+{{ ui.empty_state("No emails here", "Try another filter to see the " ~ (total | plural("email")) ~ " Recrute found.", "/inbox", "Show all emails") }}
+{% endif %}
+{% elif not state.enabled %}
+{{ ui.empty_state("Inbox tracking is off", "Turn it on and Recrute reads the replies employers send you (“we received your application”, interview invites, rejections, offers) and moves each application along by itself. It needs your email address and a password; for Gmail that's an app password, kept in this computer's keyring.", "/settings#inbox", "Set up inbox tracking") }}
+{% else %}
+{{ ui.empty_state("No job emails yet", "Inbox tracking is on" ~ ((" and last checked " ~ (state.last_checked | relative)) if state.last_checked else ", and the first check hasn't run yet") ~ ". When an employer writes back about one of your applications, the email appears here.") }}
+{% endif %}
 {% endblock %}

@@ -1,0 +1,165 @@
+{#- UI building blocks. Import with:   {% import "_ui.html" as ui %}
+
+  page_header(title, subtitle=None)            Page title (<h1>) + subtitle; optional actions
+                                                 via {% call ui.page_header("Review", "160 jobs") %}<a class="btn">…</a>{% endcall %}
+  section(title, subtitle=None, id=None)       A titled section (<h2>); body via {% call %}.
+                                                 caller(): the section body.
+  card(title=None, subtitle=None, cls=None)    A bordered surface; body via {% call %}. cls="flush"
+                                                 removes the padding (for tables).
+  stat_card(value, label, href=None, tone=None, hint=None)
+                                               A big number with a label; a link when href is set.
+                                                 tone: ok | warn | danger | info | accent | neutral.
+  chip(text, tone=None, title=None)            A rounded tag ("Remote", "Greenhouse").
+  badge(text, tone=None, title=None, dot=False) A small status label; dot=True adds a colour dot.
+  priority_chip(priority)                      "P1 · Cybersecurity" (track name from your criteria).
+  status_badge(job_status)                     "Packet ready for you", coloured by status.
+  source_badge(answer_source)                  Where a packet answer came from ("Drafted by AI — check it").
+  empty_state(title, text=None, action_href=None, action_label=None, icon=None)
+                                               Friendly "nothing here yet" block with an optional next step.
+  alert(kind, title, text=None)                Notice box; kind: info | warn | danger | success.
+                                                 Extra body via {% call ui.alert("warn", "…") %}…{% endcall %}.
+  facts(items)                                 Definition list from [(label, value), …] or a dict;
+                                                 empty values are skipped. Values may be Markup.
+  error_block(friendly)                        An error from friendly_error(...): title, plain detail and a
+                                                 collapsed "Technical details" with the raw text.
+  when(dt)                                     <time> showing "3 days ago", full date on hover.
+  location_list(locs, limit=2)                 "Austin, TX · Remote · +3 more", full list on hover.
+  loading(text="Loading…")                     Placeholder for hx-trigger="load" sections: if the
+                                                 request fails, the error replaces it (see base.html).
+
+  Filters/globals available everywhere (web/humanize.py): status_label, source_label,
+  channel_label, answer_source_label, task_label, task_schedule, task_summary, setting_label,
+  setting_help, friendly_error, money, pay, num, plural, date, datetime, relative, ago,
+  locations, filename, humanize, …
+-#}
+
+{% macro page_header(title, subtitle=None) -%}
+<div class="page-header">
+  <div>
+    <h1>{{ title }}</h1>
+    {%- if subtitle %}<p class="subtitle">{{ subtitle }}</p>{% endif %}
+  </div>
+  {%- if caller is defined %}<div class="actions">{{ caller() }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro section(title, subtitle=None, id=None) -%}
+<section class="section"{% if id %} id="{{ id }}"{% endif %}>
+  <div class="section-head">
+    <div>
+      <h2>{{ title }}</h2>
+      {%- if subtitle %}<p class="subtitle">{{ subtitle }}</p>{% endif %}
+    </div>
+  </div>
+  {{ caller() if caller is defined }}
+</section>
+{%- endmacro %}
+
+{% macro card(title=None, subtitle=None, cls=None) -%}
+<div class="card{{ ' ' ~ cls if cls }}">
+  {%- if title or subtitle %}
+  <div class="card-head"><div>
+    {%- if title %}<h3 class="card-title">{{ title }}</h3>{% endif %}
+    {%- if subtitle %}<p class="card-subtitle">{{ subtitle }}</p>{% endif %}
+  </div></div>
+  {%- endif %}
+  {{ caller() if caller is defined }}
+</div>
+{%- endmacro %}
+
+{% macro stat_card(value, label, href=None, tone=None, hint=None) -%}
+{%- set cls = 'stat' ~ ((' toned t-' ~ tone) if tone else '') -%}
+{%- if href %}<a class="{{ cls }}" href="{{ href }}">{% else %}<div class="{{ cls }}">{% endif -%}
+<span class="stat-value">{{ value | num if value is number else value }}</span>
+<span class="stat-label">{{ label }}</span>
+{%- if hint %}<span class="stat-hint">{{ hint }}</span>{% endif -%}
+{%- if href %}</a>{% else %}</div>{% endif %}
+{%- endmacro %}
+
+{% macro chip(text, tone=None, title=None) -%}
+<span class="pill{{ ' t-' ~ tone if tone }}"{% if title %} title="{{ title }}"{% endif %}>{{ text }}</span>
+{%- endmacro %}
+
+{% macro badge(text, tone=None, title=None, dot=False) -%}
+<span class="badge{{ ' t-' ~ tone if tone }}"{% if title %} title="{{ title }}"{% endif %}>
+  {%- if dot %}<span class="dot" aria-hidden="true"></span>{% endif %}{{ text }}</span>
+{%- endmacro %}
+
+{% macro priority_chip(priority) -%}
+{%- if priority -%}
+{%- set p = priority.value if priority.value is defined else priority -%}
+<span class="chip {{ p }}" title="{{ priority_label(p) }}">{{ p }}</span> <span class="muted">{{ priority_label(p) }}</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro status_badge(job_status) -%}
+{{ badge(status_label(job_status), status_tone(job_status), dot=True) }}
+{%- endmacro %}
+
+{% macro source_badge(answer_source) -%}
+{{ badge(answer_source_label(answer_source), answer_source_tone(answer_source)) }}
+{%- endmacro %}
+
+{% macro empty_state(title, text=None, action_href=None, action_label=None, icon=None) -%}
+<div class="empty">
+  {%- if icon %}<div class="empty-icon" aria-hidden="true">{{ icon }}</div>{% endif %}
+  <p class="empty-title">{{ title }}</p>
+  {%- if text %}<p class="empty-text">{{ text }}</p>{% endif %}
+  {%- if action_href and action_label %}<div class="actions"><a class="btn primary" href="{{ action_href }}">{{ action_label }}</a></div>{% endif %}
+  {{- caller() if caller is defined }}
+</div>
+{%- endmacro %}
+
+{% macro alert(kind, title, text=None) -%}
+{%- set tone = {'success': 'ok', 'ok': 'ok', 'warn': 'warn', 'warning': 'warn', 'danger': 'danger', 'error': 'danger'}.get(kind, 'info') -%}
+{%- set icon = {'ok': '✓', 'warn': '!', 'danger': '!'}.get(tone, 'i') -%}
+<div class="alert t-{{ tone }}" role="{{ 'alert' if tone == 'danger' else 'status' }}">
+  <span class="alert-icon" aria-hidden="true">{{ icon }}</span>
+  <div class="alert-body">
+    {%- if title %}<div class="alert-title">{{ title }}</div>{% endif %}
+    {%- if text %}<div class="alert-text">{{ text }}</div>{% endif %}
+    {{- caller() if caller is defined }}
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro facts(items) -%}
+{%- set rows = items.items() if items is mapping else items -%}
+<dl class="facts">
+  {%- for label, value in rows if value is not none and value != '' and value != [] %}
+  <dt>{{ label }}</dt><dd>{{ value }}</dd>
+  {%- endfor %}
+</dl>
+{%- endmacro %}
+
+{% macro error_block(friendly) -%}
+{%- if friendly -%}
+<div class="alert t-danger" role="alert">
+  <span class="alert-icon" aria-hidden="true">!</span>
+  <div class="alert-body">
+    {%- if friendly.title %}<div class="alert-title">{{ friendly.title }}</div>{% endif %}
+    <div class="alert-text">{{ friendly.detail }}</div>
+    {%- if friendly.technical %}
+    <details class="tech"><summary>Technical details</summary><code>{{ friendly.technical }}</code></details>
+    {%- endif %}
+  </div>
+</div>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro when(dt, compact=False) -%}
+{%- if dt -%}
+<time datetime="{{ dt | iso }}" title="{{ dt | datetime }}">{{ (dt | ago) if compact else (dt | relative) }}</time>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro location_list(locs, limit=2) -%}
+{%- set short = locs | locations(limit) -%}
+{%- if short -%}
+<span{% if short != (locs | locations_full) %} title="{{ locs | locations_full }}"{% endif %}>{{ short }}</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro loading(text="Loading…") -%}
+<p class="loading">{{ text }}</p>
+{%- endmacro %}

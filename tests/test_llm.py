@@ -134,8 +134,9 @@ def test_router_falls_back_on_rate_limit_then_cools_down(session_factory):
 
 def test_router_all_fail(session_factory):
     router, _ = make_router(session_factory, [LLMError("x")], [LLMError("y")])
-    with pytest.raises(LLMError, match="all providers failed"):
+    with pytest.raises(LLMError, match="All AI providers failed: x; y") as e:
         router.complete("t", "p")
+    assert [str(c) for c in e.value.causes] == ["x", "y"]
 
 
 # --- audit regressions --------------------------------------------------------------------
@@ -161,7 +162,8 @@ def test_cli_stderr_content_not_leaked(paths):
     with pytest.raises(LLMError) as e:
         codex(paths).parse(1, "", stderr, LLMRequest("x"), 5)
     assert "Jane" not in str(e.value) and "boom" not in str(e.value)
-    assert "cli failure" in str(e.value)
+    assert e.value.kind == "cli_failure"
+    assert str(e.value) == "Codex's command-line tool failed (exit code 1)"
 
 
 def test_launch_failure_is_llm_error(tmp_path):

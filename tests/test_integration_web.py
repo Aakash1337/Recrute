@@ -256,7 +256,7 @@ def test_channel_suspension_shown_and_cleared(client):
         suspend(s, "linkedin_easy_apply", datetime.now(UTC), "security checkpoint")
         s.commit()
     page = client.get("/applications").text
-    assert "linkedin_easy_apply submissions are paused" in page
+    assert "LinkedIn Easy Apply is paused" in page
     client.post("/channels/linkedin_easy_apply/resume", headers=HX)
     with Session(get_engine()) as s:
         assert suspension(s, "linkedin_easy_apply", datetime.now(UTC)) is None
@@ -598,7 +598,7 @@ def test_receipt_index_and_ghost_button(client):
         s.add(StatusEvent(job_id=job.id, status=JobStatus.APPLIED, created_at=when))
         s.commit()
     page = client.get("/applications").text
-    assert "/receipt/receipts/9-x" in page and "Mark ghosted" in page
+    assert "/receipt/receipts/9-x" in page and "Mark as no reply" in page
     idx = client.get("/receipt/receipts/9-x").text
     assert "blocked.png" in idx
     assert client.get("/receipt/../data").status_code == 404
@@ -628,9 +628,9 @@ def test_job_link_from_notification_is_a_full_page(client):
         s.commit()
         job_id = job.id
     full = client.get(f"/jobs/{job_id}").text
-    assert "<nav>" in full and "window.recruteDecide" in full
+    assert "<nav " in full and "window.recruteDecide" in full
     frag = client.get(f"/jobs/{job_id}", headers=HX).text
-    assert "<nav>" not in frag
+    assert "<nav " not in frag
     r = client.post(f"/jobs/{job_id}/decide", data={"action": "approve"}, headers=HX)
     assert r.status_code == 200
 
@@ -949,8 +949,8 @@ def test_expired_suspension_is_not_shown_and_resume_clears_linkedin_browsing(cli
                                           "block_reason": "checkpoint", "views": 3})
         s.commit()
     page = client.get("/applications").text
-    assert "linkedin_easy_apply submissions are paused" in page
-    assert "greenhouse submissions are paused" not in page
+    assert "LinkedIn Easy Apply is paused" in page
+    assert "Greenhouse is paused" not in page
     assert client.post("/channels/linkedin_easy_apply/resume", headers=HX).status_code == 200
     with Session(get_engine()) as s:
         assert get_state(s, "linkedin_session") == {"views": 3}
@@ -961,7 +961,7 @@ def test_dashboard_renders_without_running_the_checks(client, monkeypatch):
     def forbidden(*a, **kw):
         raise AssertionError("ran the checks during the page load")
 
-    monkeypatch.setattr("recrute.web.views.run_checks", forbidden)
+    monkeypatch.setattr("recrute.web.views_dashboard.run_checks", forbidden)
     page = client.get("/")
     assert page.status_code == 200 and 'hx-get="/system-checks"' in page.text
 
@@ -1009,13 +1009,13 @@ def test_untouched_multi_line_answer_keeps_its_blocking_flag(client):
 def test_two_quick_ingest_clicks_start_one_run(client, monkeypatch):
     import threading
 
-    from recrute.web import views_apps
+    from recrute.web import views_profile
 
     started = []
     monkeypatch.setattr(threading, "Thread",
                         lambda target, daemon=True: type("T", (), {
                             "start": lambda self: started.append(target)})())
-    monkeypatch.setitem(views_apps._ingest_state, "running", False)
+    monkeypatch.setitem(views_profile._ingest_state, "running", False)
     assert client.post("/profile/ingest", headers=HX).status_code == 200
     assert client.post("/profile/ingest", headers=HX).status_code == 409
     assert len(started) == 1

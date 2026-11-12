@@ -1,37 +1,163 @@
+{# The job pane: used inside Review (loaded by htmx) and on a job's own page.
+   expects: job, company, view (web/job_view.job_view), reasons #}
+{% import "_ui.html" as ui %}
 <div id="job-pane" data-job-id="{{ job.id }}">
-<h3 style="margin-top:0">{{ job.title }}</h3>
-<div>{% include "_job_row_meta.html" %}</div>
-<p>
-  <a href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">Open posting ↗</a>
-  <span class="muted">· status {{ job.status.value }}{% if job.ats %} · {{ job.ats }}{% endif %}{% if job.years_required %} · {{ job.years_required }}+ yrs{% endif %}</span>
-</p>
-{% if job.status.value in ('discovered', 'snoozed') %}
-<p>
-  <button class="primary" onclick="recruteDecide('approve')">Approve <kbd>a</kbd></button>
-  <select id="reject-reason" onchange="if (this.value) recruteDecide('reject', this.value)">
-    <option value="">Reject… <kbd>r</kbd></option>
-    {% for r in reasons %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
+<header class="job-head">
+  <h2>{{ job.title }}</h2>
+  <div class="job-sub">
+    {% if company %}<a class="company" href="/companies/{{ company.id }}" title="Everything from this employer">{{ company.name }}</a>{% endif %}
+    {% if job.priority %}<span>{{ ui.priority_chip(job.priority) }}</span>{% endif %}
+    {% if not view.can_decide %}{{ ui.status_badge(job.status) }}{% endif %}
+    {% set b = job.badges or {} %}
+    {% if b.get('sponsorship') == 'will_sponsor' %}{{ ui.badge("Sponsors visas", "ok", "The posting mentions visa sponsorship") }}{% endif %}
+    {% if b.get('h1b') %}{{ ui.badge("H-1B approvals: " ~ b.get('h1b'), "info", "Recent H-1B approvals for this employer (USCIS data)") }}{% endif %}
+    {% if b.get('e_verify') is sameas true %}{{ ui.badge("E-Verify employer", "info", "Enrolled in E-Verify (needed for the STEM OPT extension)") }}{% endif %}
+    {% if b.get('cap_exempt') %}{{ ui.badge("Likely H-1B cap-exempt", "info", "Universities and some nonprofits can sponsor H-1B at any time of year") }}{% endif %}
+  </div>
+</header>
+
+<div class="job-actions">
+  {% if view.can_decide %}
+  <button class="primary" onclick="recruteDecide('approve')" title="Build a tailored application packet for this job. Nothing is sent until you approve the packet.">Approve <kbd>a</kbd></button>
+  <select id="reject-reason" aria-label="Reject this job, with a reason" onchange="if (this.value) recruteDecide('reject', this.value)">
+    <option value="">Reject… (r)</option>
+    {% for r in reasons %}<option value="{{ r }}">{{ r | capitalize }}</option>{% endfor %}
   </select>
-  <button onclick="recruteDecide('snooze')">Snooze <kbd>s</kbd></button>
-  <button onclick="recruteDecide('manual')">I'll apply myself <kbd>m</kbd></button>
-</p>
+  <button onclick="recruteDecide('snooze')" title="Hide it for 7 days">Snooze <kbd>s</kbd></button>
+  <button onclick="recruteDecide('manual')" title="Take it off the list: you'll apply on your own">I'll apply myself <kbd>m</kbd></button>
+  {% elif view.has_packet %}
+  <a class="btn primary" href="/packets/{{ job.id }}">Open the application packet</a>
+  {% elif view.can_restore %}
+  <button hx-post="/jobs/{{ job.id }}/restore" hx-target="#restore-result" hx-swap="innerHTML">Move back to review</button>
+  <span id="restore-result"></span>
+  {% endif %}
+  <span class="spacer"></span>
+  <a class="btn" href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">Open the posting ↗</a>
+</div>
+
+{% if view.snoozed_until %}
+{{ ui.alert("info", "Snoozed", "It comes back to Review " ~ (view.snoozed_until | relative) ~ ".") }}
+{% elif view.closed %}
+{{ ui.alert("warn", "The posting was taken down", "The employer removed it, so it can't be applied to.") }}
 {% endif %}
-{% if job.filter_reason %}<p class="warn">Filtered: {{ job.filter_reason }}</p>{% endif %}
-{% if score %}
-<h2>Fit {{ score.score }}</h2>
-<p>{{ score.reason }}</p>
-{% set d = score.details or {} %}
-<table>
-  {% if d.get('meets') %}<tr><th>meets</th><td>{{ d.meets | join('; ') }}</td></tr>{% endif %}
-  {% if d.get('gaps') %}<tr><th>gaps</th><td>{{ d.gaps | join('; ') }}</td></tr>{% endif %}
-  {% if d.get('red_flags') %}<tr><th>red flags</th><td class="warn">{{ d.red_flags | join('; ') }}</td></tr>{% endif %}
-</table>
+{% if view.filter_reason %}
+{{ ui.alert("warn", "Set aside automatically", view.filter_reason) }}
 {% endif %}
-{% if job.sponsorship_note %}<p class="muted">🛂 “{{ job.sponsorship_note }}”</p>{% endif %}
-<h2>Description</h2>
-<div class="desc">{{ job.description_md | md }}</div>
-<h2>Seen on</h2>
-<ul>{% for src in sources %}<li><a href="{{ src.url | safe_url }}" target="_blank" rel="noopener noreferrer">{{ src.source }}</a> <span class="muted">{{ src.seen_at | ago }}</span></li>{% endfor %}</ul>
-<h2>History</h2>
-<ul class="muted">{% for e in events %}<li>{{ e.created_at | ago }}: {{ e.status.value }}{% if e.note %}, {{ e.note }}{% endif %}</li>{% endfor %}</ul>
+{% for w in view.watch_outs %}
+{{ ui.alert("danger" if w.tone == "danger" else "warn", w.title, w.text) }}
+{% endfor %}
+
+<dl class="glance">
+  {% for f in view.glance %}
+  <div{% if f.title %} title="{{ f.title }}"{% endif %}><dt>{{ f.label }}</dt><dd>{{ f.value }}{% if f.note %}<small>{{ f.note }}</small>{% endif %}</dd></div>
+  {% endfor %}
+</dl>
+{% if job.sponsorship_note %}
+<p class="muted">On visas, the posting says: “{{ job.sponsorship_note }}”</p>
+{% endif %}
+
+{% set fit = view.fit %}
+{% if fit %}
+<section class="job-block" aria-label="How well this job fits you">
+  <h3>How well it fits you</h3>
+  <div class="fit t-{{ fit.tone }}">
+    <div class="fit-score" title="Fit score out of 100">{{ fit.score }}</div>
+    <div>
+      <div class="fit-label">{{ fit.label }}</div>
+      {% if fit.reason %}<p class="fit-reason">{{ fit.reason }}</p>{% endif %}
+    </div>
+    {% if fit.meets or fit.gaps or fit.concerns %}
+    <div class="fit-cols">
+      {% if fit.meets %}<div><h4>Where you match</h4><ul class="ticks yes">{% for x in fit.meets %}<li>{{ x }}</li>{% endfor %}</ul></div>{% endif %}
+      {% if fit.gaps %}<div><h4>Gaps</h4><ul class="ticks no">{% for x in fit.gaps %}<li>{{ x }}</li>{% endfor %}</ul></div>{% endif %}
+      {% if fit.concerns %}<div><h4>Things to weigh</h4><ul class="ticks flag">{% for x in fit.concerns %}<li>{{ x }}</li>{% endfor %}</ul></div>{% endif %}
+    </div>
+    {% endif %}
+  </div>
+  <p class="muted" style="margin-top:6px">Judged by AI from your profile and the posting{% if fit.scored_at %}, {{ fit.scored_at | relative }}{% endif %}. It's a guide, not a verdict.</p>
+</section>
+{% endif %}
+
+{# (the AI brief of the posting and the company research are loaded here) #}
+{% include "_job_research_slot.html" ignore missing %}
+
+{% if not view.has_text %}
+<section class="job-block">
+  <h3>The posting</h3>
+  {% if job.description_md and job.description_md.strip() %}<div class="desc">{{ job.description_md | md }}</div>{% endif %}
+  {{ ui.empty_state("We couldn't read the full posting",
+       "Some sites only show a short preview to visitors. Open the posting to read what they're asking for.",
+       job.apply_url | safe_url, "Open the posting ↗") }}
+</section>
+{% elif view.groups %}
+<nav class="jump" aria-label="Parts of the posting">
+  {% for g in view.groups if g.key != 'fine' %}<a href="#post-{{ g.key }}-{{ job.id }}">{{ g.title }}</a>{% endfor %}
+</nav>
+{% for g in view.groups if g.key != 'fine' %}
+<section class="job-block" id="post-{{ g.key }}-{{ job.id }}">
+  <h3>{{ g.title }}{% if g.hint %} <small>{{ g.hint }}</small>{% endif %}</h3>
+  {% if g.key == 'offer' and view.perks %}
+  <div class="pills" aria-label="Benefits the posting mentions">{% for p in view.perks %}{{ ui.chip(p, "ok") }}{% endfor %}</div>
+  {% endif %}
+  {% for s in g.sections %}
+  <div class="post-part">
+    {% if s.heading and (g.sections | length > 1 or s.heading | lower != g.title | lower) %}<h4>{{ s.heading }}</h4>{% endif %}
+    <div class="desc">{{ s.body | md }}</div>
+  </div>
+  {% endfor %}
+  {% for s in g.extra %}
+  <div class="post-part">
+    <h4>{{ s.heading }}{% if g.key == 'need' %} {{ ui.chip("Nice to have", "info") }}{% endif %}</h4>
+    <div class="desc">{{ s.body | md }}</div>
+  </div>
+  {% endfor %}
+</section>
+{% endfor %}
+{% if not (view.groups | selectattr('key', 'equalto', 'offer') | list) and (view.perks or view.pay_mentions) %}
+<section class="job-block">
+  <h3>What they offer <small>Mentioned in the posting.</small></h3>
+  {% if view.pay_mentions %}<p>Pay mentioned: <strong>{{ view.pay_mentions | join(' · ') }}</strong></p>{% endif %}
+  <div class="pills">{% for p in view.perks %}{{ ui.chip(p, "ok") }}{% endfor %}</div>
+</section>
+{% endif %}
+{% for g in view.groups if g.key == 'fine' %}
+<section class="job-block">
+  <details class="box"><summary>{{ g.title }} ({{ g.count }})</summary>
+    {% for s in g.sections %}<div class="post-part">{% if s.heading %}<h4>{{ s.heading }}</h4>{% endif %}<div class="desc">{{ s.body | md }}</div></div>{% endfor %}
+  </details>
+</section>
+{% endfor %}
+{% else %}
+<section class="job-block">
+  <h3>The posting</h3>
+  {% if view.perks %}<div class="pills" aria-label="Benefits the posting mentions">{% for p in view.perks %}{{ ui.chip(p, "ok") }}{% endfor %}</div>{% endif %}
+  <div class="desc">{{ job.description_md | md }}</div>
+</section>
+{% endif %}
+
+{% if view.siblings %}
+<section class="job-block">
+  <h3>Other open roles at {{ company.name if company else 'this company' }}</h3>
+  <ul class="sibling-list">
+    {% for sib in view.siblings %}
+    <li><a href="/jobs/{{ sib.id }}">{{ sib.title }}</a>
+      {% if sib.score is not none %}<span class="score" title="Fit score">{{ sib.score }}</span>{% endif %}
+      <span class="muted">{{ status_label(sib.status) }}</span></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="job-block">
+  <details class="box"><summary>Where we found it, and what's happened so far</summary>
+    {% if view.sources %}
+    <p style="margin-bottom:4px"><strong>Found on</strong></p>
+    <ul>{% for src in view.sources %}<li><a href="{{ src.url | safe_url }}" target="_blank" rel="noopener noreferrer">{{ src.label }} ↗</a> <span class="muted">· seen {{ src.when | relative }}</span></li>{% endfor %}</ul>
+    {% endif %}
+    {% if view.history %}
+    <p style="margin-bottom:0"><strong>History</strong></p>
+    <ol class="timeline">{% for e in view.history %}<li>{{ ui.when(e.when) }}<span>{{ e.text }}</span></li>{% endfor %}</ol>
+    {% endif %}
+  </details>
+</section>
 </div>

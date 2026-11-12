@@ -1,90 +1,627 @@
 {% extends "base.html" %}
-{% block title %}Packet · {{ job.title }}{% endblock %}
+{% import "_ui.html" as ui %}
+{# expects: job, company, app, packet, view (web/packet_view.packet_page), fit, glance, watch_outs,
+   editable, position, waiting, next_id, rev, profile_problem #}
+{% block title %}Packet: {{ job.title }} · Recrute{% endblock %}
+{% block head %}
+<style>
+  .pk-crumb { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); margin: 0 0 var(--sp-3); color: var(--muted); font-size: var(--fs-sm); }
+  .pk-crumb .spacer { flex: 1; }
+  .pk-top h1 { font-size: var(--fs-2xl); }
+  .pk-about { margin: var(--sp-4) 0 0; }
+  .pk-about > summary { font-weight: 600; color: var(--text); }
+  .pk-about .job-block:first-of-type { margin-top: 0; }
+
+  .pk-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--sp-5); align-items: start; margin-top: var(--sp-5); }
+  .pk-aside { grid-column: 2; grid-row: 1; position: sticky; top: calc(var(--nav-h) + var(--sp-4)); max-height: calc(100vh - var(--nav-h) - 110px); overflow: auto; border-radius: var(--r); }
+  .pk-main { grid-column: 1; grid-row: 1; min-width: 0; }
+  .pk-main > .card { scroll-margin-top: calc(var(--nav-h) + var(--sp-4)); }
+  .pk-card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--sp-1) var(--sp-4); margin: 0 0 var(--sp-3); }
+  .pk-card-head h2 { margin: 0; font-size: var(--fs-lg); }
+  .pk-card-head p { margin: 0; color: var(--muted); font-size: var(--fs-sm); flex-basis: 100%; }
+  .pk-card-head .tally { color: var(--muted); font-size: var(--fs-sm); display: inline-flex; flex-wrap: wrap; gap: 6px; }
+
+  /* the checklist */
+  .pk-check h2 { margin: 0; font-size: var(--fs-lg); }
+  .pk-progress { display: flex; align-items: center; gap: var(--sp-3); margin: var(--sp-2) 0 var(--sp-3); color: var(--muted); font-size: var(--fs-sm); }
+  .pk-progress progress { flex: 1; height: 8px; accent-color: var(--ok); }
+  .pk-group { margin-top: var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--border); }
+  .pk-group h3 { display: flex; align-items: center; gap: var(--sp-2); margin: 0; font-size: var(--fs); color: var(--tone, var(--text)); }
+  .pk-group h3 .n { margin-left: auto; font-weight: 500; color: var(--muted); font-size: var(--fs-xs); }
+  .pk-group > .help { margin: 2px 0 var(--sp-2); }
+  .pk-items { list-style: none; margin: 0; padding: 0; }
+  .pk-items li { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 2px var(--sp-2); padding: 5px 0; font-size: var(--fs-sm); }
+  .pk-items li input { margin-top: 2px; }
+  .pk-items .dot { width: 14px; height: 14px; margin: 3px 0 0 1px; border-radius: 50%; border: 2px solid var(--warn-solid); }
+  .pk-items li.done .dot { background: var(--ok); border-color: var(--ok); }
+  .pk-items li.done a, .pk-items li.done .detail { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
+  .pk-items .detail { margin: 1px 0 0; color: var(--text-2); font-size: var(--fs-xs); }
+  .pk-override { display: flex; gap: var(--sp-2); align-items: flex-start; margin-top: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-radius: var(--r-sm); background: var(--danger-soft); border: 1px solid var(--danger-border); font-size: var(--fs-sm); font-weight: 500; }
+  .pk-override input { margin-top: 2px; flex: none; }
+  .pk-clear { display: flex; gap: var(--sp-2); align-items: center; margin: var(--sp-2) 0 0; color: var(--ok); font-weight: 500; }
+
+  /* flags, inline where they apply */
+  .pk-flag { display: block; margin: var(--sp-2) 0 0; padding: 6px 10px; border-radius: var(--r-sm); border: 1px solid var(--tone-border); background: var(--tone-soft); font-size: var(--fs-sm); color: var(--text); }
+  .pk-flag .lvl { font-weight: 600; color: var(--tone); margin-right: 4px; }
+  .pk-flag q { display: block; margin-top: 2px; color: var(--text-2); font-style: italic; }
+
+  /* the resume */
+  .pk-pdf > summary { margin-bottom: var(--sp-2); }
+  .pk-pdf iframe { display: block; width: 100%; height: min(70vh, 720px); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); }
+  .pk-pdf .fallback { margin: var(--sp-2) 0 0; color: var(--muted); font-size: var(--fs-sm); }
+  .pk-outline { margin-top: var(--sp-4); }
+  .pk-outline h3 { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: var(--sp-5) 0 var(--sp-2); font-size: var(--fs-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .pk-outline h3:first-child { margin-top: 0; }
+  .pk-outline h3 .badge { text-transform: none; letter-spacing: 0; }
+  .pk-summary { margin: 0; padding: var(--sp-3) var(--sp-4); border-left: 3px solid var(--border-strong); background: var(--surface-2); border-radius: 0 var(--r-sm) var(--r-sm) 0; scroll-margin-top: calc(var(--nav-h) + var(--sp-6)); }
+  .pk-summary p { margin: 0; }
+  .pk-entry { padding: var(--sp-3) 0; border-top: 1px solid var(--border); }
+  .pk-outline h3 + .pk-entry { border-top: 0; padding-top: 0; }
+  .pk-entry-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 var(--sp-4); }
+  .pk-entry-head h4 { margin: 0; font-size: var(--fs); }
+  .pk-entry-head h4 span { font-weight: 400; color: var(--text-2); }
+  .pk-entry-head .dates { color: var(--muted); font-size: var(--fs-sm); }
+  .pk-bullets { margin: var(--sp-2) 0 0; padding-left: 18px; }
+  .pk-bullets li { margin: 5px 0; scroll-margin-top: calc(var(--nav-h) + var(--sp-6)); }
+  .pk-bullets li.reworded { list-style: none; position: relative; margin-left: -18px; padding: 6px 10px 6px 15px; border-left: 3px solid var(--accent); background: var(--hl); border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+  .pk-bullets .was { margin: 4px 0 0; color: var(--text-2); font-size: var(--fs-sm); }
+  .pk-skills { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pk-skills .pill { white-space: normal; max-width: 100%; }
+  .pk-plain { list-style: none; margin: 0; padding: 0; }
+  .pk-plain li { margin: 3px 0; }
+  .pk-plain .muted { font-size: var(--fs-sm); }
+  .pk-cut { margin-top: var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--border); color: var(--muted); font-size: var(--fs-sm); }
+  .pk-cut ul { margin: var(--sp-1) 0 0; padding-left: 18px; }
+
+  /* the answers */
+  .pk-section + .pk-section { margin-top: var(--sp-5); padding-top: var(--sp-4); border-top: 1px solid var(--border); }
+  .pk-section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--sp-3); margin: 0 0 var(--sp-3); }
+  .pk-section-head h3 { margin: 0; font-size: var(--fs-md); }
+  .pk-section-head p { margin: 0; color: var(--muted); font-size: var(--fs-sm); }
+  .pk-section-head .tally { margin-left: auto; display: inline-flex; gap: 6px; }
+  .pk-q { padding: var(--sp-3); margin: 0 calc(-1 * var(--sp-3)); border-radius: var(--r-sm); border-left: 3px solid transparent; scroll-margin-top: calc(var(--nav-h) + var(--sp-6)); }
+  .pk-q.need { border-left-color: var(--danger); background: var(--danger-soft); }
+  .pk-q.ai { border-left-color: var(--warn-solid); background: var(--warn-soft); }
+  .pk-q:target, .pk-bullets li:target, .pk-summary:target { animation: pk-flash 1.6s ease-out; }
+  @keyframes pk-flash { from { box-shadow: 0 0 0 3px var(--focus-ring); } to { box-shadow: 0 0 0 3px transparent; } }
+  .pk-q-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px var(--sp-3); margin-bottom: 5px; }
+  .pk-q-label { font-weight: 550; color: var(--text); }
+  .pk-q .req { margin-left: 4px; color: var(--danger); font-size: var(--fs-xs); font-weight: 600; white-space: nowrap; }
+  .pk-q .help { margin: -2px 0 6px; max-width: 80ch; }
+  .pk-desc { margin: -2px 0 8px; }
+  .pk-desc .help { margin: 6px 0 0; }
+  .pk-q input:not([type="checkbox"]):not([type="radio"]), .pk-q select, .pk-q textarea { width: 100%; }
+  .pk-q select { max-width: 100%; text-overflow: ellipsis; }
+  .pk-choices { display: grid; gap: 4px var(--sp-4); grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); }
+  .pk-choices.few { grid-template-columns: minmax(0, 1fr); }
+  .pk-choices.many { max-height: 260px; overflow: auto; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); }
+  .pk-choices label { display: flex; align-items: flex-start; gap: 6px; padding: 2px 0; font-weight: 400; }
+  .pk-choices label input { margin-top: 3px; flex: none; }
+  .pk-choices label.blank { color: var(--muted); }
+  .pk-file { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); }
+  .pk-file .none { color: var(--muted); }
+  .pk-letter textarea { width: 100%; min-height: 20rem; }
+  .pk-none { margin: 0; color: var(--text-2); }
+
+  /* the action bar */
+  .pk-bar { grid-column: 1 / -1; position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2) var(--sp-4); padding: var(--sp-3) var(--sp-4); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r) var(--r) 0 0; box-shadow: var(--shadow-lg); }
+  .pk-bar-status { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); min-width: 0; flex: 1 1 280px; }
+  .pk-bar-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+  .pk-after { display: inline-flex; flex-wrap: wrap; gap: var(--sp-2); vertical-align: middle; }
+  .pk-locked .pk-bar-actions, .pk-locked .pk-bar-hint, .pk-locked .pk-other { display: none; }
+  .pk-other { display: grid; gap: var(--sp-4); grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); align-items: start; }
+  .pk-other .card + .card { margin-top: 0; }
+  .pk-other textarea { min-height: 4.5rem; }
+  .pk-other .row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); }
+  .pk-other input[name="reason"] { flex: 1 1 200px; }
+  .pk-other details > summary { color: var(--danger); }
+
+  @media (max-width: 1000px) {
+    .pk-layout { grid-template-columns: minmax(0, 1fr); }
+    .pk-aside, .pk-main { grid-column: 1; grid-row: auto; }
+    .pk-aside { position: static; max-height: none; overflow: visible; }
+  }
+  @media (max-width: 700px) {
+    .pk-pdf iframe { display: none; }
+    .pk-bar-actions { flex: 1 1 100%; }
+    .pk-bar-actions button { flex: 1; }
+  }
+</style>
+{% endblock %}
+
+{% macro flag(f) -%}
+<span class="pk-flag t-{{ f.tone }}"><span class="lvl">{{ f.level_label }}:</span>{{ f.message }}{% if f.quote %}<q>{{ f.quote }}</q>{% endif %}</span>
+{%- endmacro %}
+
+{% macro answer_badge(r) -%}
+{%- if r.kind == 'file' -%}
+{%- elif r.required_empty %}{{ ui.badge("Needs your answer", "danger") }}
+{%- elif r.empty %}{{ ui.badge("Left blank", "neutral", "Optional, so it can stay empty") }}
+{%- elif r.ai_draft %}{{ ui.source_badge("llm_new") }}
+{%- elif r.source == 'llm_new' %}{{ ui.badge("Drafted by AI", "neutral", "You saved this one as it is") }}
+{%- elif r.source %}{{ ui.source_badge(r.source) }}
+{%- endif -%}
+{%- endmacro %}
+
 {% block content %}
-<h3 style="margin:0">{{ job.title }}</h3>
-<div>{% include "_job_row_meta.html" %} · <a href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">posting ↗</a> · channel {{ app.channel }}</div>
-{% set blocks = packet.blocking_flags() %}
-<div class="split" style="margin-top:1rem">
+{% set dis = '' if editable else ' disabled' %}
+{% set o = view.outline %}
+<div id="pk-page" data-job="{{ job.id }}" data-built="{{ packet.generated_at | iso }}">
+<p class="pk-crumb">
+  <a href="/packets">← All packets</a>
+  {% if position %}<span>Packet {{ position }} of {{ waiting }}</span>{% endif %}
+  <span class="spacer"></span>
+  {% if next_id %}<a href="/packets/{{ next_id }}">Next packet →</a>{% endif %}
+</p>
+
+<div class="page-header pk-top">
   <div>
-    <h2>Resume</h2>
-    {% if packet.resume_pdf %}<iframe src="/files/{{ packet.resume_pdf }}" style="width:100%;height:70vh;border:1px solid var(--line);border-radius:8px"></iframe>
-    <p><a href="/files/{{ packet.resume_pdf }}" target="_blank">open PDF</a></p>{% endif %}
-    {% if profile %}
-    <h2>Kept / reworded vs. mega resume</h2>
-    {% set items = profile.all_items() %}
-    <table>
-      {% for entry in packet.resume.experience + packet.resume.projects %}
-        {% for bid in entry.bullet_ids %}
-        <tr><td class="muted">{{ bid }}</td><td>
-          {% if entry.rewrites.get(bid) %}<div class="new">{{ entry.rewrites[bid] }}</div><div class="muted">was: {{ items[bid].text if bid in items else '?' }}</div>
-          {% else %}{{ items[bid].text if bid in items else bid }}{% endif %}
-        </td></tr>
-        {% endfor %}
-      {% endfor %}
-    </table>
-    {% set kept = [] %}{% for e in packet.resume.experience + packet.resume.projects %}{% for b in e.bullet_ids %}{% set _ = kept.append(b) %}{% endfor %}{% endfor %}
-    <p class="muted">Cut: {{ (items | length) - (kept | length) }} of {{ items | length }} items.</p>
-    {% endif %}
+    <h1>{{ job.title }}</h1>
+    <div class="job-sub">
+      {% if company %}<a class="company" href="/companies/{{ company.id }}" title="Everything from this employer">{{ company.name }}</a>{% endif %}
+      {% if job.priority %}<span>{{ ui.priority_chip(job.priority) }}</span>{% endif %}
+      {% if not editable %}{{ ui.status_badge(job.status) }}{% endif %}
+      {% set b = job.badges or {} %}
+      {% if b.get('sponsorship') == 'will_sponsor' %}{{ ui.badge("Sponsors visas", "ok", "The posting mentions visa sponsorship") }}{% endif %}
+      {% if b.get('h1b') %}{{ ui.badge("H-1B approvals: " ~ b.get('h1b'), "info", "Recent H-1B approvals for this employer (USCIS data)") }}{% endif %}
+      {% if b.get('e_verify') is sameas true %}{{ ui.badge("E-Verify employer", "info", "Enrolled in E-Verify (needed for the STEM OPT extension)") }}{% endif %}
+    </div>
   </div>
-  <div>
-    {% if packet.flags %}
-    <h2>Verifier flags</h2>
-    <ul>{% for f in packet.flags %}<li class="flag-{{ f.severity }}"><b>{{ f.severity }}</b> {{ f.where }}: “{{ f.text }}” <span class="muted">({{ f.reason }})</span></li>{% endfor %}</ul>
-    {% endif %}
-    <form hx-post="/packets/{{ job.id }}/edit" hx-target="#result">
-      <input type="hidden" name="rev" value="{{ rev }}">
-      <h2>Form answers</h2>
-      <table class="answers">
-      {% for q in packet.questions %}
-        {% set a = answers.get(q.id) %}
-        <tr class="{{ 'new' if a and a.needs_review }}">
-          <td style="width:40%">{{ q.label }}{% if q.required %} <span class="bad">*</span>{% endif %}
-            {% if q.description %}<br><span class="muted" style="font-style:italic">{{ q.description }}</span>{% endif %}
-            <br><span class="muted">{{ a.source if a else 'unanswered' }}</span></td>
-          <td>
-          {% if q.type == 'file' %}<span class="muted">{{ a.value if a and a.value else 'not attached' }}</span>
-          {% elif q.options %}
-            {% set multi = q.type in ('multiselect', 'checkbox') and q.options | length > 1 %}
-            {% if multi %}<input type="hidden" name="present__{{ q.id }}" value="1">{% endif %}
-            <select name="q__{{ q.id }}" {{ 'multiple' if multi }}>
-              <option value="">(none)</option>
-              {% for o in q.options %}<option value="{{ o }}" {{ 'selected' if a and (a.value == o or (a.value is iterable and a.value is not string and o in a.value)) }}>{{ o }}</option>{% endfor %}
-            </select>
-          {% elif q.type == 'textarea' %}<textarea name="q__{{ q.id }}">{{ a.value if a and a.value is not none else '' }}</textarea>
-          {% else %}<input name="q__{{ q.id }}" value="{{ '' if not a or a.value is none else (a.value | join(', ') if a.value is iterable and a.value is not string else a.value) }}" style="width:100%">
-          {% endif %}
-          </td>
-        </tr>
-      {% endfor %}
-      </table>
-      {% if packet.cover_letter is not none %}
-      <h2>Cover letter</h2>
-      <textarea name="cover_letter" style="min-height:14rem">{{ packet.cover_letter }}</textarea>
-      {% if packet.cover_letter_pdf %}<p><a href="/files/{{ packet.cover_letter_pdf }}" target="_blank">cover letter PDF</a></p>{% endif %}
-      {% endif %}
-      {% if blocks %}<label class="f bad"><input type="checkbox" name="override"> I checked the {{ blocks | length }} blocking flag(s) and the claims are true</label>{% endif %}
-      <p>
-        <button name="then_approve" value="1" class="primary">Save &amp; Go ahead</button>
-        <button name="then_approve" value="0">Save edits</button>
-      </p>
-    </form>
-    <form hx-post="/packets/{{ job.id }}/approve" hx-target="#result" class="inline">
-      <input type="hidden" name="rev" value="{{ rev }}">
-      <button class="primary" {{ 'disabled title="resolve or override blocking flags"' if blocks }}>Go ahead (as is)</button>
-    </form>
-    <form hx-post="/packets/{{ job.id }}/regenerate" hx-target="#result" class="inline">
-      <input type="hidden" name="rev" value="{{ rev }}">
-      <input name="note" placeholder="regenerate with a note, e.g. emphasize the Kafka work" size="36"> <button>Regenerate</button>
-    </form>
-    <form hx-post="/packets/{{ job.id }}/skip" hx-target="#result" class="inline"><button class="danger">Skip job</button></form>
-    <p id="result"></p>
+  <div class="actions">
+    <a class="btn" href="/jobs/{{ job.id }}">Full job page</a>
+    <a class="btn" href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">Open the posting ↗</a>
   </div>
 </div>
+
+{% if not editable %}
+{% set st = job.status.value %}
+{% if st == 'approved' %}
+{{ ui.alert("info", "Approved and queued to send", "This packet will be sent during your active hours. It can't be changed now; you can still stop it from the Applications page.") }}
+{% elif st == 'shortlisted' %}
+{{ ui.alert("info", "This packet is being rebuilt", "What you see below is the previous version. The new one will show up in Packets in a few minutes.") }}
+{% elif st == 'rejected' %}
+{{ ui.alert("info", "You skipped this job", "Nothing was sent. The packet is kept here for reference.") }}
+{% else %}
+{{ ui.alert("info", status_label(job.status), "This packet is shown as it was approved. It can't be changed any more. See the Applications page for what happened next.") }}
+{% endif %}
+{% endif %}
+
+{% for w in watch_outs %}
+{{ ui.alert("danger" if w.tone == "danger" else "warn", w.title, w.text) }}
+{% endfor %}
+
+<dl class="glance">
+  {% for f in glance %}
+  <div{% if f.title %} title="{{ f.title }}"{% endif %}><dt>{{ f.label }}</dt><dd>{{ f.value }}{% if f.note %}<small>{{ f.note }}</small>{% endif %}</dd></div>
+  {% endfor %}
+</dl>
+
+{% if fit %}
+<section aria-label="How well this job fits you">
+  <div class="fit t-{{ fit.tone }}">
+    <div class="fit-score" title="Fit score out of 100">{{ fit.score }}</div>
+    <div>
+      <div class="fit-label">{{ fit.label }}</div>
+      {% if fit.reason %}<p class="fit-reason">{{ fit.reason }}</p>{% endif %}
+    </div>
+    {% if fit.meets or fit.gaps or fit.concerns %}
+    <div class="fit-cols">
+      {% if fit.meets %}<div><h4>Where you match</h4><ul class="ticks yes">{% for x in fit.meets %}<li>{{ x }}</li>{% endfor %}</ul></div>{% endif %}
+      {% if fit.gaps %}<div><h4>Gaps</h4><ul class="ticks no">{% for x in fit.gaps %}<li>{{ x }}</li>{% endfor %}</ul></div>{% endif %}
+      {% if fit.concerns %}<div><h4>Things to weigh</h4><ul class="ticks flag">{% for x in fit.concerns %}<li>{{ x }}</li>{% endfor %}</ul></div>{% endif %}
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{# the AI summary of the posting and the company research (loaded on their own) #}
+<details class="box pk-about">
+  <summary>About this job and company</summary>
+  {% include "_job_research_slot.html" ignore missing %}
+</details>
+
+<form id="packet-form" class="pk-layout" hx-post="/packets/{{ job.id }}/edit" hx-target="#result" hx-swap="innerHTML">
+  <input type="hidden" name="rev" value="{{ rev }}">
+
+  {# ------------------------------------------------------------ before you approve #}
+  <aside class="pk-aside" aria-label="Before you approve">
+    <div class="card pk-check" id="checklist">
+      <h2>Before you approve</h2>
+      {% if view.check_total %}
+      <div class="pk-progress">
+        <progress id="pk-progress" max="{{ view.check_total }}" value="0" aria-label="Checklist progress"></progress>
+        <span id="pk-progress-text">0 of {{ view.check_total }} done</span>
+      </div>
+      <p class="help">Tick each one off as you go. The links jump to the right spot.</p>
+      {% for g in view.checklist %}
+      {% set gtone = {"required": "danger", "block": "danger", "ai": "warn", "warn": "neutral", "resume": "neutral"}[g.key] %}
+      <div class="pk-group t-{{ gtone }}" data-group="{{ g.key }}">
+        <h3>{{ g.title }} <span class="n">{{ g["items"] | length }}</span></h3>
+        {% if g.help %}<p class="help">{{ g.help }}</p>{% endif %}
+        <ul class="pk-items">
+          {% for it in g["items"] %}
+          <li data-key="{{ it.key }}"{% if it.auto %} data-field="{{ it.field }}"{% endif %}>
+            {% if it.auto %}<span class="dot" title="Ticks itself when you fill in the answer"></span>
+            {% else %}<input type="checkbox" class="pk-tick" aria-label="Done: {{ it.text }}"{{ dis }}>{% endif %}
+            <div>
+              {% if it.href %}<a href="{{ it.href }}">{{ it.text }}</a>{% else %}{{ it.text }}{% endif %}
+              {% if it.detail %}<p class="detail">{{ it.detail }}</p>{% endif %}
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+        {% if g.key == 'block' and editable %}
+        <label class="pk-override"><input type="checkbox" name="override"> <span>I checked {{ "this" if view.blocking == 1 else "these " ~ view.blocking }} and {{ "it is" if view.blocking == 1 else "they are" }} true</span></label>
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% else %}
+      <p class="pk-clear"><span aria-hidden="true">✓</span> Nothing was flagged in this packet.</p>
+      <p class="help">Give the resume and the answers a read, then approve.</p>
+      {% endif %}
+    </div>
+  </aside>
+
+  <div class="pk-main">
+    {# -------------------------------------------------------------------- resume #}
+    <div class="card" id="resume">
+      <div class="pk-card-head">
+        <h2>Your tailored resume</h2>
+        {% if view.resume_file and view.resume_file.href %}<a class="btn sm" href="{{ view.resume_file.href }}" target="_blank" rel="noopener">Open the PDF ↗</a>{% endif %}
+        <p>Chosen and worded for this job from your profile. Nothing here is invented: every line traces back to something you wrote.</p>
+      </div>
+      {% for f in view.resume_flags %}{{ flag(f) }}{% endfor %}
+      {% if view.resume_file and view.resume_file.href %}
+      <details class="pk-pdf" open>
+        <summary>Preview</summary>
+        <iframe src="{{ view.resume_file.href }}" title="Preview of your tailored resume (PDF)" loading="lazy"></iframe>
+        <p class="fallback">Can't see it? <a href="{{ view.resume_file.href }}" target="_blank" rel="noopener">Open the resume PDF in a new tab</a>.</p>
+      </details>
+      {% elif view.resume_file %}
+      {{ ui.alert("warn", "The resume file is missing", "The PDF for this packet isn't on disk any more. Rebuild the packet with a note below to make a new one.") }}
+      {% else %}
+      {{ ui.alert("warn", "No resume PDF yet", "This packet doesn't have a resume file. Rebuild it with a note below to make one.") }}
+      {% endif %}
+
+      <div class="pk-outline" id="resume-outline">
+        {% if o.summary %}
+        <h3>Summary {% if o.summary_generated %}{{ ui.badge("Written by AI for this job", "warn") }}{% else %}{{ ui.badge("From your profile", "ok") }}{% endif %}</h3>
+        <div class="pk-summary" id="resume-summary">
+          <p>{{ o.summary }}</p>
+          {% for f in view.summary_flags %}{{ flag(f) }}{% endfor %}
+        </div>
+        {% endif %}
+
+        {% if profile_problem %}
+        <h3>What's in it</h3>
+        {% if profile_problem == 'missing' %}
+        {{ ui.alert("info", "Your profile isn't set up on this computer", "So Recrute can't list which roles and bullets went into this resume. The PDF above is still the real thing.") }}
+        {% else %}
+        {{ ui.alert("warn", "Your profile couldn't be read", "So Recrute can't list which roles and bullets went into this resume. Check the Profile page; the PDF above is still the real thing.") }}
+        {% endif %}
+        {% else %}
+        {% for kind, title in (("experience", "Experience"), ("project", "Projects")) %}
+        {% set entries = o.entries | selectattr("kind", "equalto", kind) | list %}
+        {% if entries %}
+        <h3>{{ title }}</h3>
+        {% for e in entries %}
+        <div class="pk-entry">
+          <div class="pk-entry-head">
+            <h4>{{ e.title }}{% if e.org %} <span>· {{ e.org }}</span>{% endif %}</h4>
+            <span class="dates">{{ e.dates }}{% if e.dates and e.where %} · {% endif %}{{ e.where }}</span>
+          </div>
+          {% if e.missing %}<p class="help">This entry was in your profile when the packet was built, but isn't any more.</p>{% endif %}
+          {% if e.bullets %}
+          <ul class="pk-bullets">
+            {% for bl in e.bullets %}
+            <li id="{{ bl.anchor }}"{% if bl.rewritten %} class="reworded"{% endif %}>
+              {% if bl.missing %}<span class="muted">A bullet that's no longer in your profile.</span>
+              {% else %}{{ bl.text }}{% endif %}
+              {% if bl.rewritten %} {{ ui.badge("Reworded", "accent", "The AI reworded this bullet for the job") }}
+              {% if bl.original %}<details class="tech"><summary>See your original wording</summary><p class="was">{{ bl.original }}</p></details>{% endif %}
+              {% endif %}
+              {% for f in bl.flags %}{{ flag(f) }}{% endfor %}
+            </li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+          {% if e.left_out %}
+          <details class="tech"><summary>{{ e.left_out | length | plural("more bullet") }} from your profile left out</summary>
+            <ul class="pk-bullets">{% for t in e.left_out %}<li class="muted">{{ t }}</li>{% endfor %}</ul>
+          </details>
+          {% endif %}
+        </div>
+        {% endfor %}
+        {% endif %}
+        {% endfor %}
+        {% endif %}
+
+        {% if o.skills %}
+        <h3>Skills</h3>
+        <div class="pk-skills">{% for sk in o.skills %}{{ ui.chip(sk) }}{% endfor %}</div>
+        {% endif %}
+        {% if o.education %}
+        <h3>Education</h3>
+        <ul class="pk-plain">{% for e in o.education %}<li><b>{{ e.school }}</b>{% if e.degree %} · {{ e.degree }}{% endif %}{% if e.dates %} <span class="muted">· {{ e.dates }}</span>{% endif %}</li>{% endfor %}</ul>
+        {% endif %}
+        {% if o.certifications %}
+        <h3>Certifications</h3>
+        <ul class="pk-plain">{% for c in o.certifications %}<li><b>{{ c.name }}</b>{% if c.issuer %} · {{ c.issuer }}{% endif %}{% if c.date %} <span class="muted">· {{ c.date }}</span>{% endif %}</li>{% endfor %}</ul>
+        {% endif %}
+
+        {% if o.profile and o.total %}
+        <div class="pk-cut">
+          Uses {{ o.kept }} of the {{ o.total | plural("bullet") }} in your profile{% if view.rewritten %}, {{ view.rewritten }} of them reworded{% endif %}.
+          {% if o.left_out_entries %}
+          <details class="tech"><summary>{{ o.left_out_entries | length | plural("role or project", "roles and projects") }} left out entirely</summary>
+            <ul>{% for t in o.left_out_entries %}<li>{{ t }}</li>{% endfor %}</ul>
+          </details>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    {# -------------------------------------------------------------------- cover letter #}
+    <div class="card pk-letter" id="cover-letter">
+      <div class="pk-card-head">
+        <h2>Cover letter</h2>
+        {% if view.cover_file and view.cover_file.href %}<a class="btn sm" href="{{ view.cover_file.href }}" target="_blank" rel="noopener">Open the PDF ↗</a>{% endif %}
+        {% if packet.cover_letter is not none %}<p>Written by AI for this job. Edit it here; the PDF is remade when you save.</p>{% endif %}
+      </div>
+      {% if packet.cover_letter is not none %}
+      {% for f in view.cover_flags %}{{ flag(f) }}{% endfor %}
+      <label class="sr-only" for="cover-letter-text">Cover letter text</label>
+      <textarea id="cover-letter-text" name="cover_letter" rows="{{ [[(packet.cover_letter | length) // 75 + 4, 12] | max, 28] | min }}"{{ dis }}>{{ packet.cover_letter }}</textarea>
+      {% else %}
+      <p class="pk-none"><b>No cover letter.</b> This form doesn't require one, so Recrute didn't write one and nothing extra will be sent.</p>
+      {% endif %}
+    </div>
+
+    {# -------------------------------------------------------------------- answers #}
+    <div class="card pk-answers" id="answers">
+      <div class="pk-card-head">
+        <h2>Form answers</h2>
+        {% if view.rows %}
+        <span class="tally">
+          {{ view.rows | length | plural("question") }}
+          {% if view.missing %}{{ ui.badge(view.missing | plural("required answer") ~ " missing", "danger") }}{% endif %}
+        </span>
+        <p>Exactly what will be typed into the employer's form. Change anything that isn't right.</p>
+        {% endif %}
+      </div>
+      {% if not view.rows %}
+      {% call ui.alert("warn", "Recrute couldn't read this site's application form") %}
+      <div class="alert-text">So there are no answers to check here. Your resume is ready: when you approve, you'll go through the form yourself with Recrute's help.</div>
+      {% endcall %}
+      {% elif view.form_not_read %}
+      {{ ui.alert("warn", "Part of this form couldn't be read", "There may be more questions on the site than the ones below. If so, the application will come back to you to finish.") }}
+      {% endif %}
+
+      {% for sec in view.sections %}
+      <section class="pk-section" id="answers-{{ sec.key }}">
+        <div class="pk-section-head">
+          <h3>{{ sec.title }}</h3>
+          <p>{{ sec.help }}</p>
+          <span class="tally">
+            {% if sec.empty_required %}{{ ui.badge(sec.empty_required ~ " to answer", "danger") }}{% endif %}
+            {% if sec.ai %}{{ ui.badge(sec.ai | plural("AI draft"), "warn") }}{% endif %}
+          </span>
+        </div>
+        {% for r in sec.rows %}
+        {% set name = "q__" ~ r.q.id %}
+        {% set grouped = r.kind in ("checks", "radios") %}
+        {# (an answer shown through a stand-in choice isn't sent until you change it: `hold`) #}
+        {% set nm = "data-name" if r.hold else "name" %}
+        <div class="pk-q{{ ' need' if r.required_empty }}{{ ' ai' if r.ai_draft }}" id="{{ r.anchor }}"{% if r.hold %} data-hold{% endif %}>
+          <div class="pk-q-head">
+            {% if grouped or r.kind == 'file' %}<span class="pk-q-label" id="{{ r.anchor }}-label">{{ r.label }}{% if r.q.required %}<span class="req">Required</span>{% endif %}</span>
+            {% else %}<label class="pk-q-label" for="{{ r.field_id }}">{{ r.label }}{% if r.q.required %}<span class="req">Required</span>{% endif %}</label>{% endif %}
+            {{ answer_badge(r) }}
+          </div>
+          {% if r.q.description | length > 260 %}
+          <details class="tech pk-desc"><summary>Read the employer's note on this question</summary><p class="help">{{ r.q.description }}</p></details>
+          {% elif r.q.description %}<p class="help">{{ r.q.description }}</p>{% endif %}
+
+          {% if r.kind == 'file' %}
+          <div class="pk-file">
+            {% if r.file and r.file.href %}<a href="{{ r.file.href }}" target="_blank" rel="noopener">{{ r.file.name }} ↗</a>
+            {% elif r.file %}<span>{{ r.file.name }}</span>{% if r.file.missing %} {{ ui.badge("File missing", "danger", "The file isn't on disk any more. Rebuild the packet to make a new one.") }}{% endif %}
+            {% else %}<span class="none">Nothing attached{% if not r.q.required %}: this one is optional, so nothing will be uploaded{% endif %}.</span>{% endif %}
+          </div>
+
+          {% elif r.kind == 'checks' %}
+          <input type="hidden" {{ nm }}="present__{{ r.q.id }}" value="1"{{ dis }}>
+          <div class="pk-choices{{ ' many' if r.options | length > 12 }}" role="group" aria-labelledby="{{ r.anchor }}-label" id="{{ r.field_id }}" tabindex="-1">
+            {% for opt in r.options %}
+            <label><input type="checkbox" {{ nm }}="{{ name }}" value="{{ opt }}"{{ ' checked' if opt in r.selected }}{{ dis }}> <span>{{ opt }}</span></label>
+            {% endfor %}
+          </div>
+          <p class="help" style="margin:6px 0 0">Tick all that apply.</p>
+
+          {% elif r.kind == 'radios' %}
+          <div class="pk-choices few" role="radiogroup" aria-labelledby="{{ r.anchor }}-label" id="{{ r.field_id }}" tabindex="-1">
+            {% for opt in r.options %}
+            <label><input type="radio" {{ nm }}="{{ name }}" value="{{ opt }}"{{ ' checked' if opt in r.selected }}{{ dis }}> <span>{{ opt }}</span></label>
+            {% endfor %}
+            {% if not r.q.required %}<label class="blank"><input type="radio" {{ nm }}="{{ name }}" value=""{{ ' checked' if not r.selected }}{{ dis }}> <span>Leave blank</span></label>{% endif %}
+          </div>
+
+          {% elif r.kind == 'select' %}
+          <select id="{{ r.field_id }}" {{ nm }}="{{ name }}"{{ dis }}>
+            <option value="">{{ "Choose an answer…" if r.q.required else "No answer" }}</option>
+            {% for opt in r.options %}<option value="{{ opt }}"{{ ' selected' if opt in r.selected }}>{{ opt }}</option>{% endfor %}
+          </select>
+
+          {% elif r.kind == 'textarea' %}
+          {% if r.lines %}<input type="hidden" name="lines__{{ r.q.id }}" value="1"{{ dis }}>{% endif %}
+          <textarea id="{{ r.field_id }}" name="{{ name }}" rows="{{ r.rows }}"{{ dis }}>{{ r.value_text }}</textarea>
+          {% if r.lines %}<p class="help" style="margin:4px 0 0">One per line.</p>{% endif %}
+
+          {% else %}
+          <input id="{{ r.field_id }}" type="{{ r.input_type }}" name="{{ name }}" value="{{ r.value_text }}"{{ dis }}>
+          {% endif %}
+
+          {% if r.q.max_length and r.kind in ('textarea', 'input') %}<p class="help" style="margin:4px 0 0">Up to {{ r.q.max_length | num }} characters.</p>{% endif %}
+          {% for f in r.flags %}{{ flag(f) }}{% endfor %}
+        </div>
+        {% endfor %}
+      </section>
+      {% endfor %}
+    </div>
+  </div>
+
+  {# -------------------------------------------------------------------- actions #}
+  {% if editable %}
+  <div class="pk-bar" id="pk-bar">
+    <div class="pk-bar-status">
+      <span class="pk-bar-hint">
+        {% if view.missing %}{{ ui.badge(view.missing | plural("required answer") ~ " still empty", "danger", "You can approve anyway: the application will stop at those questions and come back to you") }}
+        {% elif view.blocking %}{{ ui.badge(view.blocking | plural("claim") ~ " to confirm first", "danger") }}
+        {% else %}{{ ui.badge("Ready when you are", "ok", dot=True) }}{% endif %}
+      </span>
+      <span id="result" aria-live="polite"></span>
+    </div>
+    <div class="pk-bar-actions">
+      <button name="then_approve" value="0" title="Keep your changes and stay on this page">Save changes</button>
+      <button name="then_approve" value="1" class="primary" title="Keep your changes and queue this application to be sent">Save &amp; approve</button>
+    </div>
+  </div>
+  {% endif %}
+</form>
+
+{% if editable %}
+<section class="section" id="pk-other" aria-label="Other options">
+  <div class="pk-other">
+    <div class="card">
+      <h2 class="card-title">Not quite right? Rebuild it with a note</h2>
+      <p class="help">Tell the AI what to change and it writes a new resume and new answers. Changes you made on this page are replaced. The packet leaves this list and comes back in a few minutes.</p>
+      <form hx-post="/packets/{{ job.id }}/regenerate" hx-target="#other-result" hx-swap="innerHTML">
+        <input type="hidden" name="rev" value="{{ rev }}">
+        <label class="sr-only" for="regen-note">What should change?</label>
+        <textarea id="regen-note" name="note" required placeholder="For example: lead with the incident response work and keep it to one page"></textarea>
+        <div class="row-actions"><button>Rebuild with this note</button></div>
+      </form>
+    </div>
+    <div class="card">
+      <h2 class="card-title">Changed your mind about this job?</h2>
+      <p class="help">Skipping marks the job as rejected. Nothing is sent, and it won't come back to Packets.</p>
+      <details>
+        <summary>Skip this job…</summary>
+        <form hx-post="/packets/{{ job.id }}/skip" hx-target="#other-result" hx-swap="innerHTML">
+          <div class="row-actions">
+            <label class="sr-only" for="skip-reason">Why are you skipping it? (optional)</label>
+            <input id="skip-reason" name="reason" placeholder="Why? (optional, for your own records)" maxlength="200">
+            <button class="danger">Yes, skip it</button>
+          </div>
+        </form>
+      </details>
+    </div>
+  </div>
+  <p id="other-result" aria-live="polite" style="margin-top:var(--sp-3)"></p>
+</section>
+{% endif %}
+</div>
 {% endblock %}
+
 {% block scripts %}
 <script>
-document.body.addEventListener('packetRev', e => {
-  document.querySelectorAll('input[name=rev]').forEach(i => { i.value = e.detail.value; });
-});
+(function () {
+  const root = document.getElementById('pk-page');
+  const form = document.getElementById('packet-form');
+  if (!root || !form) return;
+  const job = root.dataset.job;
+
+  // ---- an approve that was refused after saving: every form needs the new revision
+  document.body.addEventListener('packetRev', function (e) {
+    document.querySelectorAll('input[name=rev]').forEach(function (i) { i.value = e.detail.value; });
+  });
+
+  // ---- approved / rebuilding / skipped: this packet is done with, so nothing stays clickable
+  document.body.addEventListener('packetDone', function () {
+    root.classList.add('pk-locked');
+    root.querySelectorAll('input, select, textarea, button').forEach(function (el) { el.disabled = true; });
+  });
+
+  // ---- answers shown through a stand-in choice are only sent once you change them
+  form.querySelectorAll('[data-hold]').forEach(function (box) {
+    const picked = function () {
+      return JSON.stringify(Array.from(box.querySelectorAll('input[type=checkbox], input[type=radio], select'))
+        .filter(function (el) { return el.tagName === 'SELECT' || el.checked; }).map(function (el) { return el.value; }));
+    };
+    const initial = picked();
+    box.addEventListener('change', function () {
+      const same = picked() === initial;
+      box.querySelectorAll('[data-name]').forEach(function (el) {
+        if (same) el.removeAttribute('name'); else el.setAttribute('name', el.dataset.name);
+      });
+    });
+  });
+
+  // ---- the checklist: ticks are remembered on this computer; required answers tick themselves
+  // (per build of the packet: after a rebuild, the new drafts and notes start unticked)
+  const key = 'recrute.packet.' + job + '.' + (root.dataset.built || '') + '.ticks';
+  try {  // forget ticks kept for earlier builds of this packet
+    const mine = 'recrute.packet.' + job + '.';
+    Object.keys(localStorage).forEach(function (k) {
+      if (k.startsWith(mine) && k.endsWith('.ticks') && k !== key) localStorage.removeItem(k);
+    });
+  } catch (e) { /* storage unavailable: ticks just don't persist */ }
+  let ticked = [];
+  try { ticked = JSON.parse(localStorage.getItem(key) || '[]'); } catch (e) { ticked = []; }
+  const items = Array.from(document.querySelectorAll('.pk-items li'));
+  const bar = document.getElementById('pk-progress'), barText = document.getElementById('pk-progress-text');
+  const override = form.querySelector('input[name=override]');
+  function filled(holder) {
+    if (!holder) return false;
+    if (holder.matches('input, select, textarea')) return holder.value.trim() !== '';
+    return !!holder.querySelector('input:checked:not([value=""])');
+  }
+  function refresh() {
+    let done = 0;
+    items.forEach(function (li) {
+      const box = li.querySelector('.pk-tick');
+      let ok;
+      if (li.dataset.field) ok = filled(document.getElementById(li.dataset.field));
+      else ok = !!(box && box.checked);
+      li.classList.toggle('done', ok);
+      if (ok) done += 1;
+    });
+    if (bar) { bar.value = done; barText.textContent = done + ' of ' + items.length + ' done'; }
+  }
+  items.forEach(function (li) {
+    const box = li.querySelector('.pk-tick');
+    if (box && ticked.indexOf(li.dataset.key) !== -1) box.checked = true;
+  });
+  document.addEventListener('change', function (e) {
+    if (e.target.classList && e.target.classList.contains('pk-tick')) {
+      const now = items.filter(function (li) { const b = li.querySelector('.pk-tick'); return b && b.checked; })
+        .map(function (li) { return li.dataset.key; });
+      try { localStorage.setItem(key, JSON.stringify(now)); } catch (err) { /* private mode */ }
+    }
+    if (e.target === override) {  // confirming the claims ticks them off together
+      document.querySelectorAll('[data-group=block] .pk-tick').forEach(function (b) { b.checked = override.checked; });
+    }
+    refresh();
+  });
+  form.addEventListener('input', refresh);
+  refresh();
+
+  // ---- "Save changes" reloads the page: come back to the same spot and say it worked
+  const flash = 'recrute.packet.' + job + '.saved';
+  document.body.addEventListener('htmx:beforeOnLoad', function (e) {
+    const xhr = e.detail.xhr;
+    if (xhr && xhr.status === 200 && xhr.getResponseHeader('HX-Refresh') === 'true') {
+      try { sessionStorage.setItem(flash, String(window.scrollY)); } catch (err) { /* private mode */ }
+    }
+  });
+  let saved = null;
+  try { saved = sessionStorage.getItem(flash); sessionStorage.removeItem(flash); } catch (e) { saved = null; }
+  if (saved !== null) {
+    window.scrollTo(0, parseInt(saved, 10) || 0);
+    if (window.recruteToast) window.recruteToast('Saved', 'Your changes are in the packet. Nothing is sent until you approve.', 'ok', 5000);
+  }
+})();
 </script>
 {% endblock %}

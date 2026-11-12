@@ -1,0 +1,51 @@
+{# The rows of the Review list (the contents of #list, or one more page of it).
+   expects: rows, f (QueueFilters), offset, more, next_offset, shown, matched, total,
+            unscored_ids, group_counts, prev_group, rows_only #}
+{% import "_ui.html" as ui %}
+{% set meta_hide_fit = true %}
+{% set meta_hide_track = f.sort == 'best' %}
+{% set grp = namespace(last=prev_group) %}
+{% for job, company in rows %}
+{% set first = loop.first and not offset %}
+{% if f.sort == 'best' %}
+{% set g = job.priority.value if job.priority else '' %}
+{% if g != grp.last %}
+<div class="group-head" role="presentation"><span class="dot" style="background: var(--{{ (g or 'p3') | lower }})" aria-hidden="true"></span>{{ (g | priority_label) if g else 'No track' }} <span class="muted">{{ group_counts.get(g, 0) | plural('job') }}</span></div>
+{% set grp.last = g %}
+{% endif %}
+{% endif %}
+<div class="row{{ ' sel' if first }}" id="row-{{ job.id }}" data-id="{{ job.id }}" tabindex="0"
+     aria-label="{{ job.title }}{% if company %} at {{ company.name }}{% endif %}"{% if first %} aria-current="true"{% endif %}
+     hx-get="/jobs/{{ job.id }}" hx-target="#detail" hx-sync="#list:replace"
+     hx-trigger="click{{ ', load' if first }}">
+  <div class="row-head">
+    <span class="t">{{ job.title }}</span>
+    {% if job.id in unscored_ids %}{{ ui.badge("Not scored yet", "neutral", "This job has no fit score: it was moved back from Filtered before it was scored") }}
+    {% elif job.score is not none %}<span class="badge fit-chip t-{{ job.score | fit_tone }}" title="{{ job.score | fit_band }}: fit score {{ job.score }} out of 100"><span class="sr-only">Fit score </span>{{ job.score }}<span class="fit-word"> · {{ job.score | fit_band }}</span></span>{% endif %}
+  </div>
+  <div class="row-meta">{% include "_job_row_meta.html" %}{% if not job.description_md %} {{ ui.badge("No description yet", "warn", "The posting's text hasn't been loaded: open the posting to read it") }}{% endif %}</div>
+</div>
+{% else %}
+{% if not offset %}
+<div class="list-empty">
+  {% if f.active %}
+  {{ ui.empty_state("No jobs match these filters", "Try a different search, or loosen a filter.", "/queue", "Clear filters") }}
+  {% else %}
+  {{ ui.empty_state("You're all caught up", "There are no jobs waiting for your review. New matches appear here after Recrute finds and scores them.", "/", "Back to the dashboard") }}
+  {% endif %}
+</div>
+{% endif %}
+{% endfor %}
+{% if more %}
+<div class="list-more" id="queue-more-{{ next_offset }}">
+  <button type="button" hx-get="/queue?{{ f.query(offset=next_offset) }}" hx-target="#queue-more-{{ next_offset }}" hx-swap="outerHTML">Show more jobs</button>
+  <span class="muted">{{ (matched - shown) | num }} more</span>
+</div>
+{% endif %}
+{% if rows_only %}
+{# sent with the rows: the count line, and the right-hand pane when nothing matches #}
+<div id="queue-status" class="queue-status" hx-swap-oob="true">{% include "_queue_status.html" %}</div>
+{% if not rows and not offset %}
+<div class="pane" id="detail" hx-swap-oob="true"><p class="muted pane-hint">Nothing to show here. Change the filters to see jobs.</p></div>
+{% endif %}
+{% endif %}

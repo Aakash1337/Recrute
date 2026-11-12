@@ -1,23 +1,75 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Companies · Recrute{% endblock %}
 {% block content %}
-<form hx-post="/companies/add" hx-target="#add-result">
-  <input name="url" placeholder="job or careers URL (Greenhouse/Lever/Ashby/Workable/SmartRecruiters)" size="60">
-  <input name="name" placeholder="company name (optional)"> <button class="primary">Add company</button>
-  <span id="add-result"></span>
+{{ ui.page_header("Companies", "Employers whose job boards Recrute checks for new postings. " ~ (total | num) ~ " so far.") }}
+
+{% call ui.card("Add a company", "Paste a link to any job posting or careers page hosted on Greenhouse, Lever, Ashby, Workable or SmartRecruiters. Recrute then checks that employer's whole job board.") %}
+<form hx-post="/companies/add" hx-target="#add-result" class="hstack">
+  <label class="sr-only" for="add-url">Link to a job posting or careers page</label>
+  <input id="add-url" name="url" type="url" placeholder="https://job-boards.greenhouse.io/acme/jobs/123" size="52" required>
+  <label class="sr-only" for="add-name">Company name (optional)</label>
+  <input id="add-name" name="name" placeholder="Company name (optional)">
+  <button class="primary">Add company</button>
 </form>
-<form hx-get="/companies" hx-target="body" hx-push-url="true" style="margin-top:.5rem"><input name="q" value="{{ q }}" placeholder="search"> <button>Search</button></form>
+<div id="add-result" aria-live="polite" style="margin-top:8px"></div>
+{% endcall %}
+
+<form method="get" action="/companies" class="hstack" style="margin: var(--sp-4) 0 var(--sp-3)">
+  <label class="sr-only" for="q">Search companies</label>
+  <input id="q" name="q" type="search" value="{{ q }}" placeholder="Search by name">
+  <label class="sr-only" for="show">Show</label>
+  <select id="show" name="show" onchange="this.form.submit()">
+    {% for key, label in filters %}<option value="{{ key }}"{{ ' selected' if key == show }}>{{ label }}</option>{% endfor %}
+  </select>
+  <label class="sr-only" for="sort">Sort by</label>
+  <select id="sort" name="sort" onchange="this.form.submit()">
+    <option value="name"{{ ' selected' if sort == 'name' }}>Sort: name</option>
+    <option value="matches"{{ ' selected' if sort == 'matches' }}>Sort: most jobs for you</option>
+    <option value="checked"{{ ' selected' if sort == 'checked' }}>Sort: checked most recently</option>
+  </select>
+  <button>Search</button>
+  <span class="spacer"></span>
+  <span class="muted">{% if found %}Showing {{ (start + 1) | num }}–{{ (start + rows | length) | num }} of {{ found | num }}{% endif %}</span>
+</form>
+
+{% if rows %}
+<div class="card flush"><div class="table-wrap">
 <table>
-  <tr><th>company</th><th>board</th><th>origin</th><th>last polled</th><th>badges</th><th></th></tr>
+  <thead><tr><th>Company</th><th>Job board</th><th class="num">Jobs for you</th><th class="num">Postings seen</th><th>Last checked</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead>
+  <tbody>
   {% for c in rows %}
+  {% set n = counts.get(c.id, {}) %}
   <tr>
-    <td>{{ c.name }}</td>
-    <td>{% if c.ats %}{{ c.ats }}:{{ c.ats_token }}{% else %}<span class="muted">unknown</span>{% endif %}</td>
-    <td class="muted">{{ c.origin }}</td>
-    <td class="muted">{{ c.last_polled_at | ago }}{% if c.poll_error %} <span class="bad">{{ c.poll_error }}</span>{% endif %}</td>
-    <td>{% if c.h1b_recent_approvals %}<span class="badge">📊 {{ c.h1b_recent_approvals }}</span>{% endif %}{% if c.e_verify %}<span class="badge">✅</span>{% endif %}{% if c.cap_exempt %}<span class="badge">🎓</span>{% endif %}</td>
-    <td>{% if c.ats %}<button hx-post="/companies/{{ c.id }}/toggle" hx-swap="innerHTML">{{ 'pause' if c.active else 'resume' }}</button>{% endif %}</td>
+    <td><a href="/companies/{{ c.id }}"><strong>{{ c.name }}</strong></a>
+      {% if c.cap_exempt %} {{ ui.badge("Likely H-1B cap-exempt", "info") }}{% endif %}
+      {% if c.e_verify %} {{ ui.badge("E-Verify", "info") }}{% endif %}
+      {% if c.h1b_recent_approvals %} {{ ui.badge("H-1B approvals: " ~ c.h1b_recent_approvals, "info") }}{% endif %}</td>
+    <td>{% if c.ats %}{% set b = board_url(c) %}{% if b %}<a href="{{ b | safe_url }}" target="_blank" rel="noopener noreferrer">{{ source_label(c.ats) }} ↗</a>{% else %}{{ source_label(c.ats) }}{% endif %}{% else %}<span class="muted" title="Its jobs reach Recrute through job sites, not its own board">No board linked</span>{% endif %}</td>
+    <td class="num">{% if n.get('live') %}<a href="/companies/{{ c.id }}"><strong>{{ n.live | num }}</strong></a>{% else %}<span class="muted">0</span>{% endif %}</td>
+    <td class="num muted">{{ n.get('total', 0) | num }}</td>
+    <td class="muted">{% if c.last_polled_at %}{{ ui.when(c.last_polled_at) }}{% elif c.ats %}Not yet{% else %}–{% endif %}</td>
+    <td>{% if not c.ats %}<span class="muted">Not checked directly</span>
+        {% elif c.poll_error %}{% set fe = friendly_error(c.poll_error) %}{{ ui.badge("Couldn't reach it", "danger", fe.detail if fe else None, dot=True) }}
+        {% elif c.active %}{{ ui.badge("Checking", "ok", dot=True) }}
+        {% else %}{{ ui.badge("Paused", "neutral", dot=True) }}{% endif %}</td>
+    <td>{% if c.ats %}<button class="sm" hx-post="/companies/{{ c.id }}/toggle" hx-swap="innerHTML" title="Pause or resume checking this company's job board">{{ 'Pause' if c.active else 'Resume checking' }}</button>{% endif %}</td>
   </tr>
   {% endfor %}
+  </tbody>
 </table>
+</div></div>
+{% if pages > 1 %}
+<nav class="hstack" style="margin-top: var(--sp-3); justify-content: center" aria-label="Pages">
+  {% set base = "/companies?q=" ~ (q | urlencode) ~ "&show=" ~ show ~ "&sort=" ~ sort ~ "&p=" %}
+  {% if page_no > 1 %}<a class="btn" href="{{ base }}{{ page_no - 1 }}">← Previous</a>{% endif %}
+  <span class="muted">Page {{ page_no }} of {{ pages }}</span>
+  {% if page_no < pages %}<a class="btn" href="{{ base }}{{ page_no + 1 }}">Next →</a>{% endif %}
+</nav>
+{% endif %}
+{% elif q or show != 'all' %}
+{{ ui.empty_state("No companies match", "Try a different search, or clear the filter.", "/companies", "Show all companies") }}
+{% else %}
+{{ ui.empty_state("No companies yet", "They appear here after the first discovery run, or when you add one above.") }}
+{% endif %}
 {% endblock %}

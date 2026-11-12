@@ -43,10 +43,19 @@ DEFAULTS: dict[str, Any] = {
     # Inbox tracking (IMAP). Password lives in the OS keyring, never here.
     "imap": {"enabled": False, "host": "imap.gmail.com", "port": 993, "user": "",
              "folder": "INBOX"},
+    # AI research in the background: plain-language job summaries (from the posting only) and
+    # company research (public web data only). The buttons on a job work even when it's off.
+    "research": {"enabled": True, "briefs_per_run": 15, "companies_per_day": 20,
+                 "max_age_days": 30, "web": True},
 }
 
 # Settings whose values are dicts: updates are merged key-by-key with type checking.
-_DICT_KEYS = {"sources_enabled", "linkedin_session_budget", "auto_approve", "notify", "imap"}
+_DICT_KEYS = {"sources_enabled", "linkedin_session_budget", "auto_approve", "notify", "imap",
+              "research"}
+# research: allowed range (inclusive) of each number, and its name in error messages
+RESEARCH_LIMITS = {"briefs_per_run": (0, 100, "Job summaries per run"),
+                   "companies_per_day": (0, 200, "Companies researched per day"),
+                   "max_age_days": (1, 365, "Refresh company research after (days)")}
 # Protective per-site caps that can only be raised/removed explicitly (never by omission).
 PROTECTED_CAPS = {"linkedin_easy_apply": 15}
 
@@ -140,6 +149,10 @@ def _validate(key: str, value: Any) -> Any:
                 v = str(v)
             merged[k] = v
         value = merged
+        if key == "research":
+            for k, (lo, hi, label) in RESEARCH_LIMITS.items():
+                if not lo <= value[k] <= hi:
+                    raise ValueError(f"{label} must be between {lo} and {hi}.")
     return value
 
 

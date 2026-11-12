@@ -460,3 +460,82 @@ def apply_due(ctx) -> dict:
     from recrute.applying import run_due_task
 
     return run_due_task(ctx)
+
+
+# ------------------------------------------------------------------------------ research
+
+
+def build_briefs(ctx) -> dict:
+    """Plain-language summaries of postings: requested ones first, then jobs you're acting on
+    and the review queue. Posting text only (no profile data); never writes Job columns.
+    With background research turned off, only explicit requests are handled."""
+    from recrute.research import briefs
+    from recrute.settings import get_setting
+
+    with ctx.session() as s:
+        cfg = get_setting(s, "research")
+        # (summaries you asked for are always made, whatever the background amount is)
+        ids = briefs.pick_jobs(s, 5, background=False)
+        if cfg["enabled"] and int(cfg["briefs_per_run"]) > len(ids):
+            more = briefs.pick_jobs(s, int(cfg["briefs_per_run"]), background=True)
+            ids += [i for i in more if i not in ids][:int(cfg["briefs_per_run"]) - len(ids)]
+    stats = {"summarized": 0, "failed": 0, "skipped": 0}
+    for job_id in ids:
+        if ctx.stop.is_set():
+            break
+        result = briefs.run_brief(ctx.session, ctx.router, job_id,
+                                  max_years=ctx.criteria.max_years_required)
+        if result == "usage_limit":  # every provider is cooling down: stop until later
+            stats["usage_limit"] = True
+            break
+        if result == "ok":
+            stats["summarized"] += 1
+        elif result in ("failed", "skipped"):
+            stats[result] += 1
+    return stats
+
+
+def research_companies(ctx) -> dict:
+    """Public-web research on employers: requested ones first, then companies whose jobs you
+    shortlisted or applied to, then those with well-scoring jobs in the review queue. A few
+    per run and a daily cap (Settings); explicit requests are never held back by the cap."""
+    from recrute.errors import safe_error
+    from recrute.research import company
+    from recrute.settings import get_setting
+
+    stats = {"researched": 0, "limited": 0, "not_found": 0, "failed": 0, "fit_notes": 0}
+    with ctx.session() as s:
+        cfg = get_setting(s, "research")
+        room = max(0, int(cfg["companies_per_day"]) - company.researched_today(s))
+        ids = company.pick_companies(s, company.PER_RUN, background=False)
+        if cfg["enabled"] and room and len(ids) < company.PER_RUN:
+            more = company.pick_companies(s, company.PER_RUN, background=True)
+            ids += [i for i in more if i not in ids][:min(room, company.PER_RUN - len(ids))]
+        elif cfg["enabled"] and not room:
+            stats["daily_cap_reached"] = True
+    limited_out = False
+    for company_id in ids:
+        if ctx.stop.is_set():
+            break
+        result = company.run_research(ctx.session, ctx.router, company_id, cfg=cfg,
+                                      paths=ctx.paths, criteria=ctx.criteria)
+        if result == "usage_limit":
+            stats["usage_limit"] = limited_out = True
+            break
+        if result == "ok":
+            stats["researched"] += 1
+        elif result in ("limited", "not_found", "failed"):
+            stats[result] += 1
+    if cfg["enabled"] and not limited_out and not ctx.stop.is_set():
+        with ctx.session() as s:  # the profile changed: refresh a few "fit for you" notes
+            candidates = company.stale_fits(s, 25)
+        for company_id in candidates:
+            if stats["fit_notes"] >= company.PER_RUN or ctx.stop.is_set():
+                break
+            try:
+                stats["fit_notes"] += company.build_fit(ctx.session, ctx.router, company_id,
+                                                        paths=ctx.paths, criteria=ctx.criteria)
+            except Exception as e:  # the AI is unavailable or the profile can't be read:
+                log.warning("fit notes skipped: %s", safe_error(e))  # the research stands
+                break
+    return stats

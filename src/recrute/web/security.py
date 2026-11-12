@@ -16,7 +16,7 @@ The UI can approve job applications, so it is protected even on a home network:
 import hmac
 import ipaddress
 import secrets
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from sqlmodel import Session
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -84,7 +84,17 @@ class AccessMiddleware(BaseHTTPMiddleware):
         if not path.startswith(PUBLIC_PATHS) and not authed:
             if path.startswith("/api/"):
                 return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-            return RedirectResponse(f"/login?next={path}", status_code=303)
+            if request.headers.get("hx-request") == "true":
+                # a button on a page whose sign-in ran out: send the whole page to the login
+                # form (htmx would follow a redirect and put the form inside the page)
+                current = urlsplit(request.headers.get("hx-current-url", ""))
+                back = current.path if current.path.startswith("/") else "/"
+                back += f"?{current.query}" if current.query else ""
+                return PlainTextResponse(
+                    "You've been signed out. Sign in again.", status_code=401,
+                    headers={"HX-Redirect": f"/login?next={quote(back, safe='/')}"})
+            back = path + (f"?{request.url.query}" if request.url.query else "")
+            return RedirectResponse(f"/login?next={quote(back, safe='/')}", status_code=303)
 
         if request.method in UNSAFE_METHODS and not header_ok:
             origin = request.headers.get("origin")

@@ -1,24 +1,253 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% import "_profile_doc.html" as doc %}
 {% block title %}Profile · Recrute{% endblock %}
+{% block head %}
+<style>
+  .pf-page { max-width: 960px; }
+  .pf-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 var(--sp-4); }
+  .pf-files { list-style: none; margin: 0 0 var(--sp-3); padding: 0; border: 1px solid var(--border); border-radius: var(--r-sm); }
+  .pf-files li { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px var(--sp-4); padding: 8px 12px; margin: 0; border-bottom: 1px solid var(--border); }
+  .pf-files li:last-child { border-bottom: 0; }
+  .pf-file-name { font-weight: 550; overflow-wrap: anywhere; }
+  .pf-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); }
+  .ingest-status { margin-top: var(--sp-3); }
+  .ingest-status:empty { display: none; margin: 0; }
+  .ingest-status > :last-child { margin-bottom: 0; }
+  .pf-steps { margin: 0 0 var(--sp-3); padding-left: 1.3em; }
+  .pf-steps li { margin: 4px 0; }
+
+  /* the profile as a document */
+  .pf-id { padding: var(--sp-5); }
+  .pf-name { font-size: var(--fs-2xl); font-weight: 650; letter-spacing: -.015em; line-height: 1.2; }
+  .pf-headline { font-size: var(--fs-md); color: var(--text-2); margin: 4px 0 0; }
+  .pf-contact { list-style: none; display: flex; flex-wrap: wrap; gap: 2px var(--sp-5); margin: var(--sp-3) 0 0; padding: 0; color: var(--text-2); }
+  .pf-contact li { margin: 0; overflow-wrap: anywhere; }
+  .pf-links { margin: var(--sp-3) 0 0; }
+  .pf-links a.pill:hover { border-color: var(--accent); color: var(--accent-text); text-decoration: none; }
+  .pf-part { padding: var(--sp-5); }
+  .pf-part > h2 { margin: 0 0 var(--sp-3); font-size: var(--fs-lg); font-weight: 650; display: flex; align-items: center; gap: var(--sp-2); }
+  .pf-count { font-size: var(--fs-xs); font-weight: 600; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 0 8px; line-height: 18px; }
+  .pf-summary { font-size: var(--fs-md); line-height: 1.6; color: var(--text-2); max-width: 75ch; }
+  .pf-entry + .pf-entry { margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 1px solid var(--border); }
+  .pf-entry > :last-child { margin-bottom: 0; }
+  .pf-entry-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px var(--sp-4); }
+  .pf-entry-head h3 { margin: 0; font-size: var(--fs-md); font-weight: 650; }
+  .pf-org { font-weight: 500; color: var(--text-2); }
+  .pf-when { color: var(--muted); font-size: var(--fs-sm); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .pf-where { color: var(--muted); font-size: var(--fs-sm); margin: 1px 0 0; }
+  .pf-entry p, .pf-entry .pills { margin-top: var(--sp-2); }
+  .pf-bullets { margin: var(--sp-2) 0 0; padding-left: 1.25em; max-width: 85ch; }
+  .pf-bullets li { margin: 4px 0; line-height: 1.55; }
+  .pf-bullets li::marker { color: var(--faint); }
+  .pf-sub { margin: var(--sp-4) 0 var(--sp-1); font-size: var(--fs); font-weight: 650; }
+  .pf-skills { display: grid; grid-template-columns: minmax(120px, max-content) minmax(0, 1fr); gap: var(--sp-3) var(--sp-5); margin: 0; }
+  .pf-skills dt { font-weight: 550; color: var(--text-2); padding-top: 1px; }
+  .pf-skills dd { margin: 0; }
+  .pf-rows { list-style: none; margin: 0; padding: 0; }
+  .pf-rows li { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px var(--sp-4); padding: 8px 0; margin: 0; border-bottom: 1px solid var(--border); }
+  .pf-rows li:first-child { padding-top: 0; }
+  .pf-rows li:last-child { border-bottom: 0; padding-bottom: 0; }
+  .pf-held { border-color: var(--warn-border); }
+  .pf-held-where { font-size: var(--fs-xs); font-weight: 600; color: var(--warn); }
+
+  /* a proposed update */
+  .pf-proposal { border: 1px solid var(--accent); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--shadow); padding: var(--sp-5); margin: var(--sp-5) 0; scroll-margin-top: calc(var(--nav-h) + var(--sp-4)); }
+  .pf-proposal > h2 { margin: 0; font-size: var(--fs-lg); font-weight: 650; }
+  .pf-proposal > .subtitle { color: var(--muted); margin: 2px 0 var(--sp-4); }
+  .pf-proposal h3 { margin: var(--sp-5) 0 var(--sp-2); font-size: var(--fs-md); font-weight: 650; }
+  .pf-proposal .card { box-shadow: none; }
+  .chg-section { margin: var(--sp-4) 0 var(--sp-2); font-size: var(--fs-xs); font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .chg { border: 1px solid var(--border); border-radius: var(--r); padding: var(--sp-3) var(--sp-4); margin: 0 0 var(--sp-2); }
+  .chg-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); font-weight: 600; }
+  .chg-list { list-style: none; margin: var(--sp-2) 0 0; padding: 0; }
+  .chg-list li { display: grid; grid-template-columns: 5.5em minmax(0, 1fr); gap: 2px var(--sp-3); padding: 6px 0; margin: 0; border-top: 1px dashed var(--border); }
+  .chg-kind { font-size: var(--fs-xs); font-weight: 650; color: var(--tone); padding-top: 2px; }
+  .chg-label { display: block; font-size: var(--fs-xs); color: var(--muted); }
+  .chg-list del { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--danger); }
+  .chg-list ins { text-decoration: none; background: var(--ok-soft); border-radius: 3px; padding: 0 2px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+  .chg-old, .chg-new { display: block; }
+  .chg-old + .chg-new { margin-top: 2px; }
+  .chk-list { list-style: none; margin: 0; padding: 0; }
+  .chk-list > li { display: grid; grid-template-columns: 7em minmax(0, 1fr); gap: 2px var(--sp-3); padding: var(--sp-3) 0; margin: 0; border-top: 1px solid var(--border); }
+  .chk-list > li:first-child { border-top: 0; padding-top: 0; }
+  .chk-list > li:last-child { padding-bottom: 0; }
+  .chk-list p:last-child { margin-bottom: 0; }
+  .chk-place { font-size: var(--fs-xs); color: var(--muted); }
+  .chk-text { font-weight: 600; overflow-wrap: anywhere; }
+  .chk-reason { margin: 2px 0 0; color: var(--text-2); }
+  .chk-about { margin: 4px 0 0; padding-left: var(--sp-3); border-left: 2px solid var(--border-strong); color: var(--muted); font-size: var(--fs-sm); }
+  .pf-accept { margin-top: var(--sp-5); padding-top: var(--sp-4); border-top: 1px solid var(--border); }
+  .pf-accept label { display: flex; align-items: flex-start; gap: var(--sp-2); margin: 0 0 var(--sp-3); max-width: 70ch; }
+  .pf-accept label input { margin-top: 3px; flex: none; }
+  @media (max-width: 560px) {
+    .pf-id, .pf-part, .pf-proposal { padding: var(--sp-4); }
+    .pf-skills { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+    .pf-skills dd { margin-bottom: var(--sp-3); }
+    .chg-list li, .chk-list > li { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>
+{% endblock %}
 {% block content %}
-<p class="muted">Your mega resume files in <code>resources/resume/</code>: {{ files | join(', ') if files else 'none yet' }}.
-The structured profile is the only source of facts for resumes, cover letters and answers.</p>
-<p>
-  <button class="primary" hx-post="/profile/ingest" hx-target="#r" {{ 'disabled' if not files or state.running }}>Ingest resume files</button>
-  <span id="r">{% if state.running %}Ingest running…{% elif state.error %}<span class="bad">{{ state.error }}</span>{% endif %}</span>
-</p>
-{% if proposed %}
-<h2>Proposed profile (review, then accept)</h2>
-<pre style="white-space:pre-wrap;max-height:50vh;overflow:auto;border:1px solid var(--line);padding:.5rem">{{ diff or '(new profile)' }}</pre>
-{% if flags is none %}<p class="warn">The proposal was edited after ingest (or has no check results), so it can't be verified automatically.</p>{% endif %}
-{% if flags %}<ul>{% for f in flags %}<li class="flag-{{ f.severity }}"><b>{{ f.severity }}</b> {{ f.where }}: “{{ f.text }}” <span class="muted">({{ f.reason }})</span></li>{% endfor %}</ul>{% endif %}
-<form hx-post="/profile/accept" hx-target="#r2">
-  <input type="hidden" name="digest" value="{{ digest }}">
-  <label><input type="checkbox" name="override"> accept anyway (I checked the flagged items)</label>
-  <button class="primary">Accept proposed profile</button> <span id="r2"></span>
-</form>
-<p class="muted">You can add <code>tags</code>, <code>context</code> and <code>strength</code> to items directly in <code>data/profile.yaml</code>; they survive re-ingests.</p>
+<div class="pf-page">
+{{ ui.page_header("Profile", "The facts Recrute knows about you. Resumes, cover letters and application answers are written only from what's here, never invented.") }}
+
+{% if updated -%}
+{{ ui.alert("success", "Profile updated", "New resumes, cover letters and answers use it from now on. Your previous version was kept as a backup.") }}
+{%- elif just_read and proposal -%}
+{{ ui.alert("success", "Your resume files were read", "Review the proposed update below. Nothing changes until you accept it.") }}
+{%- elif just_read and not status.running and not status.error -%}
+{{ ui.alert("warn", "Reading stopped before it finished", "Recrute may have been restarted while it was working. Press “Read my resume files” to try again.") }}
+{%- endif %}
+{% if profile_error %}
+{{ ui.error_block({"title": "Your saved profile can't be opened", "detail": profile_error.detail ~ " Read your resume files again to rebuild it.", "technical": profile_error.technical}) }}
 {% endif %}
-<h2>Current profile</h2>
-<pre style="white-space:pre-wrap;max-height:60vh;overflow:auto;border:1px solid var(--line);padding:.5rem">{{ current or 'No profile yet.' }}</pre>
+
+{% if profile and stats -%}
+<div class="pf-meta">
+  {% if changed_at %}{{ ui.chip("Last updated " ~ (changed_at | date)) }}{% endif %}
+  {{ ui.chip(stats.roles | plural("role")) }}
+  {% if stats.projects %}{{ ui.chip(stats.projects | plural("project")) }}{% endif %}
+  {{ ui.chip(stats.skills | plural("skill")) }}
+  {{ ui.chip((stats.facts | plural("fact")) ~ " to draw on", title="The individual achievements and details Recrute can pick from") }}
+  {% if stats.held %}<a class="pill t-warn" href="#held">{{ stats.held | plural("fact") }} held back until you confirm</a>{% endif %}
+</div>
+{%- endif %}
+
+{% set readable = files | selectattr("readable") | list %}
+{% call ui.card("Your resume files", "Recrute builds your profile by reading these. Change a file, then read them again to update the profile.") %}
+  {% if files -%}
+  <ul class="pf-files">
+    {% for f in files -%}
+    <li>
+      <span class="pf-file-name">{{ f.name }}</span>
+      <span class="muted">{{ f.kind }} · {{ f.size }} · changed {{ ui.when(f.modified) }}{% if not f.readable %} · <span class="warn">Recrute can't read this kind of file</span>{% endif %}</span>
+    </li>
+    {%- endfor %}
+  </ul>
+  {%- else -%}
+  <p><strong>No resume files yet.</strong> Add at least one to get started:</p>
+  <ol class="pf-steps">
+    <li>Put your resume in the resume folder (see “Where do the files go?” below). A long, complete “master” resume works best.</li>
+    <li>Reload this page and press <strong>Read my resume files</strong>.</li>
+    <li>Review what Recrute understood, then accept it.</li>
+  </ol>
+  {%- endif %}
+  <div class="pf-actions">
+    <button class="{{ 'primary' if not profile and not proposal else '' }}" hx-post="/profile/ingest" hx-target="#ingest-status" hx-swap="outerHTML"
+            {{- ' disabled' if not readable }}>{{ 'Read my resume files again' if profile or proposal else 'Read my resume files' }}</button>
+    <span class="help">Uses your AI subscription and takes a minute or two. Nothing changes until you accept the result.</span>
+  </div>
+  {% with running = status.running, elapsed = status.elapsed, error = status.error %}{% include "_profile_ingest_status.html" %}{% endwith %}
+  <details class="tech" style="margin-top: var(--sp-3)">
+    <summary>Where do the files go?</summary>
+    <p class="muted" style="margin: var(--sp-2) 0 0">In the <code>resources/resume</code> folder inside your Recrute folder. Recrute reads Word (.docx), PDF, Markdown and plain-text files there. You can mark anything you're unsure about with a note like “[confirm]” and Recrute will hold it back instead of using it.</p>
+  </details>
+{% endcall %}
+
+{% if proposal -%}
+<section class="pf-proposal" id="proposal" aria-labelledby="proposal-title">
+  <h2 id="proposal-title">{{ 'Your first profile is ready to review' if proposal.first else 'Proposed update to your profile' }}</h2>
+  <p class="subtitle">
+    {%- if proposal.created_at %}Read {{ ui.when(proposal.created_at) }}{% if proposal.sources %} from {{ proposal.sources | length | plural("file") }}{% endif %}. {% endif -%}
+    Nothing changes until you accept it.</p>
+
+  {% if proposal.profile is none -%}
+  {{ ui.alert("danger", "This update can't be read", "It looks damaged or was edited into something that isn't a profile. Read your resume files again to make a fresh one.") }}
+  {%- else %}
+
+  {% if proposal.first -%}
+  <h3>What Recrute understood</h3>
+  {{ doc.document(proposal.profile, proposal.held) }}
+  {%- else -%}
+  <h3>What would change</h3>
+  {% if proposal.groups -%}
+  <div class="pills">
+    {% if proposal.totals.added %}{{ ui.chip(proposal.totals.added ~ " added", "ok") }}{% endif %}
+    {% if proposal.totals.changed %}{{ ui.chip(proposal.totals.changed ~ " changed", "info") }}{% endif %}
+    {% if proposal.totals.removed %}{{ ui.chip(proposal.totals.removed ~ " removed", "danger") }}{% endif %}
+  </div>
+  {% set ns = namespace(section=None) %}
+  {% for g in proposal.groups -%}
+  {% if g.section != ns.section %}<div class="chg-section">{{ g.section }}</div>{% set ns.section = g.section %}{% endif %}
+  <div class="chg">
+    <div class="chg-head">{{ g.title }}
+      {%- if g.status == 'added' %} {{ ui.badge("New", "ok") }}{% elif g.status == 'removed' %} {{ ui.badge("Removed", "danger") }}{% endif %}</div>
+    <ul class="chg-list">
+      {% for c in g.changes -%}
+      <li class="t-{{ {'added': 'ok', 'removed': 'danger'}.get(c.kind, 'info') }}">
+        <span class="chg-kind">{{ {'added': 'Added', 'removed': 'Removed'}.get(c.kind, 'Changed') }}</span>
+        <span><span class="chg-label">{{ c.label }}</span>
+          {%- if c.old %}<del class="chg-old">{% if c.kind == 'changed' %}<span class="sr-only">Before: </span>{% endif %}{{ c.old }}</del>{% endif %}
+          {%- if c.new %}{% if c.kind == 'changed' %}<ins class="chg-new"><span class="sr-only">Now: </span>{{ c.new }}</ins>{% else %}<span class="chg-new">{{ c.new }}</span>{% endif %}{% endif %}</span>
+      </li>
+      {%- endfor %}
+    </ul>
+  </div>
+  {%- endfor %}
+  {%- else -%}
+  <p class="muted">Nothing you'd see on a resume changes: the text matches your current profile. Only behind-the-scenes notes may differ.</p>
+  {%- endif %}
+  {% if proposal.held -%}
+  <p class="muted" style="margin-top: var(--sp-3)">{{ proposal.held | length | plural("fact") }} would be held back until you confirm {{ 'it' if proposal.held | length == 1 else 'them' }} in your resume files (marked there as unsure).</p>
+  {%- endif %}
+  {%- endif %}
+
+  <h3 id="flags">Things to check before you accept</h3>
+  {% if proposal.unchecked -%}
+  {{ ui.alert("warn", "This update hasn't been checked", "It was changed after Recrute made it, or its check results are missing, so Recrute can't vouch that it matches your resume files. Read your resume files again to check it, or accept it anyway below if you made the changes yourself.") }}
+  {%- elif not proposal.checks -%}
+  {{ ui.alert("success", "Nothing to check", "Everything in this update was found in your resume files.") }}
+  {%- else -%}
+  <p class="muted">Recrute compared every fact with your resume files.
+    {%- if proposal.blocking %} {{ proposal.blocking | plural("item") }} marked <strong>Must fix</strong> couldn't be confirmed: fix your resume files and read them again, or confirm below that {{ 'it is' if proposal.blocking == 1 else 'they are' }} true.{% else %} Nothing stops you accepting; these are worth a look.{% endif %}</p>
+  {% set must = proposal.checks | selectattr("blocking") | list %}
+  {% set look = proposal.checks | rejectattr("blocking") | list %}
+  {% macro checklist(items) -%}
+  <ul class="chk-list">
+    {% for f in items -%}
+    <li>
+      <span>{{ ui.badge(f.label, f.tone) }}</span>
+      <div>
+        <div class="chk-place">{{ f.place }}</div>
+        {% if f.text %}<div class="chk-text">“{{ f.text }}”</div>{% endif %}
+        <p class="chk-reason">{{ f.reason }}</p>
+        {% if f.about %}<p class="chk-about">{{ f.about }}</p>{% endif %}
+      </div>
+    </li>
+    {%- endfor %}
+  </ul>
+  {%- endmacro %}
+  {% if must %}<div class="card">{{ checklist(must) }}</div>{% endif %}
+  {% if look -%}
+  <details class="box"{{ ' open' if look | length <= 6 and not must }} style="margin-top: var(--sp-3)">
+    <summary>{{ look | length | plural("item") }} worth a look</summary>
+    {{ checklist(look) }}
+  </details>
+  {%- endif %}
+  {%- endif %}
+
+  <form class="pf-accept" hx-post="/profile/accept" hx-target="#accept-result" hx-swap="innerHTML">
+    <input type="hidden" name="digest" value="{{ proposal.digest }}">
+    {% if proposal.blocking or proposal.unchecked -%}
+    <label><input type="checkbox" name="override">
+      <span>{% if proposal.unchecked %}I've read this update myself and it's correct: accept it without Recrute's checks.{% else %}I've looked at the {{ 'item' if proposal.blocking == 1 else proposal.blocking ~ ' items' }} marked “Must fix” and {{ 'it is' if proposal.blocking == 1 else 'they are' }} true: accept anyway.{% endif %}</span></label>
+    {%- endif %}
+    <div class="pf-actions">
+      <button class="primary lg">{{ 'Accept and start using this profile' if proposal.first else 'Accept this update' }}</button>
+      <span class="help">{% if proposal.first %}Recrute starts writing from it right away.{% else %}Replaces your current profile, which is kept as a backup. Applications already prepared aren't rewritten.{% endif %}</span>
+    </div>
+    <div id="accept-result" aria-live="polite" style="margin-top: var(--sp-2)"></div>
+  </form>
+  {%- endif %}
+</section>
+{%- endif %}
+
+{% if profile -%}
+{% if proposal %}<h2 style="margin-top: var(--sp-6)">Your current profile</h2>{% endif %}
+{{ doc.document(profile, held) }}
+{%- elif not proposal and not profile_error -%}
+{{ ui.empty_state("No profile yet", "Once Recrute has read your resume files and you've accepted the result, your profile appears here: experience, projects, skills, education and the rules for writing about you.") }}
+{%- endif %}
+</div>
 {% endblock %}

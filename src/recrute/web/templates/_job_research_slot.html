@@ -1,0 +1,12 @@
+{#- Fills the slot in _job_detail.html (expects: job, company): the AI summary of the posting
+    and the company research, each loaded on its own so the job pane never waits for them.
+    The cards (_brief.html, _company_research.html) replace these placeholders and then look
+    after themselves: their buttons and their polling swap the whole card. -#}
+<div class="job-block">
+  <div hx-get="/jobs/{{ job.id }}/brief" hx-trigger="load" hx-swap="outerHTML"><p class="loading">Loading the summary of this posting…</p></div>
+</div>
+{% if company -%}
+<div class="job-block">
+  <div hx-get="/companies/{{ company.id }}/research" hx-trigger="load" hx-swap="outerHTML"><p class="loading">Loading what we know about {{ company.name }}…</p></div>
+</div>
+{%- endif %}

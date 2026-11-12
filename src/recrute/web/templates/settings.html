@@ -1,52 +1,193 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Settings · Recrute{% endblock %}
+{% block head %}
+<style>
+  .set-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: var(--sp-5); align-items: start; max-width: 1120px; }
+  .set-nav { position: sticky; top: calc(var(--nav-h) + var(--sp-4)); display: flex; flex-direction: column; gap: 2px; }
+  .set-nav a { padding: 6px 10px; border-radius: var(--r-sm); color: var(--text-2); font-size: 13.5px; font-weight: 500; border-left: 2px solid transparent; }
+  .set-nav a:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
+  .set-nav a.current { background: var(--accent-soft); color: var(--accent-text); }
+  .set-main { min-width: 0; }
+  .set-section { scroll-margin-top: calc(var(--nav-h) + var(--sp-4)); padding: var(--sp-5); }
+  .set-section + .set-section { margin-top: var(--sp-5); }
+  .set-head { margin: 0 0 var(--sp-4); }
+  .set-title { font-size: var(--fs-lg); font-weight: 650; margin: 0; }
+  .set-sub { color: var(--muted); margin: 2px 0 0; }
+  .set-note { margin-bottom: var(--sp-4); }
+  .set-group { margin: var(--sp-5) 0 0; padding-top: var(--sp-4); border-top: 1px solid var(--border); }
+  .set-group h3 { margin: 0; font-size: var(--fs); font-weight: 650; }
+  .set-group .help { margin: 2px 0 0; }
+  .set-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 320px); gap: var(--sp-2) var(--sp-5); align-items: start; padding: var(--sp-3) 0; }
+  .set-row[hidden] { display: none; }
+  .set-row + .set-row { border-top: 1px solid var(--border); }
+  .set-row-wide { grid-template-columns: minmax(0, 1fr); }
+  .set-label { font-weight: 550; color: var(--text); }
+  .set-what .help { margin: 2px 0 0; font-size: var(--fs-sm); max-width: 62ch; }
+  .set-status { margin: 4px 0 0; font-size: var(--fs-xs); color: var(--muted); }
+  .set-status.warn { color: var(--warn); }
+  .set-cmd { margin: 6px 0 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+  .set-cmd .help { flex-basis: 100%; }
+  .set-control { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; justify-content: flex-start; min-height: 32px; }
+  .set-control > p { flex-basis: 100%; margin: 0; font-size: var(--fs-sm); }
+  .set-unit { color: var(--muted); font-size: var(--fs-sm); }
+  .set-num { width: 6.5em; font-variant-numeric: tabular-nums; }
+  .set-text { width: 100%; }
+  .set-range { display: flex; align-items: center; gap: var(--sp-2); flex: 1 1 200px; }
+  .set-range input[type="range"] { flex: 1; min-width: 80px; }
+  .set-hours { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+  .set-hours select { min-width: 0; }
+  .set-hours label { color: var(--muted); font-size: var(--fs-sm); }
+  .set-error { color: var(--danger); font-weight: 500; }
+  .set-error::before { content: "! "; font-weight: 800; }
+  .set-caution { color: var(--warn); }
+  .has-error input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), .has-error select { border-color: var(--danger); }
+  .set-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--sp-2); width: 100%; }
+  .set-choice { display: flex; align-items: flex-start; gap: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--surface); cursor: pointer; }
+  .set-choice:hover { border-color: var(--faint); }
+  .set-choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+  .set-choice input { margin-top: 3px; flex: none; }
+  .set-choice-title { display: block; font-weight: 550; }
+  .set-choice .help { display: block; }
+  .set-checks { display: flex; flex-direction: column; gap: 6px; }
+  .set-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 1px solid var(--border); }
+  .set-dirty { color: var(--warn); font-size: var(--fs-sm); }
+  input[type="checkbox"].switch { appearance: none; -webkit-appearance: none; width: 38px; height: 22px; border-radius: var(--r-pill); background: var(--border-strong); border: 0; position: relative; cursor: pointer; margin: 0; flex: none; transition: background-color .15s; }
+  input[type="checkbox"].switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .3); transition: transform .15s; }
+  input[type="checkbox"].switch:checked { background: var(--accent); }
+  input[type="checkbox"].switch:checked::after { transform: translateX(16px); }
+  input[type="checkbox"].switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .switch-state { color: var(--muted); font-size: var(--fs-sm); min-width: 2em; }
+  .switch-state::after { content: "Off"; }
+  .switch:checked + .switch-state { color: var(--text); }
+  .switch:checked + .switch-state::after { content: "On"; }
+  .token-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: var(--sp-3) 0; }
+  .token-row input { font-family: var(--mono); flex: 1 1 260px; max-width: 460px; }
+  @media (max-width: 900px) {
+    .set-layout { grid-template-columns: minmax(0, 1fr); gap: var(--sp-4); }
+    .set-nav { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px; }
+    .set-nav a { padding: 3px 10px; border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface); font-size: var(--fs-sm); }
+  }
+  @media (max-width: 640px) {
+    .set-section { padding: var(--sp-4); }
+    .set-row { grid-template-columns: minmax(0, 1fr); }
+    .set-row:has(.switch) { grid-template-columns: minmax(0, 1fr) auto; }
+  }
+</style>
+{% endblock %}
 {% block content %}
-{% macro dictform(key, title, help='') %}
-<fieldset>
-  <legend>{{ title }}</legend>
-  {% if help %}<p class="muted">{{ help }}</p>{% endif %}
-  <form hx-post="/settings/{{ key }}" hx-target="find .result">
-    {% for k, v in settings[key].items() %}
-      <label class="f">
-      {% if v is sameas true or v is sameas false %}
-        <input type="checkbox" name="{{ k }}" {{ 'checked' if v }}> {{ k }}
-      {% elif v is iterable and v is not string %}
-        {{ k }}: {% for opt in ['P0','P1','P2','P3'] %}<label><input type="checkbox" name="{{ k }}" value="{{ opt }}" {{ 'checked' if opt in v }}> {{ opt }}</label> {% endfor %}
-      {% else %}
-        {{ k }}: <input name="{{ k }}" value="{{ v }}">
-      {% endif %}
-      </label>
+{{ ui.page_header("Settings", "How much Recrute applies, where it looks for jobs and how it reaches you. Each section has its own Save button.") }}
+
+<div class="set-layout">
+  <nav class="set-nav" aria-label="Settings sections">
+    {% for s in sections %}<a href="#{{ s.sec.id }}">{{ s.sec.nav or s.sec.title }}</a>{% endfor %}
+    <a href="#access">Access</a>
+  </nav>
+  <div class="set-main">
+    {% for s in sections %}
+    {% with sec = s.sec, groups = s.groups, errors = s.errors, saved = s.saved, problem = s.problem %}
+    {% include "_settings_section.html" %}
+    {% endwith %}
     {% endfor %}
-    <button>Save</button> <span class="result"></span>
-  </form>
-</fieldset>
-{% endmacro %}
 
-<h2>Volume</h2>
-{% include "_knob.html" %}
-<fieldset>
-  <legend>Active hours (submissions only happen inside this window)</legend>
-  <form hx-post="/settings/active_hours" hx-target="find .result">
-    <input name="start" type="number" min="0" max="23" value="{{ settings.active_hours[0] }}"> –
-    <input name="end" type="number" min="1" max="24" value="{{ settings.active_hours[1] }}">
-    <button>Save</button> <span class="result"></span>
-  </form>
-</fieldset>
-{{ dictform('site_caps', 'Per-site daily caps', 'Not raised by the global knob. Raising the LinkedIn Easy Apply cap increases account risk.') }}
-{{ dictform('sources_enabled', 'Discovery sources', 'linkedin_session browses LinkedIn logged in as you (read-only, budgeted, kill switch). Off by default.') }}
-{{ dictform('linkedin_session_budget', 'LinkedIn session budget per day') }}
-{{ dictform('auto_approve', 'Auto-approve packets (CP2)', 'When enabled, packets for jobs at or above min_score in the chosen priorities, with no new LLM-drafted answers and no verifier flags, are approved without you. Off by default.') }}
-<fieldset>
-  <legend>Trial period, per-company cap, follow-ups</legend>
-  {% for key in ['trial_threshold', 'follow_up_days', 'ghost_days', 'company_cap', 'company_cooldown_days'] %}
-  <form hx-post="/settings/{{ key }}" hx-target="find .result" class="f">
-    {{ key }}: <input name="value" type="number" min="0" value="{{ settings[key] }}"> <button>Save</button> <span class="result"></span>
-  </form>
-  {% endfor %}
-</fieldset>
-{{ dictform('notify', 'Notifications', 'backend: ui | ntfy | telegram | email. Secrets (Telegram bot token, SMTP password) are stored in the OS keyring via the CLI, never here.') }}
-{{ dictform('imap', 'Inbox tracking (IMAP)', 'Password/app password is stored in the OS keyring: recrute inbox set-password') }}
+    <section class="card set-section" id="access" aria-labelledby="access-title">
+      <div class="set-head">
+        <h2 class="set-title" id="access-title">Access</h2>
+        <p class="set-sub">Opening Recrute from your phone, another computer or the browser extension.</p>
+      </div>
+      <p>On this computer Recrute opens without signing in. Anywhere else it asks for this access token once, then remembers the device for 90 days.</p>
+      <div class="token-row">
+        <label class="sr-only" for="access-token">Access token</label>
+        <input id="access-token" type="password" value="{{ token }}" readonly autocomplete="off" spellcheck="false">
+        <button type="button" id="token-show" aria-pressed="false">Show</button>
+        <button type="button" data-copy-from="access-token">Copy</button>
+      </div>
+      <p class="help">Treat it like a password: anyone on your network who has it can use Recrute as you. You can also see it by running <code>recrute token</code> in a terminal on this computer.</p>
+    </section>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  const main = document.querySelector('.set-main');
+  if (!main) return;
 
-<h2>Access</h2>
-<p class="muted">Access token (for LAN login and the browser extension): <code>{{ token }}</code></p>
+  // "you have unsaved changes" next to a section's Save button
+  main.addEventListener('input', function (e) {
+    const form = e.target.closest('.set-section form');
+    if (!form) return;
+    const dirty = form.querySelector('.set-dirty'), saved = form.querySelector('.set-saved');
+    if (dirty) dirty.hidden = false;
+    if (saved) saved.remove();
+  });
+
+  // notification channels: only the chosen channel's fields are shown
+  function showChannelFields(section) {
+    const picked = section.querySelector('input[name="notify.backend"]:checked');
+    if (!picked) return;
+    section.querySelectorAll('[data-show-for]').forEach(function (row) {
+      if (row.classList.contains('has-error')) return;
+      row.hidden = row.dataset.showFor.split(' ').indexOf(picked.value) < 0;
+    });
+  }
+  main.addEventListener('change', function (e) {
+    if (e.target.name === 'notify.backend') showChannelFields(e.target.closest('.set-section'));
+  });
+
+  // copy buttons (terminal commands, the access token)
+  function copied(btn, ok) {
+    const was = btn.textContent;
+    btn.textContent = ok ? 'Copied' : "Couldn't copy";
+    setTimeout(function () { btn.textContent = was; }, 1800);
+  }
+  document.addEventListener('click', function (e) {
+    const btn = e.target.closest('[data-copy-text], [data-copy-from]');
+    if (!btn) return;
+    const text = btn.dataset.copyText || document.getElementById(btn.dataset.copyFrom).value;
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () { copied(btn, true); }, function () { copied(btn, false); });
+    } else {  // (plain http from another device: the clipboard API isn't offered there)
+      const t = document.createElement('textarea');
+      t.value = text; t.style.position = 'fixed'; t.style.opacity = '0';
+      document.body.appendChild(t); t.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (err) { ok = false; }
+      t.remove(); copied(btn, ok);
+    }
+  });
+  const show = document.getElementById('token-show'), token = document.getElementById('access-token');
+  if (show && token) show.addEventListener('click', function () {
+    const reveal = token.type === 'password';
+    token.type = reveal ? 'text' : 'password';
+    show.textContent = reveal ? 'Hide' : 'Show';
+    show.setAttribute('aria-pressed', String(reveal));
+  });
+
+  // the section list highlights where you are
+  const links = Array.prototype.slice.call(document.querySelectorAll('.set-nav a'));
+  let io = null;
+  if ('IntersectionObserver' in window && links.length) {
+    const seen = new Set();
+    io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) { if (en.isIntersecting) seen.add(en.target.id); else seen.delete(en.target.id); });
+      const first = links.find(function (a) { return seen.has(a.getAttribute('href').slice(1)); });
+      links.forEach(function (a) { a.classList.toggle('current', a === first); });
+    }, {rootMargin: '-80px 0px -55% 0px'});
+    document.querySelectorAll('.set-section').forEach(function (s) { io.observe(s); });
+  }
+
+  // a section that was just saved comes back as new markup: after a save that found problems,
+  // go to the first field that needs fixing
+  document.body.addEventListener('htmx:afterSettle', function (e) {
+    const path = (e.detail.pathInfo && e.detail.pathInfo.requestPath) || '';
+    if (path.indexOf('/settings/section/') !== 0) return;
+    const section = document.getElementById(path.split('/').pop());
+    if (!section) return;
+    if (io) io.observe(section);
+    const bad = section.querySelector('[aria-invalid="true"]');
+    if (bad) bad.focus();
+  });
+})();
+</script>
 {% endblock %}

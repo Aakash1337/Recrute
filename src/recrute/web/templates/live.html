@@ -1,31 +1,124 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Live browser · Recrute{% endblock %}
+{% block head %}
+<style>
+  .lv-status { display: block; margin: 0 0 var(--sp-4); padding: var(--sp-3) var(--sp-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-sm); }
+  .lv-state { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2) var(--sp-3); }
+  .lv-state > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+  .lv-screen { background: var(--surface-3); border: 1px solid var(--border-strong); border-radius: var(--r); overflow: hidden; line-height: 0; text-align: center; }
+  .lv-screen img { max-width: 100%; height: auto; cursor: crosshair; }
+  .lv-screen img:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; }
+  .lv-controls { margin: var(--sp-3) 0 0; padding: var(--sp-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-sm); min-width: 0; }
+  .lv-type { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--sp-2); align-items: center; }
+  .lv-type .label, .lv-type .check { grid-column: 1 / -1; }
+  .lv-type .check { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--text-2); }
+  .lv-type input[type="text"], .lv-type input[type="password"] { width: 100%; min-width: 0; }
+  .lv-keys { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3); }
+  .lv-keys .lv-group { color: var(--muted); font-size: var(--fs-sm); margin-right: 2px; }
+  .lv-keys .gap { width: var(--sp-3); }
+  .lv-finish { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); margin-top: var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--border); }
+  .lv-finish .muted { font-size: var(--fs-sm); flex: 1 1 240px; }
+  .lv-feedback { margin: var(--sp-3) 0 0; min-height: 1.5em; font-size: var(--fs-sm); font-weight: 500; }
+  .lv-feedback:empty { display: none; }
+  .lv-after { margin-top: var(--sp-3); }
+  .lv-after .actions { margin-top: var(--sp-2); }
+  .lv-steps { margin: 0; padding-left: 1.3em; color: var(--text-2); }
+  .lv-steps li { margin: 3px 0; }
+  .lv-open { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+  .lv-open input { flex: 1 1 320px; min-width: 0; }
+  .lv-quick { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); font-size: var(--fs-sm); color: var(--muted); }
+  .lv-open-result { display: block; margin-top: var(--sp-2); }
+  .lv-open-result:empty { display: none; }
+  .lv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--sp-4); margin-top: var(--sp-5); }
+  .lv-grid .card { margin: 0; }
+</style>
+{% endblock %}
 {% block content %}
-<p class="muted">The automation browser runs on the Recrute server. When it hands a form to you
-(CP3) or you open it below, it appears here: click on the picture to click in the browser, type
-in the box to type. Press <b>Done</b> when you've finished (e.g. after submitting).</p>
-{% if exposed %}<p class="warn">This connection isn't encrypted: what you type here, passwords included, and the pictures of the page can be read by anyone able to watch your network. Set up HTTPS (see the README) before using this for passwords.</p>{% endif %}
-<p id="live-status" hx-get="/live/status" hx-trigger="load, every 3s"></p>
-<div style="position:relative;display:inline-block;border:1px solid var(--line)">
-  <img id="live-frame" alt="" style="max-width:100%;min-height:200px;cursor:crosshair">
+{{ ui.page_header("Live browser", "Recrute fills in application forms in its own browser window. When it needs you (a question it can't answer, a security check, a sign-in), that window shows up here, and you can click and type in it from this page.") }}
+
+{% if exposed %}
+{{ ui.alert("warn", "This connection isn't encrypted", "What you type here, passwords included, and the pictures of the page could be read by anyone able to watch your network. Set up HTTPS (see the README) before typing passwords from another device.") }}
+{% endif %}
+{% if worker != "running" %}
+<div id="live-worker-note">
+{% call ui.alert("warn", "The background worker isn't running") %}
+<div class="alert-text">The browser belongs to the worker, so nothing can open here until it runs. Start Recrute with <code>recrute serve --worker</code>. The <a href="/">Dashboard</a> shows when it was last active.</div>
+{% endcall %}
 </div>
-<p>
-  <input id="live-text" placeholder="text to type into the focused field" size="50" autocomplete="off">
-  <label class="muted"><input type="checkbox" onchange="document.getElementById('live-text').type = this.checked ? 'password' : 'text'"> hide</label>
-  <button onclick="liveType()">Type</button>
-  {% for k in ['Enter', 'Tab', 'Backspace', 'Escape', 'ArrowDown', 'ArrowUp'] %}
-  <button onclick="liveSend({type:'key', key:'{{ k }}'})">{{ k }}</button>{% endfor %}
-  <button onclick="liveSend({type:'scroll', dy: 500})">Scroll ↓</button>
-  <button onclick="liveSend({type:'scroll', dy: -500})">Scroll ↑</button>
-  <button class="primary" onclick="liveSend({type:'done'})">Done</button>
-</p>
-<p id="live-feedback" class="warn" aria-live="polite"></p>
-<h2>Open the automation browser</h2>
-<form hx-post="/live/open" hx-target="find .result">
-  <input name="url" size="60" placeholder="https://www.linkedin.com/login" value="https://www.linkedin.com/login">
-  <button>Open</button> <span class="result"></span>
-</form>
-<p class="muted">Use this to log into LinkedIn, Google or an ATS account on the server's dedicated browser profile.</p>
+{% endif %}
+
+<div class="lv-status" id="live-status" hx-get="/live/status" hx-trigger="every 3s, refresh" aria-live="polite">{{ status_html | safe }}</div>
+
+<div id="live-idle">
+  {{ ui.empty_state("Nothing is waiting for you", "When an application needs you, its form appears here, already filled in with the answers you approved. You'll also see it under “Needs your help” on the Applications page. To sign in to a site ahead of time, open it below.", "/applications", "Go to Applications") }}
+</div>
+
+<div id="live-stage" hidden>
+  <div class="lv-screen">
+    <img id="live-frame" alt="Live view of the page in Recrute's browser" tabindex="0" aria-describedby="live-howto">
+  </div>
+  <fieldset class="lv-controls" id="live-controls" disabled>
+    <legend class="sr-only">Control the page</legend>
+    <form class="lv-type" onsubmit="liveType(); return false">
+      <label class="label" for="live-text">Text to type into the field you clicked</label>
+      <input type="text" id="live-text" placeholder="Click a field in the picture first, then type here" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button>Type it</button>
+      <label class="check"><input type="checkbox" onchange="document.getElementById('live-text').type = this.checked ? 'password' : 'text'"> Hide what I type (for passwords)</label>
+    </form>
+    <div class="lv-keys" role="group" aria-label="Keys and scrolling">
+      <span class="lv-group">Keys</span>
+      {% for key, label, tip in keys %}
+      <button type="button" class="sm" title="{{ tip }}" aria-label="{{ tip }}" onclick="liveSend({type:'key', key:'{{ key }}'})">{{ label }}</button>
+      {% endfor %}
+      <span class="gap" aria-hidden="true"></span>
+      <span class="lv-group">Page</span>
+      <button type="button" class="sm" onclick="liveSend({type:'scroll', dy: 500})">Scroll down</button>
+      <button type="button" class="sm" onclick="liveSend({type:'scroll', dy: -500})">Scroll up</button>
+    </div>
+    <div class="lv-finish">
+      <button type="button" class="primary" onclick="liveFinish()">I'm finished</button>
+      <span class="muted">Press this after you've sent the form (or signed in). It closes the browser session. A session also closes by itself after 30 minutes.</span>
+    </div>
+  </fieldset>
+</div>
+<p class="lv-feedback" id="live-feedback" role="status" aria-live="polite"></p>
+<div class="lv-after" id="live-after" hidden>
+  {% call ui.alert("info", "Did you send the application?") %}
+  <div class="alert-text">Closing the session doesn't mark anything as applied. If you pressed Submit on the form for <b id="live-after-title">this job</b>, tell Recrute so it tracks the replies.</div>
+  <div class="actions">
+    <button type="button" class="primary" onclick="liveMarkApplied()">Yes, I submitted it</button>
+    <button type="button" onclick="document.getElementById('live-after').hidden = true">Not yet</button>
+    <span id="live-after-result" aria-live="polite"></span>
+  </div>
+  {% endcall %}
+</div>
+
+<div class="lv-grid">
+  {% call ui.card("How to use it") %}
+  <ol class="lv-steps" id="live-howto">
+    <li><b>Click on the picture</b> to click on the page: a button, a field, a checkbox.</li>
+    <li><b>To fill in a field</b>, click it in the picture, write in the text box and press “Type it”.</li>
+    <li><b>Use the key buttons</b> for Enter, Tab and the arrows, and the scroll buttons to move down the page.</li>
+    <li><b>Press “I'm finished”</b> once the form is sent. The picture refreshes about once a second, so give each click a moment.</li>
+  </ol>
+  {% endcall %}
+  {% call ui.card("Open a site to sign in", "Recrute's browser keeps its own sign-ins, separate from your everyday browser. Sign in once to LinkedIn, Google or an employer's careers site and it stays signed in.") %}
+  <form hx-post="/live/open" hx-target="find .lv-open-result" hx-swap="innerHTML">
+    <div class="lv-open">
+      <label class="sr-only" for="live-url">Web address to open</label>
+      <input type="text" id="live-url" name="url" placeholder="https://www.linkedin.com/login" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+      <button>Open</button>
+    </div>
+    <span class="lv-open-result" aria-live="polite"></span>
+  </form>
+  <div class="lv-quick">
+    <span>Quick picks:</span>
+    <button type="button" class="sm ghost" onclick="document.getElementById('live-url').value = 'https://www.linkedin.com/login'">LinkedIn sign-in</button>
+    <button type="button" class="sm ghost" onclick="document.getElementById('live-url').value = 'https://accounts.google.com/'">Google sign-in</button>
+  </div>
+  {% endcall %}
+</div>
 {% endblock %}
 {% block scripts %}
 <script>
@@ -33,15 +126,30 @@ in the box to type. Press <b>Done</b> when you've finished (e.g. after submittin
   // to the picture on screen. No fresh frame -> input is ignored.
   window.__frame = null;
   const img = document.getElementById('live-frame');
+  const stage = document.getElementById('live-stage'), idle = document.getElementById('live-idle');
+  const controls = document.getElementById('live-controls');
   // Each frame is a blob: URL. The one on screen is kept; every superseded or failed one is
-  // revoked, so a long CP3 session doesn't accumulate screenshots in memory.
-  let shownUrl = null, timer = null, stopped = false;
+  // revoked, so a long session doesn't accumulate screenshots in memory.
+  let shownUrl = null, timer = null, stopped = false, wasLive = false, lastSent = null;
   function revoke(u) { if (u) URL.revokeObjectURL(u); }
+  function setLive(on) {  // the picture and its controls exist only while a session is live
+    if (on === wasLive) return;
+    stage.hidden = !on; idle.hidden = on; controls.disabled = !on;
+    const note = document.getElementById('live-worker-note');
+    if (note && on) note.hidden = true;  // (a live session is the worker at work)
+    if (!on) {  // the session ended: don't leave its last picture (or its job) on screen
+      img.removeAttribute('src'); revoke(shownUrl); shownUrl = null; window.__frame = null;
+      const title = idle.querySelector('.empty-title');
+      if (title) title.textContent = 'The browser session has ended';
+    }
+    wasLive = on;
+    if (window.htmx) htmx.trigger('#live-status', 'refresh');
+  }
   function show(url, meta) {
     return new Promise(done => {
       img.onload = () => {
         const old = shownUrl; shownUrl = url; revoke(old);
-        window.__frame = {...meta, shownAt: meta.capturedAt}; done();
+        window.__frame = {...meta, shownAt: meta.capturedAt}; setLive(true); done();
       };
       img.onerror = () => { revoke(url); window.__frame = null; done(); };
       img.src = url;
@@ -50,7 +158,7 @@ in the box to type. Press <b>Done</b> when you've finished (e.g. after submittin
   async function loadFrame() {
     try {
       const r = await fetch('/live/frame', {cache: 'no-store'});
-      if (!r.ok) { window.__frame = null; return; }
+      if (!r.ok) { window.__frame = null; if (r.status === 404) setLive(false); return; }
       const meta = {session: r.headers.get('X-Live-Session'),
                     target: r.headers.get('X-Live-Target'),
                     width: +r.headers.get('X-Live-Width'), height: +r.headers.get('X-Live-Height'),
@@ -61,8 +169,8 @@ in the box to type. Press <b>Done</b> when you've finished (e.g. after submittin
     } catch (e) { window.__frame = null; }
   }
   async function loop() {  // one request at a time: the next starts a second after this one ends
-    await loadFrame();
-    if (!stopped) timer = setTimeout(loop, 1000);
+    await loadFrame();     // (every 3 seconds while nothing is open)
+    if (!stopped) timer = setTimeout(loop, wasLive ? 1000 : 3000);
   }
   loop();
   window.addEventListener('pagehide', () => {
@@ -70,14 +178,19 @@ in the box to type. Press <b>Done</b> when you've finished (e.g. after submittin
     revoke(shownUrl); shownUrl = null;
   });
   window.addEventListener('pageshow', e => { if (e.persisted && stopped) { stopped = false; loop(); } });
-  function liveFeedback(text) { document.getElementById('live-feedback').textContent = text; }
+  function liveFeedback(text, ok) {
+    const el = document.getElementById('live-feedback');
+    el.textContent = text; el.className = 'lv-feedback ' + (ok ? 'ok' : 'warn');
+  }
   function liveSend(ev) {
     const f = window.__frame;
-    if (!f || !f.session || Date.now() - f.shownAt > 5000) {
-      liveFeedback('Not sent: the picture is out of date. Wait a moment, then try again.');
+    if (!f || !f.session) { liveFeedback('Not sent: no browser session is open right now.'); return false; }
+    if (Date.now() - f.shownAt > 5000) {
+      liveFeedback('Not sent: the picture is out of date. Wait a moment for a fresh one, then try again.');
       return false;
     }
     liveFeedback('');
+    lastSent = ev.type;
     ev.session = f.session;
     ev.target = f.target;  // the tab (and navigation) of the picture this input was made on
     htmx.ajax('POST', '/live/input', {values: ev, swap: 'none'});
@@ -87,10 +200,40 @@ in the box to type. Press <b>Done</b> when you've finished (e.g. after submittin
     const box = document.getElementById('live-text');
     if (liveSend({type: 'type', text: box.value})) box.value = '';
   }
+  function handoffJob() {  // the application this session is for, when the status line names one
+    const a = document.querySelector('#live-status [data-job]');
+    return a ? {id: a.dataset.job, title: a.dataset.title} : null;
+  }
+  let finishedJob = null;
+  function liveFinish() {
+    finishedJob = handoffJob();
+    liveSend({type: 'done'});
+  }
+  function liveMarkApplied() {
+    if (!finishedJob) return;
+    htmx.ajax('POST', '/applications/' + finishedJob.id + '/mark-applied', {target: '#live-after-result', swap: 'innerHTML'});
+  }
   document.body.addEventListener('htmx:afterRequest', e => {
-    const xhr = e.detail.xhr;
-    if (e.detail.pathInfo && e.detail.pathInfo.requestPath === '/live/input' && xhr && xhr.status >= 400)
-      liveFeedback('Not applied: the page changed since that picture. Look at it again, then retry.');
+    const xhr = e.detail.xhr, path = (e.detail.pathInfo || {}).requestPath || '';
+    if (!xhr) return;
+    if (path === '/live/input' && xhr.status >= 400) {
+      // the server's own reason, in its words (see web/common.py friendly_html)
+      let text = '';
+      try {
+        const doc = new DOMParser().parseFromString(xhr.responseText || '', 'text/html');
+        const title = doc.querySelector('.msg-title'), detail = doc.querySelector('.msg-detail');
+        text = [title && title.textContent.trim(), detail && detail.textContent.trim()].filter(Boolean).join(': ');
+      } catch (err) { /* fall through */ }
+      liveFeedback(text || 'Not sent: the page moved on. Look at the new picture, then try again.');
+    } else if (path === '/live/input' && lastSent === 'done') {
+      liveFeedback('Closing the browser session…', true);
+      if (finishedJob) {
+        document.getElementById('live-after-title').textContent = finishedJob.title || 'this job';
+        document.getElementById('live-after').hidden = false;
+      }
+    } else if (path.indexOf('/mark-applied') > 0 && xhr.status < 300) {
+      document.querySelectorAll('#live-after button').forEach(b => b.remove());
+    }
   });
   img.addEventListener('click', e => {
     const f = window.__frame; if (!f) return;

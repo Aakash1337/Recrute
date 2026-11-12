@@ -1,0 +1,5 @@
+{#- Fills the slot in company.html (expects: company): the company research card, loaded on its
+    own so the page never waits for it. -#}
+<div class="job-block">
+  <div hx-get="/companies/{{ company.id }}/research" hx-trigger="load" hx-swap="outerHTML"><p class="loading">Loading what we know about {{ company.name }}…</p></div>
+</div>

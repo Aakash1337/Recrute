@@ -1,0 +1,149 @@
+{#- The company research card: GET/POST /companies/{id}/research (views_research.py).
+    Embed with:  <div hx-get="/companies/{{ company.id }}/research" hx-trigger="load" hx-swap="outerHTML"></div>
+    While research is running the card polls itself; every button swaps the whole card. -#}
+{% import "_ui.html" as ui %}
+{%- set card_id = "company-research-" ~ company.id -%}
+{%- macro ask(label, cls="sm", refresh=False) -%}
+<button type="button" class="{{ cls }}" hx-post="/companies/{{ company.id }}/research" hx-target="#{{ card_id }}" hx-swap="outerHTML"
+        {%- if refresh %} hx-vals='{"refresh": "1"}'{% endif %}>{{ label }}</button>
+{%- endmacro -%}
+{%- macro cite(n) -%}
+{%- if n and sources[n - 1] is defined -%}
+<sup class="rs-cite"><a href="#{{ card_id }}-src-{{ n }}" title="Source {{ n }}: {{ sources[n - 1].title }}" aria-label="Source {{ n }}">[{{ n }}]</a></sup>
+{%- endif -%}
+{%- endmacro -%}
+{%- macro website_form(button) -%}
+<form class="rs-form" hx-post="/companies/{{ company.id }}/research" hx-target="#{{ card_id }}" hx-swap="outerHTML">
+  <label class="muted" for="{{ card_id }}-site">Their website</label>
+  <input id="{{ card_id }}-site" name="website" type="text" inputmode="url" autocomplete="off" placeholder="acme.com" value="{{ website }}" required>
+  <button class="sm">{{ button }}</button>
+</form>
+{%- if website_error %}<p class="msg msg-error bad" role="alert">{{ website_error }}</p>{% endif %}
+{%- endmacro -%}
+<section class="card rs" id="{{ card_id }}" aria-label="About {{ company.name }}"{% if working %} hx-get="/companies/{{ company.id }}/research?poll=1" hx-trigger="every 5s" hx-swap="outerHTML"{% endif %}>
+  {% include "_research_style.html" %}
+  <div class="rs-head">
+    <h3>About {{ (data.official_name if data and data.official_name and not ambiguous) or company.name }}</h3>
+    {%- if site_url %}<span class="muted"><a href="{{ site_url | safe_url }}" target="_blank" rel="noopener noreferrer">{{ site_label }}</a></span>{% endif %}
+  </div>
+
+  {% if working -%}
+  <p class="loading" role="status">{{ "Looking " ~ company.name ~ " up again…" if data else "Researching " ~ company.name ~ " on the web… this takes 1 to 3 minutes. You can keep working; it will appear here." }}</p>
+  {%- elif state == "paused" -%}
+  {% call ui.alert("info", "The AI is at its usage limit") %}
+    <div class="alert-text">This research will be tried again around {{ retry_at | time }} if Recrute's background worker is running. You can also try again yourself later.</div>
+    <div class="rs-act">{{ ask("Try again now") }}</div>
+  {% endcall %}
+  {%- elif state == "stalled" -%}
+  {% call ui.alert("warn", "This research didn't finish") %}
+    <div class="alert-text">It was started, but nothing came back (Recrute may have been restarted meanwhile).</div>
+    <div class="rs-act">{{ ask("Try again") }}</div>
+  {% endcall %}
+  {%- elif state == "failed" -%}
+  {% call ui.alert("danger", error.title) %}
+    <div class="alert-text">{{ error.detail }}</div>
+    <div class="rs-act">{{ ask("Try again", refresh=True) }}</div>
+  {% endcall %}
+  {%- elif state == "not_found" -%}
+  {% call ui.alert("info", "We couldn't find reliable information about " ~ company.name) %}
+    <div class="alert-text">Nothing trustworthy turned up online under that name{% if research.researched_at %} ({{ ui.when(research.researched_at) }}){% endif %}. If you know their website, add it and we'll look again.</div>
+    {{ website_form("Look again") }}
+  {% endcall %}
+  {%- elif state == "none" -%}
+  <div class="rs-start">
+    <p>Look {{ company.name }} up on the web: what they do, their products, recent news and what it's like to work there, with sources. Only the company's name and website are sent, never anything about you.</p>
+    {{ ask("Research this company", cls="primary") }}
+  </div>
+  {%- endif %}
+
+  {% if data -%}
+  {% if ambiguous and not working -%}
+  {% call ui.alert("warn", "We may have the wrong company") %}
+    <div class="alert-text">More than one organisation goes by “{{ company.name }}”, so what's below may describe a different one. Check the sources, or tell us their website and we'll look again.</div>
+    {{ website_form("Look again") }}
+  {% endcall %}
+  {%- endif %}
+  {% if limited and not working -%}
+  {% call ui.alert("info", "Limited: based on " ~ limited_from ~ " only") %}
+    <div class="alert-text">Web research wasn't available, so there is no news, funding or culture information here yet.</div>
+    <div class="rs-act">{{ ask("Research on the web", refresh=True) }}</div>
+  {% endcall %}
+  {%- endif %}
+
+  {% if data.what_they_do %}<p class="rs-lead">{{ data.what_they_do }}{{ cite(data.identity_source) }}</p>{% endif %}
+  {% if chips -%}
+  <div class="rs-chips">
+    {%- for c in chips %}<span>{{ ui.chip(c.text, c.tone, c.title or None) }}{{ cite(c.source) }}</span>{% endfor %}
+  </div>
+  {%- endif %}
+
+  {% if fit_reasons or fit_concerns -%}
+  <div class="rs-cols">
+    {% if fit_reasons %}<div class="rs-fit t-ok"><h4 class="rs-h">Why it might fit you</h4><ul class="rs-list">{% for r in fit_reasons %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+    {% if fit_concerns %}<div class="rs-fit t-warn"><h4 class="rs-h">Things to weigh</h4><ul class="rs-list">{% for r in fit_concerns %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+  </div>
+  {%- endif %}
+
+  {% if data.products -%}
+  <h4 class="rs-h">Products</h4>
+  <ul class="rs-list">
+    {%- for p in data.products %}
+    <li><strong>{{ p.name }}</strong>{% if p.description %} <span class="rs-sub">{{ p.description }}{{ cite(p.source) }}</span>{% else %}{{ cite(p.source) }}{% endif %}</li>
+    {%- endfor %}
+  </ul>
+  {%- endif %}
+
+  {% if funding -%}
+  <h4 class="rs-h">Funding</h4>
+  <p>{{ funding.summary or funding.last_round }}{% if funding.summary and funding.last_round %} <span class="muted">Latest round: {{ funding.last_round }}{% if funding.last_round_date %} ({{ funding.last_round_date | research_date }}){% endif %}.</span>{% endif %}{{ cite(funding.source) }}</p>
+  {%- endif %}
+
+  {% if data.recent_news -%}
+  <h4 class="rs-h">Recent news</h4>
+  <ul class="rs-news">
+    {%- for n in data.recent_news %}
+    {%- set s = sources[n.source - 1] if n.source and sources[n.source - 1] is defined else None %}
+    <li>
+      <span class="rs-date">{{ (n.date | research_date) or "Date not given" }}{% if s and s.domain %} · {{ s.domain }}{% endif %}</span>
+      {% if s and s.url %}<a class="rs-headline" href="{{ s.url | safe_url }}" target="_blank" rel="noopener noreferrer">{{ n.headline }}</a>{% else %}<span class="rs-headline">{{ n.headline }}</span>{% endif %}{{ cite(n.source) }}
+      {%- if n.summary %}<span class="rs-sub">{{ n.summary }}</span>{% endif %}
+    </li>
+    {%- endfor %}
+  </ul>
+  {%- endif %}
+
+  {% if data.culture_signals -%}
+  <h4 class="rs-h">Working there</h4>
+  <ul class="rs-list">{% for c in data.culture_signals %}<li>{{ c.signal }}{{ cite(c.source) }}</li>{% endfor %}</ul>
+  {%- endif %}
+
+  {% if data.employee_sentiment -%}
+  <h4 class="rs-h">What employees say</h4>
+  <p>{% if data.employee_sentiment.rating %}<strong>{{ data.employee_sentiment.rating }}</strong> {% endif %}{{ data.employee_sentiment.summary }}{{ cite(data.employee_sentiment.source) }}</p>
+  {%- endif %}
+
+  {% if data.visa_signals -%}
+  <h4 class="rs-h">Visa sponsorship <span class="rs-from">· from public sources, not a promise</span></h4>
+  <p>{{ data.visa_signals }}</p>
+  {%- endif %}
+
+  {% if sources -%}
+  <h4 class="rs-h">Sources</h4>
+  <ol class="rs-sources">
+    {%- for s in sources %}
+    <li id="{{ card_id }}-src-{{ s.n }}">{% if s.url %}<a href="{{ s.url | safe_url }}" target="_blank" rel="noopener noreferrer">{{ s.title }}</a>{% else %}{{ s.title }}{% endif %}
+      <span class="muted">{% if s.domain and s.domain != s.title %}· {{ s.domain }}{% endif %}{% if s.published %} · {{ s.published | research_date }}{% endif %}</span></li>
+    {%- endfor %}
+  </ol>
+  {%- endif %}
+
+  <div class="rs-foot">
+    <span class="rs-grow">
+      {%- if limited %}Summarized from {{ limited_from }} by {{ by }}{% else %}Researched with web search by {{ by }}{% endif %}
+      {%- if research.researched_at %} · {{ ui.when(research.researched_at) }}{% endif %}.
+      {%- if fit_reasons or fit_concerns %} The fit notes compare it with your profile (no web access for that step).{% endif %}
+      Facts come from the sources listed: follow a link before you rely on one.</span>
+    {% if not working %}{{ ask("Research again" if not limited else "Research on the web", cls="ghost sm", refresh=True) }}{% endif %}
+  </div>
+  {%- endif %}
+</section>

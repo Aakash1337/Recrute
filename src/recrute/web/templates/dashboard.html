@@ -1,35 +1,287 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% block title %}Dashboard · Recrute{% endblock %}
+{% block head %}
+<style>
+  /* "Needs you": large linked cards */
+  .need-grid { display: grid; gap: var(--sp-4); grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); }
+  .need { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-4) var(--sp-5); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: inset 0 3px 0 var(--tone), var(--shadow-sm); color: var(--text); transition: border-color .12s, box-shadow .12s, transform .12s; }
+  a.need:hover { text-decoration: none; border-color: var(--border-strong); box-shadow: inset 0 3px 0 var(--tone), var(--shadow); transform: translateY(-1px); }
+  .need-count { font-size: 40px; line-height: 1.1; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--tone); }
+  .need-noun { font-size: var(--fs-lg); font-weight: 600; }
+  .need-hint { color: var(--muted); font-size: var(--fs-sm); flex: 1; }
+  .need-go { margin-top: var(--sp-2); font-weight: 600; font-size: var(--fs-sm); color: var(--link); }
+  .caught-up { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-4) var(--sp-5); background: var(--ok-soft); border: 1px solid var(--ok-border); border-radius: var(--r-lg); }
+  .caught-up-icon { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: var(--ok); color: var(--surface); font-size: 18px; font-weight: 800; }
+  .caught-up p { margin: 0; color: var(--text-2); }
+  .caught-up .caught-up-title { font-size: var(--fs-lg); font-weight: 600; color: var(--text); }
+
+  /* pipeline funnel: one row of linked steps joined by arrows */
+  .funnel { display: flex; align-items: stretch; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-sm); overflow: hidden; }
+  .funnel-step { position: relative; flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5); color: var(--muted); font-size: var(--fs-sm); line-height: 1.3; }
+  .funnel-step:first-child { padding-left: var(--sp-4); }
+  .funnel-step:hover { background: var(--surface-2); text-decoration: none; }
+  .funnel-step b { color: var(--text); font-size: var(--fs-xl); font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .funnel-step.zero b { color: var(--faint); }
+  .funnel-step + .funnel-step::before { content: ""; position: absolute; left: -1px; top: 50%; width: 12px; height: 12px; background: var(--surface); border-top: 1px solid var(--border-strong); border-right: 1px solid var(--border-strong); transform: translate(-50%, -50%) rotate(45deg); }
+  .funnel-step + .funnel-step { border-left: 1px solid var(--border); }
+  .aside-line { margin: var(--sp-3) 0 0; color: var(--muted); font-size: var(--fs-sm); display: flex; flex-wrap: wrap; gap: 4px var(--sp-4); }
+  .aside-line b { color: var(--text-2); font-variant-numeric: tabular-nums; }
+  @media (max-width: 900px) {
+    .funnel { flex-wrap: wrap; }
+    .funnel-step, .funnel-step:first-child { flex: 1 1 25%; padding: var(--sp-3) var(--sp-4); border-left: 0; border-bottom: 1px solid var(--border); }
+    .funnel-step + .funnel-step { border-left: 0; }
+    .funnel-step + .funnel-step::before { display: none; }
+  }
+  @media (max-width: 520px) { .funnel-step, .funnel-step:first-child { flex-basis: 50%; } }
+
+  /* two columns: activity + sending */
+  .dash-cols { display: grid; gap: var(--sp-5); grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; }
+  .dash-cols > .section { margin: 0; }
+  @media (max-width: 900px) { .dash-cols { grid-template-columns: minmax(0, 1fr); } }
+  .activity { list-style: none; margin: 0; padding: 0; }
+  .activity li { display: flex; align-items: baseline; gap: var(--sp-3); padding: 10px var(--sp-4); border-bottom: 1px solid var(--border); margin: 0; }
+  .activity li:last-child { border-bottom: 0; }
+  .activity .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--tone); transform: translateY(-1px); }
+  .activity .what { flex: 1; min-width: 0; }
+  .activity .what a { font-weight: 600; }
+  .activity .what span { display: block; color: var(--muted); font-size: var(--fs-sm); }
+  .activity time { flex: none; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
+  .meter { height: 8px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; margin: var(--sp-2) 0 var(--sp-3); }
+  .meter > span { display: block; height: 100%; border-radius: var(--r-pill); background: var(--accent); }
+  .today-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px var(--sp-4); margin: 0; }
+  .today-line b { font-size: var(--fs-xl); font-weight: 650; font-variant-numeric: tabular-nums; }
+
+  /* system status (collapsible) */
+  details.status > summary { display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3); align-items: center; width: 100%; }
+  details.status > summary h2 { margin: 0; }
+  details.status > summary .hint { margin-left: auto; color: var(--muted); font-size: var(--fs-xs); font-weight: 400; }
+  details.status[open] > summary .hint-open, details.status:not([open]) > summary .hint-close { display: none; }
+  details.status h3 { margin-top: var(--sp-5); }
+  details.status h3 + .subtitle { color: var(--muted); font-size: var(--fs-sm); margin: -4px 0 var(--sp-3); }
+  .tasks tbody tr:last-child > th, .checks tbody tr:last-child > th { border-bottom: 0; }
+  .tasks .task-name { font-weight: 600; color: var(--text); background: none; font-size: var(--fs); min-width: 11rem; }
+  .tasks .task-name span { display: block; font-weight: 400; color: var(--muted); font-size: var(--fs-xs); max-width: 30ch; white-space: normal; }
+  .tasks .outcome { min-width: 18rem; }
+  .tasks .outcome p { margin: 4px 0 0; color: var(--text-2); }
+  .tasks .outcome .note { color: var(--warn); font-size: var(--fs-sm); }
+  .checks .check-name { font-weight: 600; color: var(--text); background: none; font-size: var(--fs); white-space: nowrap; }
+  .check-fix { margin-top: 4px; color: var(--text-2); font-size: var(--fs-sm); }
+  .checks-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); }
+  .alert-list { margin: var(--sp-1) 0 0; }
+  .alert code { white-space: nowrap; }
+  details.status .stats-grid { grid-template-columns: repeat(auto-fill, minmax(min(140px, 100%), 1fr)); }
+  /* phones: the task and check tables become stacked cards instead of scrolling sideways */
+  @media (max-width: 700px) {
+    details.status.box { padding: var(--sp-3); }
+    .tasks, .checks, .tasks tbody, .checks tbody { display: block; overflow: visible; }
+    .tasks thead, .checks thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
+    .tasks tr, .checks tr { display: block; padding: var(--sp-3); border-bottom: 1px solid var(--border); }
+    .tasks tbody tr:last-child, .checks tbody tr:last-child { border-bottom: 0; }
+    .tasks td, .tasks th, .checks td, .checks th { display: block; padding: 2px 0; border: 0; min-width: 0; white-space: normal; }
+    .tasks td:nth-child(2), .tasks td:nth-child(3) { display: inline-block; margin-right: var(--sp-3); color: var(--muted); font-size: var(--fs-sm); }
+    .tasks td:nth-child(3)::before { content: "Last run: "; }
+    .tasks .task-name span { max-width: none; }
+    .tasks .outcome { margin-top: 4px; }
+    details.status > summary .hint { margin-left: 0; }
+  }
+</style>
+{% endblock %}
 {% block content %}
-<h2>Pipeline</h2>
-<div class="stats">
-  {% for key, label in [("discovered","discovered"),("shortlisted","approved (CP1)"),("packet_ready","awaiting packet OK"),("approved","queued to submit"),("needs_human","needs you"),("applied","applied"),("acknowledged","acknowledged"),("interviewing","interviewing"),("offer","offers"),("declined","declined"),("filtered_out","filtered out")] %}
-  <div class="stat"><b>{{ by_status.get(key, 0) }}</b>{{ label }}</div>
+{{ ui.page_header("Dashboard", "What needs you right now, where your applications stand, and what Recrute is doing in the background.") }}
+
+{# ---- the background worker: say so when nothing is running #}
+{% if worker.state == 'stopped' %}
+{% call ui.alert("warn", "The background worker isn't running") %}
+<div class="alert-text">
+  Nothing new is being found, scored, built or sent right now. The last thing it did was {{ ui.when(worker.last_activity) }}.
+  To start it, run <code>recrute serve --worker</code> in a terminal (or <code>recrute worker</code> next to the page you already have open).
+</div>
+{% endcall %}
+{% elif worker.state == 'never' %}
+{% call ui.alert("info", "The background worker hasn't run yet") %}
+<div class="alert-text">
+  The worker is what finds jobs, scores them, builds packets and sends the applications you approve, on a schedule.
+  Start it from a terminal with <code>recrute serve --worker</code> and this page fills in as it works.
+</div>
+{% endcall %}
+{% endif %}
+<div id="checks-alert"></div>
+
+{% if summary %}
+<div class="alert t-info" role="status">
+  <span class="alert-icon" aria-hidden="true">i</span>
+  <div class="alert-body"><div class="alert-title">{{ summary.when }}</div><div class="alert-text">{{ summary.headline }}.</div></div>
+</div>
+{% endif %}
+
+{# ---- what is waiting on the user #}
+{% call ui.section("Needs you", "The steps only you can do.", id="needs-you") %}
+{% if needs %}
+<div class="need-grid">
+  {% for n in needs %}
+  <a class="need t-{{ n.tone }}" href="{{ n.href }}">
+    {% if n.count is not none %}<span class="need-count">{{ n.count | num }}</span>{% endif %}
+    <span class="need-noun">{{ n.noun }}</span>
+    <span class="need-hint">{{ n.hint }}</span>
+    <span class="need-go">{{ n.action }} →</span>
+  </a>
   {% endfor %}
 </div>
+{% else %}
+<div class="caught-up" role="status">
+  <span class="caught-up-icon" aria-hidden="true">✓</span>
+  <div>
+    <p class="caught-up-title">All caught up</p>
+    <p>Nothing is waiting on you. New jobs show up here once they've been found and scored{% if worker.state != 'running' %} — which needs the background worker running{% endif %}.</p>
+  </div>
+</div>
+{% endif %}
+{% endcall %}
 
-<h2>Volume</h2>
-{% include "_knob.html" %}
-<p class="muted">
-  Per-site caps (not raised by this knob):
-  {% for site, cap in settings.site_caps.items() %}{{ site }} ≤ {{ cap }}/day{% if not loop.last %}, {% endif %}{% endfor %}.
-  Active hours: {{ settings.active_hours[0] }}:00–{{ settings.active_hours[1] }}:00.
-</p>
-
-<h2>Background tasks</h2>
-<table>
-  <tr><th>task</th><th>last run</th><th>result</th><th>stats</th></tr>
-  {% for t in tasks %}
-  <tr><td>{{ t.name }}</td><td>{{ t.last_finished_at | ago }}</td>
-      <td class="{{ 'ok' if t.last_ok else 'bad' }}">{{ 'ok' if t.last_ok else (t.last_error or 'running') }}</td>
-      <td class="muted">{{ t.last_stats }}</td></tr>
-  {% else %}
-  <tr><td colspan="4" class="muted">No runs yet. Start the worker with <code>recrute serve --worker</code> or <code>recrute worker</code>.</td></tr>
+{# ---- the pipeline #}
+{% call ui.section("Pipeline", "Where every job stands, from your review to an offer. Select a step to see those jobs.", id="pipeline") %}
+<nav class="funnel" aria-label="Pipeline">
+  {% for st in pipeline.steps %}
+  <a class="funnel-step{{ ' zero' if not st.count }}" href="{{ st.href }}" title="{{ st.title }}"><b>{{ st.count | num }}</b>{{ st.label }}</a>
   {% endfor %}
-</table>
+</nav>
+<p class="aside-line">
+  <span>Set aside:</span>
+  {% for a in pipeline.aside %}
+  <span{% if a.title %} title="{{ a.title }}"{% endif %}>{% if a.href %}<a href="{{ a.href }}">{{ a.label }}</a>{% else %}{{ a.label }}{% endif %} <b>{{ a.count | num }}</b></span>
+  {% else %}
+  <span>nothing yet</span>
+  {% endfor %}
+  <span class="spacer"></span>
+  <span><b>{{ pipeline.total | num }}</b> {{ 'job' if pipeline.total == 1 else 'jobs' }} seen in total</span>
+</p>
+{% endcall %}
 
-<h2>LLM calls (all time)</h2>
-<p>{% for p, n in llm.items() %}<span class="badge">{{ p }}: {{ n }}</span> {% else %}<span class="muted">none yet</span>{% endfor %}</p>
+<div class="dash-cols">
+  {# ---- recent activity #}
+  {% call ui.section("Recent activity", "The latest steps your jobs have taken.", id="activity") %}
+  {% if activity %}
+  <div class="card flush">
+    <ul class="activity">
+      {% for a in activity %}
+      <li>
+        <span class="dot t-{{ a.tone }}" aria-hidden="true"></span>
+        <div class="what">
+          <a href="/jobs/{{ a.job_id }}">{{ a.title }}</a>{% if a.company %} <span class="muted" style="display:inline">at {{ a.company }}</span>{% endif %}
+          <span>{{ a.text }}</span>
+        </div>
+        {{ ui.when(a.at) }}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% else %}
+  {{ ui.empty_state("No activity yet", "When you approve a job, a packet gets built or an application goes out, the latest steps are listed here.", "/queue", "Go to Review") }}
+  {% endif %}
+  {% endcall %}
 
-<h2>System checks</h2>
-<div hx-get="/system-checks" hx-trigger="load"><p class="muted">Checking…</p></div>
+  {# ---- sending: today's progress + the daily limit #}
+  {% call ui.section("Sending", "How many applications go out, and when.", id="sending") %}
+  <div class="card">
+    <p class="today-line">
+      <span><b>{{ sending.sent_today | num }}</b> of {{ sending.limit | num }} sent today</span>
+      <span class="muted">{{ sending.queued | num }} queued to send</span>
+    </p>
+    <div class="meter" role="img" aria-label="{{ sending.sent_today }} of {{ sending.limit }} sent today"><span style="width: {{ [100, (100 * sending.sent_today / sending.limit) | round | int] | min if sending.limit else 0 }}%"></span></div>
+    {% include "_knob.html" %}
+    <p class="muted">
+      Applications go out between {{ sending.from }} and {{ sending.until }}, spread through the day.
+      {% if sending.active %}The sending window is open now.{% else %}The next window opens {{ sending.next_window | relative }}.{% endif %}
+      {% if not sending.queued %}Nothing is queued: <a href="/packets">approve packets</a> to fill the queue.
+      {% elif worker.state != 'running' %}Queued applications wait until the background worker is running.{% endif %}
+    </p>
+    {% if sending.site_caps %}
+    <p class="muted">
+      {% for site, cap in sending.site_caps %}{{ site }} is limited to {{ cap }} a day, whatever you set above.{% if not loop.last %} {% endif %}{% endfor %}
+      <a href="/settings">Change limits in Settings</a>
+    </p>
+    {% endif %}
+  </div>
+  {% endcall %}
+</div>
+
+{# ---- system status: background tasks, AI usage, setup checks #}
+{% set c = worker.counts %}
+<section class="section" id="system-status">
+<details class="box status"{% if c.failed %} open{% endif %}>
+  <summary>
+    <h2>System status</h2>
+    {% if worker.state == 'running' %}{{ ui.badge("Worker running", "ok", dot=True) }}
+    {% elif worker.state == 'stopped' %}{{ ui.badge("Worker not running", "warn", dot=True) }}
+    {% else %}{{ ui.badge("Worker not started yet", "neutral", dot=True) }}{% endif %}
+    {% if c.failed %}{{ ui.badge(c.failed | plural('task') ~ ' failed', "danger", dot=True) }}{% endif %}
+    {% if c.interrupted %}{{ ui.badge(c.interrupted | plural('task') ~ ' interrupted', "warn", dot=True) }}{% endif %}
+    {% if c.problems %}{{ ui.badge(c.problems | plural('task') ~ ' with problems', "warn", dot=True) }}{% endif %}
+    {% if c.running %}{{ ui.badge(c.running | plural('task') ~ ' running now', "info", dot=True) }}{% endif %}
+    {% if not (c.failed or c.interrupted or c.problems) and worker.state == 'running' %}{{ ui.badge("Background tasks OK", "ok", dot=True) }}{% endif %}
+    {% for p in ai.providers if p.problem %}{{ ui.badge(p.label ~ " is having trouble", "warn", dot=True) }}{% endfor %}
+    <span id="checks-summary">{{ ui.badge("Checking setup…", "neutral") }}</span>
+    <span class="hint"><span class="hint-open">Show details</span><span class="hint-close">Hide details</span></span>
+  </summary>
+
+  <h3>Background tasks</h3>
+  <p class="subtitle">What the worker does on a schedule, and how each step went last time.</p>
+  <div class="table-wrap">
+  <table class="tasks">
+    <thead><tr><th scope="col">Task</th><th scope="col">Runs</th><th scope="col">Last run</th><th scope="col">How it went</th></tr></thead>
+    <tbody>
+    {% for t in worker.tasks %}
+    <tr>
+      <th scope="row" class="task-name">{{ t.label }}<span>{{ t.description }}</span></th>
+      <td class="nowrap">{{ t.schedule or '—' }}</td>
+      <td class="nowrap">{% if t.last %}{{ ui.when(t.last) }}{% else %}<span class="muted">Never</span>{% endif %}</td>
+      <td class="outcome">
+        {{ ui.badge(t.state_label, t.tone, dot=True) }}
+        {% if t.error %}
+        <p><strong>{{ t.error.title }}.</strong> {{ t.error.detail }}</p>
+        {% if t.error.technical %}<details class="tech"><summary>Technical details</summary><code>{{ t.error.technical }}</code></details>{% endif %}
+        {% elif t.summary %}<p>{{ t.summary }}</p>{% endif %}
+        {% if t.note %}<p class="note">{{ t.note }}</p>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  <h3>AI usage</h3>
+  <p class="subtitle">Recrute works through your Claude and Codex subscriptions. This is how much it has asked of them.</p>
+  {% if ai.rows %}
+  {% for p in ai.providers if p.problem %}
+  {% call ui.alert("warn", p.label ~ "'s last request failed") %}
+  <div class="alert-text">{{ p.problem.error.title }}{% if p.problem.error.detail %}. {{ p.problem.error.detail }}{% endif %} ({{ p.problem.at | relative }})</div>
+  {% if p.problem.error.technical %}<details class="tech"><summary>Technical details</summary><code>{{ p.problem.error.technical }}</code></details>{% endif %}
+  {% endcall %}
+  {% endfor %}
+  <div class="stats-grid" style="margin-bottom: var(--sp-3)">
+    {{ ui.stat_card(ai.today, "requests today") }}
+    {% for p in ai.providers %}{{ ui.stat_card(p.total, "by " ~ p.label ~ ", all time", hint=(p.today | num) ~ " today") }}{% endfor %}
+    {{ ui.stat_card(ai.failed, "failed requests", tone=("danger" if ai.failed else "ok"), hint=("out of " ~ (ai.total | num)) ) }}
+  </div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th scope="col">What the AI did</th><th scope="col">Assistant</th><th scope="col" class="num">Today</th><th scope="col" class="num">Last 7 days</th><th scope="col" class="num">All time</th><th scope="col" class="num">Failed</th><th scope="col" class="num">Typical time</th></tr></thead>
+    <tbody>
+    {% for r in ai.rows %}
+    <tr><td>{{ r.label }}</td><td>{{ r.provider }}</td><td class="num">{{ r.today | num }}</td><td class="num">{{ r.week | num }}</td><td class="num">{{ r.total | num }}</td>
+        <td class="num{{ ' bad' if r.failed }}">{{ r.failed | num }}</td><td class="num nowrap">{{ r.avg or '—' }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="muted">No AI requests yet. They start when the worker scores its first jobs.</p>
+  {% endif %}
+
+  <h3>Setup checks</h3>
+  <p class="subtitle">Whether everything Recrute relies on is installed and filled in.</p>
+  <div hx-get="/system-checks" hx-trigger="load">{{ ui.loading("Checking your setup…") }}</div>
+</details>
+</section>
 {% endblock %}
