@@ -324,19 +324,6 @@ def _refresh_at(session: Session, company_id: int, status: str, matched: str,
     return now + timedelta(days=min(days, ACTIVE_REFRESH_DAYS) if active else days)
 
 
-def _backfill_domain(session: Session, company_id: int, data: dict[str, Any]) -> None:
-    """A confident match with an official website fills an EMPTY Company.domain (never
-    replaces one), unless the "website" is a job board, a social network or a directory."""
-    host = clean_host(data.get("website"))
-    if (data.get("matched") != "confident" or not host
-            or any(host == d or host.endswith("." + d) for d in _NOT_A_COMPANY_SITE)):
-        return
-    session.execute(update(Company).where(
-        Company.id == company_id, or_(col(Company.domain).is_(None), Company.domain == ""))
-        .values(domain=host))
-    session.commit()
-
-
 def run_research(session_factory: Any, router: Any, company_id: int, *, http: Any = None,
                  cfg: dict[str, Any] | None = None, paths: Any = None,
                  criteria: Any = None) -> str:
@@ -407,8 +394,10 @@ def run_research(session_factory: Any, router: Any, company_id: int, *, http: An
             next_refresh_at=_refresh_at(s, company_id, status, matched, cfg), refresh=False,
             attempts=0, error_kind=None, retry_after=None, fit={}, fit_profile_hash="",
             fit_provider=None, fit_model=None, fit_at=None)
-        if written and web:
-            _backfill_domain(s, company_id, data)
+        # (the website the research found is shown from its own data. It is NOT written to
+        # Company.domain: that field also decides which emails are matched to this company
+        # and which badges it gets, and a model that read web pages can be wrong about it.
+        # Only a website you type in yourself is stored there.)
     if written and status != "not_found" and paths is not None:
         try:
             build_fit(session_factory, router, company_id, paths=paths, criteria=criteria)
@@ -503,7 +492,10 @@ def pick_companies(session: Session, limit: int, *, background: bool = True) -> 
     if not background:
         return picked
     due = and_(col(cr.next_refresh_at).is_not(None), cr.next_refresh_at <= now)
-    todo = or_(col(cr.id).is_(None), cr.status == "none",
+    abandoned = and_(cr.status == "running",  # (its runner died with the process)
+                     or_(col(cr.claimed_at).is_(None),
+                         cr.claimed_at < now - claims.claim_ttl(cr)))
+    todo = or_(col(cr.id).is_(None), cr.status == "none", abandoned,
                and_(cr.status == "failed", cr.attempts < claims.MAX_AUTO_ATTEMPTS),
                and_(col(cr.status).in_(("ok", "limited", "not_found")),
                     or_(due, cr.version < RESEARCH_VERSION)))

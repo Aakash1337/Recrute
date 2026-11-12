@@ -474,8 +474,11 @@ def build_briefs(ctx) -> dict:
 
     with ctx.session() as s:
         cfg = get_setting(s, "research")
-        ids = briefs.pick_jobs(s, int(cfg["briefs_per_run"]) if cfg["enabled"] else 5,
-                               background=bool(cfg["enabled"]))
+        # (summaries you asked for are always made, whatever the background amount is)
+        ids = briefs.pick_jobs(s, 5, background=False)
+        if cfg["enabled"] and int(cfg["briefs_per_run"]) > len(ids):
+            more = briefs.pick_jobs(s, int(cfg["briefs_per_run"]), background=True)
+            ids += [i for i in more if i not in ids][:int(cfg["briefs_per_run"]) - len(ids)]
     stats = {"summarized": 0, "failed": 0, "skipped": 0}
     for job_id in ids:
         if ctx.stop.is_set():
@@ -523,7 +526,7 @@ def research_companies(ctx) -> dict:
             stats["researched"] += 1
         elif result in ("limited", "not_found", "failed"):
             stats[result] += 1
-    if not limited_out and not ctx.stop.is_set():
+    if cfg["enabled"] and not limited_out and not ctx.stop.is_set():
         with ctx.session() as s:  # the profile changed: refresh a few "fit for you" notes
             candidates = company.stale_fits(s, 25)
         for company_id in candidates:

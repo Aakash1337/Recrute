@@ -13,6 +13,7 @@ path, enum value or raw verifier wording reaches the screen:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -281,7 +282,7 @@ def flag_views(packet: Packet, places: dict[str, _Place],
     """
     groups: dict[tuple, dict] = {}
     order: list[tuple] = []
-    for i, f in enumerate(packet.flags):
+    for f in packet.flags:
         if f.where == "form":
             continue
         if f.reason.strip() == _NO_ANSWER:
@@ -292,7 +293,9 @@ def flag_views(packet: Packet, places: dict[str, _Place],
         if t is not None:
             key = (f.where, f.severity, confirmed, t[0])
         else:
-            key = (f.where, f.severity, confirmed, f"free{i}")
+            # (by content, not position: after a rebuild another note must not inherit a tick)
+            key = (f.where, f.severity, confirmed,
+                   "free" + hashlib.sha1(f"{f.reason}|{f.text}".encode()).hexdigest()[:10])
         if key not in groups:
             groups[key] = {"flag": f, "place": place, "templ": t, "terms": [],
                            "confirmed": confirmed}

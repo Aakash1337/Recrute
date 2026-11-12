@@ -146,7 +146,7 @@
 {% block content %}
 {% set dis = '' if editable else ' disabled' %}
 {% set o = view.outline %}
-<div id="pk-page" data-job="{{ job.id }}">
+<div id="pk-page" data-job="{{ job.id }}" data-built="{{ packet.generated_at | iso }}">
 <p class="pk-crumb">
   <a href="/packets">← All packets</a>
   {% if position %}<span>Packet {{ position }} of {{ waiting }}</span>{% endif %}
@@ -560,7 +560,14 @@
   });
 
   // ---- the checklist: ticks are remembered on this computer; required answers tick themselves
-  const key = 'recrute.packet.' + job + '.ticks';
+  // (per build of the packet: after a rebuild, the new drafts and notes start unticked)
+  const key = 'recrute.packet.' + job + '.' + (root.dataset.built || '') + '.ticks';
+  try {  // forget ticks kept for earlier builds of this packet
+    const mine = 'recrute.packet.' + job + '.';
+    Object.keys(localStorage).forEach(function (k) {
+      if (k.startsWith(mine) && k.endsWith('.ticks') && k !== key) localStorage.removeItem(k);
+    });
+  } catch (e) { /* storage unavailable: ticks just don't persist */ }
   let ticked = [];
   try { ticked = JSON.parse(localStorage.getItem(key) || '[]'); } catch (e) { ticked = []; }
   const items = Array.from(document.querySelectorAll('.pk-items li'));

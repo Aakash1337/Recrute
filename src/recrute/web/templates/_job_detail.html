@@ -35,6 +35,11 @@
   <a class="btn" href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">Open the posting ↗</a>
 </div>
 
+{% if view.snoozed_until %}
+{{ ui.alert("info", "Snoozed", "It comes back to Review " ~ (view.snoozed_until | relative) ~ ".") }}
+{% elif view.closed %}
+{{ ui.alert("warn", "The posting was taken down", "The employer removed it, so it can't be applied to.") }}
+{% endif %}
 {% if view.filter_reason %}
 {{ ui.alert("warn", "Set aside automatically", view.filter_reason) }}
 {% endif %}

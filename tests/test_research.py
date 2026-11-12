@@ -473,8 +473,10 @@ def test_web_research_prompt_has_no_profile_data_and_only_the_fit_step_sees_it(d
                        "concerns": ["Early-stage: the seed round was in 2025."]}
     assert row.fit_profile_hash and len(row.gathered) == 2
     assert claims.aware(row.next_refresh_at) > utcnow() + timedelta(days=29)
-    with db.factory() as s:  # a confident match fills the empty website
-        assert s.get(Company, db.company_id).domain == "acme.example"
+    # the website the AI found is shown from the research; it never changes Company.domain,
+    # which also decides which emails are matched to this company and which badges it gets
+    with db.factory() as s:
+        assert s.get(Company, db.company_id).domain is None
 
 
 def test_research_prompt_builder_cannot_carry_anything_but_public_facts():
@@ -694,3 +696,37 @@ def test_research_settings_have_defaults_and_limits(session_factory):
             set_setting(s, "research", {"companies_per_day": 5000})
         with pytest.raises(ValueError):
             set_setting(s, "research", {"nonsense": 1})
+
+
+# ------------------------------------------------------------------------------ audit round
+
+
+def test_a_claim_outlives_the_longest_possible_run():
+    """Re-audit: the claim expired mid-run, so a second runner redid the same work."""
+    from recrute.config import LLMConfig
+
+    step = LLMConfig().timeout_seconds
+    assert claims.claim_ttl(JobBrief) >= timedelta(seconds=2 * step) + timedelta(minutes=2)
+    web = timedelta(seconds=2 * company.WEB_TIMEOUT)  # two providers with web tools
+    assert claims.claim_ttl(CompanyResearch) >= web + timedelta(seconds=2 * step) + timedelta(
+        minutes=3)
+
+
+def test_work_left_running_by_a_crash_is_picked_up_again(session_factory):
+    """Re-audit: a row stuck in 'running' after a restart was never retried."""
+    with session_factory() as s:
+        acme = Company(name="Acme", ats="greenhouse", ats_token="acme")
+        s.add(acme)
+        s.commit()
+        job = add_job(s, company_id=acme.id, n=1, score=90)
+        long_ago = utcnow() - timedelta(hours=3)
+        s.add(JobBrief(job_id=job.id, status="running", claim_token="dead",
+                       claimed_at=long_ago))
+        fresh = add_job(s, n=2, score=80)
+        s.add(JobBrief(job_id=fresh.id, status="running", claim_token="alive",
+                       claimed_at=utcnow()))
+        s.add(CompanyResearch(company_id=job.company_id, status="running", claim_token="dead",
+                              claimed_at=long_ago))
+        s.commit()
+        assert briefs.pick_jobs(s, 10) == [job.id]  # (the live one is left to its runner)
+        assert job.company_id in company.pick_companies(s, 10)

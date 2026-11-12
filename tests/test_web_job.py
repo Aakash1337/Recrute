@@ -217,3 +217,17 @@ def test_a_job_with_no_readable_posting_says_so(client):
     job_id = seed_job(description_md="Short teaser.")
     html = unescape(client.get(f"/jobs/{job_id}").text)
     assert "couldn't read the full posting" in html
+
+
+def test_no_approve_button_on_a_snoozed_or_closed_job(client):
+    """Re-audit: both showed Approve; a closed posting would have had a packet built."""
+    from datetime import UTC, datetime, timedelta
+
+    snoozed = seed_job(title="Snoozed one",
+                       snoozed_until=datetime.now(UTC) + timedelta(days=3))
+    closed = seed_job(title="Closed one", closed_at=datetime.now(UTC))
+    a = unescape(client.get(f"/jobs/{snoozed}").text)
+    assert "Snoozed" in a and "recruteDecide('approve')" not in a
+    b = unescape(client.get(f"/jobs/{closed}").text)
+    assert "taken down" in b and "recruteDecide('approve')" not in b
+    assert "recruteDecide('approve')" in client.get(f"/jobs/{seed_job(title='Open one')}").text

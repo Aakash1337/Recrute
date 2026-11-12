@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from recrute.web import humanize as hz
@@ -470,6 +471,9 @@ def job_view(job: Any, company: Any, score: Any, sources: list, events: list,
     text = job.description_md or ""
     groups = group_posting(text)
     status = job.status.value if hasattr(job.status, "value") else str(job.status)
+    closed = getattr(job, "closed_at", None) is not None
+    until = hz._to_datetime(getattr(job, "snoozed_until", None))
+    snoozed = until is not None and until > datetime.now(UTC)
     return {
         "fit": fit,
         "glance": glance(job, company, fit),
@@ -479,7 +483,9 @@ def job_view(job: Any, company: Any, score: Any, sources: list, events: list,
         "pay_mentions": pay_mentions(text),
         "watch_outs": watch_outs(job),
         "filter_reason": filter_reason(job.filter_reason),
-        "can_decide": status in ("discovered", "snoozed"),
+        "can_decide": status == "discovered" and not closed and not snoozed,
+        "snoozed_until": job.snoozed_until if snoozed else None,
+        "closed": closed,
         "can_restore": status == "filtered_out",
         "has_packet": status in ("packet_ready", "approved", "applying", "needs_human",
                                  "applied", "acknowledged", "interviewing", "offer"),

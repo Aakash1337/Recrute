@@ -73,7 +73,10 @@ def not_running(table: Any, now: datetime) -> Any:
 def claim_ttl(table: Any) -> timedelta:
     from recrute.models import JobBrief
 
-    return timedelta(minutes=10) if table is JobBrief else timedelta(minutes=30)
+    # longer than the longest run: a brief may try two providers at up to 5 minutes each;
+    # research gathers pages, then may try two web providers at 10 minutes each and two more
+    # for the limited fallback. A shorter claim let a second runner redo the same work.
+    return timedelta(minutes=15) if table is JobBrief else timedelta(minutes=45)
 
 
 def claim(session: Session, table: Any, row_id: int, needs_work: Any) -> str | None:

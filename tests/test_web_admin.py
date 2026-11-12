@@ -72,7 +72,7 @@ def test_research_section_says_what_leaves_the_computer(client):
     text = _visible(client.get("/settings"))
     assert "written from the posting alone" in text
     assert "only the company's name and website" in text
-    assert "Nothing about you" in text
+    assert "nothing about you goes with it" in text
     assert "Job summaries per run" in text and "Refresh company research after" in text
 
 

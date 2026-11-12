@@ -335,7 +335,10 @@ def pick_jobs(session: Session, limit: int, *, background: bool = True) -> list[
         if len(picked) >= limit:
             return
         # no brief yet, or one that failed fewer than MAX_AUTO_ATTEMPTS times, or a stale one
-        todo = or_(col(JobBrief.id).is_(None), JobBrief.status == "none",
+        abandoned = and_(JobBrief.status == "running",  # (its runner died with the process)
+                         or_(col(JobBrief.claimed_at).is_(None),
+                             JobBrief.claimed_at < now - claims.claim_ttl(JobBrief)))
+        todo = or_(col(JobBrief.id).is_(None), JobBrief.status == "none", abandoned,
                    and_(JobBrief.status == "failed",
                         JobBrief.attempts < claims.MAX_AUTO_ATTEMPTS),
                    and_(col(JobBrief.status).in_(("ok", "skipped")),

@@ -176,8 +176,9 @@ def _known_sections(settings: dict[str, Any]) -> list[Section]:
             "Plain-language summaries of job postings and background on employers, made "
             "ahead of time so they're ready when you open a job.", nav="AI summaries & research",
             note="Job summaries are written from the posting alone. Company research sends "
-                 "only the company's name and website to the web. Nothing about you (your "
-                 "profile, resume, answers or applications) is ever included.",
+                 "only the company's name and website to the web: nothing about you goes "
+                 "with it. Afterwards a separate step, with no web access, compares what was "
+                 "found with a summary of your profile to write \"why it might fit you\".",
             specs=[
                 Spec("research", "enabled", kind="toggle",
                      label="Prepare summaries and research in the background",
