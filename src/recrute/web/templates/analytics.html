@@ -1,22 +1,170 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Analytics · Recrute{% endblock %}
+{% block head %}
+<style>
+  .bar-cell { min-width: 9rem; width: 28%; }
+  .bar { display: flex; align-items: center; gap: var(--sp-2); }
+  .bar-track { flex: 1; height: 8px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; }
+  .bar-track > span { display: block; height: 100%; min-width: 2px; border-radius: var(--r-pill); background: var(--accent); }
+  .bar-pct { flex: none; width: 3.2em; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); font-size: var(--fs-sm); }
+  .an th[scope="row"] { font-weight: 600; color: var(--text); background: none; font-size: var(--fs); }
+  .an tbody tr:last-child > th { border-bottom: 0; }
+  .an .sub { display: block; font-weight: 400; color: var(--muted); font-size: var(--fs-xs); }
+  .an tr.few td, .an tr.few th { color: var(--muted); }
+  .an-cols { display: grid; gap: var(--sp-5); grid-template-columns: repeat(auto-fit, minmax(min(440px, 100%), 1fr)); align-items: start; }
+  .an-cols > .section { margin: 0; }
+  .suggestions { list-style: none; margin: 0; padding: 0; }
+  .suggestions li { padding: var(--sp-3) var(--sp-4); border-bottom: 1px solid var(--border); margin: 0; }
+  .suggestions li:last-child { border-bottom: 0; }
+  .suggestions .s-text { font-weight: 600; }
+  .suggestions .s-why { color: var(--muted); font-size: var(--fs-sm); }
+</style>
+{% endblock %}
+{% macro bar(pct, count=1) -%}
+{%- if pct is none -%}<span class="muted">—</span>
+{%- else -%}<div class="bar"><div class="bar-track" aria-hidden="true"><span style="width: {{ [pct, 100] | min }}%"></span></div><span class="bar-pct">{{ '<1' if count and not pct else pct }}%</span></div>
+{%- endif -%}
+{%- endmacro %}
+{% macro rate(part, whole, pct) -%}
+{%- if not whole -%}<span class="muted">—</span>{%- else -%}{{ part | num }} of {{ whole | num }} <span class="muted">({{ pct }}%)</span>{%- endif -%}
+{%- endmacro %}
 {% block content %}
-<h2>Suggested criteria changes</h2>
-<p class="muted">Learned from your review rejections. Nothing changes automatically. Edit <code>resources/criteria.yaml</code> if you agree.</p>
-<ul>
-  {% for sug in suggestions %}<li><b>{{ sug.kind }}</b>: {{ sug.value }} <span class="muted">({{ sug.evidence }})</span></li>
-  {% else %}<li class="muted">No suggestions yet.</li>{% endfor %}
-</ul>
-{% for dim, rows in groups.items() %}
-<h2>By {{ dim }}</h2>
-<table>
-  <tr><th>{{ dim }}</th><th>applied</th><th>responded</th><th>response rate</th><th>interview/offer rate</th></tr>
-  {% for key, r in rows.items() %}
-  <tr><td>{{ key }}</td><td>{{ r.applied }}</td><td>{{ r.responded }}</td>
-      <td>{{ '%.0f' % (r.response_rate * 100) }}%</td><td>{{ '%.0f' % (r.interview_rate * 100) }}%</td></tr>
-  {% endfor %}
-</table>
+{{ ui.page_header("Analytics", "What your job search looks like in numbers: how jobs get narrowed down, where the good ones come from, and how employers respond.") }}
+
+{% set found = funnel[0].count %}
+{% if not found %}
+{{ ui.empty_state("Nothing to analyse yet", "Once the background worker has found some jobs, this page shows how they get narrowed down, which job sites are worth it, and how employers respond to your applications.", "/", "Back to the dashboard") }}
 {% else %}
-<p class="muted">No submitted applications yet.</p>
-{% endfor %}
+
+{# ---- from found to applied #}
+{% call ui.section("From found to hired", "How many jobs make it through each step. The bar shows the share that got through from the step before.", id="funnel") %}
+<div class="table-wrap">
+<table class="an">
+  <thead><tr><th scope="col">Step</th><th scope="col" class="num">Jobs</th><th scope="col" class="bar-cell">Of the step before</th></tr></thead>
+  <tbody>
+  {% for st in funnel %}
+  <tr><th scope="row">{{ st.label }}<span class="sub">{{ st.help }}</span></th><td class="num">{{ st.count | num }}</td><td class="bar-cell">{{ bar(st.pct, st.count) }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endcall %}
+
+<div class="an-cols">
+{# ---- why jobs were filtered out #}
+{% call ui.section("Why jobs were filtered out", "The reasons your criteria set jobs aside, most common first. If a reason looks wrong, your criteria may be too strict.", id="filtered") %}
+{% if filtered.rows %}
+<div class="table-wrap">
+<table class="an">
+  <thead><tr><th scope="col">Reason</th><th scope="col" class="num">Jobs</th><th scope="col" class="bar-cell">Share</th></tr></thead>
+  <tbody>
+  {% for r in filtered.rows %}
+  <tr><th scope="row"><a href="{{ r.href }}" title="See recent examples in Filtered">{{ r.label }}</a>{% if r.words %}<span class="sub">Most common: {{ r.words }}</span>{% endif %}</th>
+      <td class="num">{{ r.count | num }}</td><td class="bar-cell">{{ bar(r.pct, r.count) }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+{{ ui.empty_state("Nothing filtered out yet", "When your criteria set a job aside, the reason is counted here.") }}
+{% endif %}
+{% endcall %}
+
+{# ---- where matches come from #}
+{% call ui.section("Where your matches come from", "Which job sites find jobs that get past your filters. A job listed on two sites counts for both.", id="sources") %}
+{% if sources %}
+<div class="table-wrap">
+<table class="an">
+  <thead><tr><th scope="col">Found on</th><th scope="col" class="num">Jobs found</th><th scope="col" class="num">Passed your filters</th><th scope="col" class="num">Approved by you</th><th scope="col" class="num">Applied</th></tr></thead>
+  <tbody>
+  {% for r in sources %}
+  <tr><th scope="row">{{ r.label }}</th><td class="num">{{ r.found | num }}</td>
+      <td class="num">{{ r.passed | num }} <span class="muted">({{ '<1' if r.passed and not r.pct else r.pct }}%)</span></td>
+      <td class="num">{{ r.approved | num }}</td><td class="num">{{ r.applied | num }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+{{ ui.empty_state("No job sites yet", "Each site Recrute searches is listed here with how many useful jobs it produced.") }}
+{% endif %}
+{% endcall %}
+</div>
+
+{# ---- the user's own review decisions #}
+{% call ui.section("Your review decisions", "What you've decided in Review so far, and why you turned jobs down.", id="review") %}
+{% if review.total %}
+<div class="stats-grid" style="margin-bottom: var(--sp-3)">
+  {{ ui.stat_card(review.total, "jobs reviewed") }}
+  {{ ui.stat_card(review.approved, "approved", tone="ok", hint=((100 * review.approved / review.total) | round | int) ~ "% of those reviewed") }}
+  {{ ui.stat_card(review.rejected, "rejected") }}
+  {% if review.snoozed %}{{ ui.stat_card(review.snoozed, "snoozed for later") }}{% endif %}
+</div>
+{% if review.reasons %}
+<div class="table-wrap">
+<table class="an">
+  <thead><tr><th scope="col">Why you rejected</th><th scope="col" class="num">Jobs</th><th scope="col" class="bar-cell">Share of rejections</th></tr></thead>
+  <tbody>
+  {% for r in review.reasons %}
+  <tr><th scope="row">{{ r.label }}</th><td class="num">{{ r.count | num }}</td><td class="bar-cell">{{ bar(r.pct, r.count) }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% else %}
+{{ ui.empty_state("You haven't reviewed any jobs yet", (nav.queue | plural('job')) ~ (' is' if nav.queue == 1 else ' are') ~ " waiting in Review. Your approvals and rejections are summed up here.", "/queue", "Go to Review") }}
+{% endif %}
+{% endcall %}
+
+{# ---- response rates #}
+{% call ui.section("How employers respond", "Out of the applications you've sent: how many got any reply (including a rejection), and how many led to an interview or an offer.", id="responses") %}
+{% if rates %}
+<p class="muted">Rows with fewer than {{ min_sample }} applications are greyed out: that's too few to tell anything yet.</p>
+<div class="an-cols">
+  {% for g in rates %}
+  <div>
+    <h3 style="margin-top: 0">{{ g.title }}</h3>
+    {% if g.help %}<p class="muted">{{ g.help }}</p>{% endif %}
+    <div class="table-wrap">
+    <table class="an">
+      <thead><tr><th scope="col">{{ g.column }}</th><th scope="col" class="num">Applied</th><th scope="col" class="num">Got a reply</th><th scope="col" class="num">Interview or offer</th></tr></thead>
+      <tbody>
+      {% for r in g.rows %}
+      <tr{% if r.few %} class="few" title="Too few applications to tell"{% endif %}><th scope="row">{{ r.label }}{% if r.few %}<span class="sub">Too few to tell</span>{% endif %}</th>
+          <td class="num">{{ r.applied | num }}</td>
+          <td class="num">{{ rate(r.responded, r.applied, r.response_pct) }}</td>
+          <td class="num">{{ rate(r.positive, r.applied, r.positive_pct) }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+{% if nav.packets %}
+{{ ui.empty_state("No applications sent yet", "Reply and interview rates show up here after your first applications go out. " ~ (nav.packets | plural('packet')) ~ (' is' if nav.packets == 1 else ' are') ~ " waiting for your approval.", "/packets", "Check packets") }}
+{% else %}
+{{ ui.empty_state("No applications sent yet", "Reply and interview rates show up here after your first applications go out. Approve jobs in Review to get packets built.", "/queue", "Go to Review") }}
+{% endif %}
+{% endif %}
+{% endcall %}
+{% endif %}
+
+{# ---- learned suggestions #}
+{% call ui.section("Suggested criteria changes", "Patterns in the jobs you reject. Nothing changes on its own: if you agree with one, make the change in your job criteria file (criteria.yaml).", id="suggestions") %}
+{% if suggestions %}
+<div class="card flush">
+  <ul class="suggestions">
+    {% for sug in suggestions %}
+    <li><div class="s-text">{{ sug.text }}</div><div class="s-why">Why: {{ sug.why }}{% if sug.how %} To apply it: {{ sug.how }}{% endif %}</div></li>
+    {% endfor %}
+  </ul>
+</div>
+{% else %}
+{{ ui.empty_state("No suggestions yet", "When you reject several jobs in Review for the same reason (for example three that are too senior, or two from the same company), a suggested change shows up here.") }}
+{% endif %}
+{% endcall %}
 {% endblock %}

@@ -1,12 +1,134 @@
 {% extends "base.html" %}
-{% block title %}Receipt · Recrute{% endblock %}
+{% import "_ui.html" as ui %}
+{# expects: view (web/packet_view.receipt_view), job, company, app #}
+{% block title %}Receipt{% if job %}: {{ job.title }}{% endif %} · Recrute{% endblock %}
+{% block head %}
+<style>
+  .rc-crumb { margin: 0 0 var(--sp-3); color: var(--muted); font-size: var(--fs-sm); }
+  .rc-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: var(--sp-5); align-items: start; }
+  .rc-grid > * { min-width: 0; }
+  .rc-tally { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 var(--sp-3); }
+  .rc-rows td:first-child { width: 42%; font-weight: 500; }
+  .rc-rows td.state { white-space: nowrap; width: 1%; }
+  .rc-rows td.value { color: var(--text-2); overflow-wrap: anywhere; }
+  .rc-shots { display: grid; gap: var(--sp-4); grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); }
+  .rc-shots figure { margin: 0; }
+  .rc-shots figcaption { margin: 0 0 6px; font-weight: 500; }
+  .rc-shots a { display: block; max-height: 420px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); }
+  .rc-shots img { display: block; width: 100%; }
+  .rc-files { list-style: none; margin: 0; padding: 0; }
+  .rc-files li { padding: 6px 0; border-top: 1px solid var(--border); }
+  .rc-files li:first-child { border-top: 0; }
+  .rc-files .what { display: block; color: var(--muted); font-size: var(--fs-sm); }
+  .rc-errors { margin: var(--sp-2) 0 0; padding-left: 18px; }
+  @media (max-width: 900px) { .rc-grid { grid-template-columns: minmax(0, 1fr); } }
+</style>
+{% endblock %}
 {% block content %}
-<h2>Receipt: {{ rel }}</h2>
-<ul>
-  {% for f in files %}<li><a href="/files/{{ f }}" target="_blank">{{ f.rsplit('/', 1)[-1] }}</a></li>
-  {% else %}<li class="muted">No files recorded for this attempt.</li>{% endfor %}
-</ul>
-{% for f in files if f.endswith('.png') %}
-<p class="muted">{{ f.rsplit('/', 1)[-1] }}</p><img src="/files/{{ f }}" style="max-width:100%;border:1px solid var(--line)">
-{% endfor %}
+<p class="rc-crumb"><a href="/applications">← Applications</a></p>
+{% set who = (job.title ~ (" at " ~ company.name if company else "")) if job else none %}
+{% call ui.page_header("Application receipt", (who ~ ". " if who else "") ~ "Everything Recrute saved from this attempt: what happened, what was typed into the form, and what the site showed.") %}
+  {% if job %}<a class="btn" href="/jobs/{{ job.id }}">Job page</a>{% endif %}
+  {% if view.final_url %}<a class="btn" href="{{ view.final_url | safe_url }}" target="_blank" rel="noopener noreferrer">Open the site ↗</a>{% endif %}
+{% endcall %}
+
+{% call ui.alert({"success": "success", "warn": "warn", "danger": "danger"}.get(view.tone, "info"), view.title) %}
+  <div class="alert-text">{{ view.reason or view.lead }}</div>
+  {% if view.form_errors %}
+  <ul class="rc-errors">{% for e in view.form_errors %}<li>The form said: “{{ e }}”</li>{% endfor %}</ul>
+  {% endif %}
+  {% if view.technical_reason and view.reason and view.technical_reason != view.reason %}
+  <details class="tech"><summary>Technical details</summary><code>{{ view.technical_reason }}</code></details>
+  {% endif %}
+{% endcall %}
+
+<div class="rc-grid">
+  <div>
+    <div class="card">
+      <div class="card-head"><div>
+        <h2 class="card-title">What went into the form</h2>
+        <p class="card-subtitle">Each question on the form and what Recrute did with it.</p>
+      </div></div>
+      {% if view.rows %}
+      <div class="rc-tally">
+        {% if view.counts.filled %}{{ ui.badge(view.counts.filled ~ " filled in", "ok") }}{% endif %}
+        {% if view.counts.left %}{{ ui.badge(view.counts.left ~ " left blank", "neutral") }}{% endif %}
+        {% if view.counts.problem %}{{ ui.badge(view.counts.problem | plural("problem"), "danger") }}{% endif %}
+      </div>
+      <div class="table-wrap">
+        <table class="rc-rows">
+          <thead><tr><th>Question</th><th>What happened</th><th>Value</th></tr></thead>
+          <tbody>
+          {% for r in view.rows %}
+          <tr>
+            <td>{{ r.label }}</td>
+            <td class="state">{{ ui.badge(r.status, {"filled": "ok", "problem": "danger"}.get(r.state, "neutral")) }}</td>
+            <td class="value">{{ r.value }}</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% elif view.has_report %}
+      {{ ui.empty_state("Nothing was filled in", "The attempt stopped before any question was answered.") }}
+      {% else %}
+      {{ ui.empty_state("No record of the form", "This attempt ended before Recrute got to the form, so there's nothing to list here.") }}
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div>
+        <h2 class="card-title">Screenshots</h2>
+        <p class="card-subtitle">What the page looked like. Select one to see it full size.</p>
+      </div></div>
+      {% if view.screenshots %}
+      <div class="rc-shots">
+        {% for sh in view.screenshots %}
+        <figure>
+          <figcaption>{{ sh.caption }}</figcaption>
+          <a href="{{ sh.href }}" target="_blank" rel="noopener" title="Open full size"><img src="{{ sh.href }}" alt="{{ sh.caption }}" loading="lazy"></a>
+        </figure>
+        {% endfor %}
+      </div>
+      {% else %}
+      {{ ui.empty_state("No screenshots", "None were taken during this attempt.") }}
+      {% endif %}
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2 class="card-title">At a glance</h2>
+      {{ ui.facts([
+        ("Job", job.title if job else none),
+        ("Company", company.name if company else none),
+        ("Tried", (view.attempted_at | datetime) if view.attempted_at else none),
+        ("Sent", (view.submitted_at | datetime) if view.submitted_at else none),
+        ("Through", view.adapter),
+        ("Mode", {"submit": "Send for real", "dry_run": "Practice run", "fill_and_pause": "Fill in, then hand to you", "pause": "Fill in, then hand to you"}.get(view.mode, view.mode | humanize if view.mode else none)),
+      ]) }}
+    </div>
+    <div class="card">
+      <h2 class="card-title">Files that were sent</h2>
+      {% if view.documents %}
+      <ul class="rc-files">
+        {% for d in view.documents %}<li><a href="{{ d.href }}" target="_blank" rel="noopener">{{ d.name }} ↗</a></li>{% endfor %}
+      </ul>
+      {% else %}
+      <p class="muted" style="margin:var(--sp-2) 0 0">No files were uploaded in this attempt.</p>
+      {% endif %}
+    </div>
+    {% if view.tech %}
+    <details class="box" style="margin-top:var(--sp-4)">
+      <summary>Technical files</summary>
+      <p class="help">Raw records, useful when reporting a problem. They open as plain text.</p>
+      <ul class="rc-files">
+        {% for t in view.tech %}
+        <li><a href="{{ t.href }}" target="_blank" rel="noopener">{{ t.name }}</a>{% if t.what %}<span class="what">{{ t.what }}</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+  </div>
+</div>
 {% endblock %}

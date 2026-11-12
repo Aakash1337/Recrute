@@ -1,0 +1,156 @@
+{#- A profile as a readable document (the current profile, or a first proposed one).
+    {% import "_profile_doc.html" as doc %}  then  {{ doc.document(profile, held) }}
+    held: profile_view.held_items(profile). -#}
+{% import "_ui.html" as ui %}
+
+{% macro bullets(items) -%}
+{%- if items %}<ul class="pf-bullets">{% for b in items %}<li>{{ b.text }}</li>{% endfor %}</ul>{% endif -%}
+{%- endmacro %}
+
+{% macro document(p, held=[]) -%}
+<div class="card pf-id">
+  <div class="pf-name">{{ p.name or "No name yet" }}</div>
+  {% if p.headline %}<p class="pf-headline">{{ p.headline }}</p>{% endif %}
+  {% if p.location or p.email or p.phone -%}
+  <ul class="pf-contact">
+    {%- if p.location %}<li><span class="sr-only">Location: </span>{{ p.location }}</li>{% endif %}
+    {%- if p.email %}<li><span class="sr-only">Email: </span>{{ p.email }}</li>{% endif %}
+    {%- if p.phone %}<li><span class="sr-only">Phone: </span>{{ p.phone }}</li>{% endif %}
+  </ul>
+  {%- endif %}
+  {% if p.links -%}
+  <div class="pills pf-links">
+    {%- for label, url in p.links.items() if url %}
+    {%- if (url | safe_url) != '#' %}<a class="pill" href="{{ url | safe_url }}" target="_blank" rel="noopener noreferrer">{{ label | link_label }} ↗</a>
+    {%- else %}<span class="pill" title="{{ url }}">{{ label | link_label }}: {{ url }}</span>{% endif %}
+    {%- endfor %}
+  </div>
+  {%- endif %}
+</div>
+
+{% if p.summary -%}
+<section class="card pf-part" aria-labelledby="pf-summary">
+  <h2 id="pf-summary">Summary</h2>
+  <p class="pf-summary">{{ p.summary }}</p>
+</section>
+{%- endif %}
+
+{% if p.experience -%}
+<section class="card pf-part" aria-labelledby="pf-experience">
+  <h2 id="pf-experience">Experience <span class="pf-count">{{ p.experience | length }}</span></h2>
+  {% for e in p.experience -%}
+  <article class="pf-entry">
+    <div class="pf-entry-head">
+      <h3>{{ e.title or "Role" }}{% if e.company %} <span class="pf-org">· {{ e.company }}</span>{% endif %}</h3>
+      {% set when = profile_dates(e.start, e.end) %}{% if when %}<span class="pf-when">{{ when }}</span>{% endif %}
+    </div>
+    {% if e.location %}<p class="pf-where">{{ e.location }}</p>{% endif %}
+    {% if e.summary %}<p>{{ e.summary }}</p>{% endif %}
+    {{ bullets(e.bullets) }}
+  </article>
+  {%- endfor %}
+</section>
+{%- endif %}
+
+{% if p.projects -%}
+<section class="card pf-part" aria-labelledby="pf-projects">
+  <h2 id="pf-projects">Projects <span class="pf-count">{{ p.projects | length }}</span></h2>
+  {% for pr in p.projects -%}
+  <article class="pf-entry">
+    <div class="pf-entry-head">
+      <h3>{{ pr.name or "Project" }}</h3>
+      {% if pr.url and (pr.url | safe_url) != '#' %}<a class="pf-when" href="{{ pr.url | safe_url }}" target="_blank" rel="noopener noreferrer">Open link ↗</a>{% endif %}
+    </div>
+    {% if pr.tech %}<div class="pills">{% for t in pr.tech %}{{ ui.chip(t) }}{% endfor %}</div>{% endif %}
+    {% if pr.summary %}<p>{{ pr.summary }}</p>{% endif %}
+    {{ bullets(pr.bullets) }}
+  </article>
+  {%- endfor %}
+</section>
+{%- endif %}
+
+{% if p.skills -%}
+<section class="card pf-part" aria-labelledby="pf-skills">
+  <h2 id="pf-skills">Skills</h2>
+  <dl class="pf-skills">
+    {% for cat, items in p.skills.items() if items -%}
+    <dt>{{ cat }}</dt>
+    <dd class="pills">{% for s in items %}{{ ui.chip(s) }}{% endfor %}</dd>
+    {%- endfor %}
+  </dl>
+</section>
+{%- endif %}
+
+{% if p.education -%}
+<section class="card pf-part" aria-labelledby="pf-education">
+  <h2 id="pf-education">Education</h2>
+  {% for ed in p.education -%}
+  <article class="pf-entry">
+    <div class="pf-entry-head">
+      <h3>{{ [ed.degree, ed.field] | select | join(" in ") or ed.school }}{% if ed.school and (ed.degree or ed.field) %} <span class="pf-org">· {{ ed.school }}</span>{% endif %}</h3>
+      {% set when = profile_dates(ed.start, ed.end) %}{% if when %}<span class="pf-when">{{ when }}</span>{% endif %}
+    </div>
+    {% if ed.gpa %}<p class="pf-where">GPA {{ ed.gpa }}</p>{% endif %}
+    {% if ed.details %}<ul class="pf-bullets">{% for d in ed.details %}<li>{{ d }}</li>{% endfor %}</ul>{% endif %}
+  </article>
+  {%- endfor %}
+</section>
+{%- endif %}
+
+{% if p.certifications -%}
+<section class="card pf-part" aria-labelledby="pf-certs">
+  <h2 id="pf-certs">Certifications</h2>
+  <ul class="pf-rows">
+    {% for c in p.certifications -%}
+    {%- set st = c | cert_status %}
+    <li>
+      <div><strong>{{ c.name }}</strong>
+        {%- if st %} {{ ui.badge(st, "warn" if st == "In progress" else "neutral", "Not held yet: Recrute never presents it as earned" if st == "In progress" else "No longer current: Recrute never presents it as held") }}{% endif %}
+        {%- if c.issuer or c.credential_id %}<div class="muted">{{ [c.issuer, ("Credential " ~ c.credential_id) if c.credential_id else ""] | select | join(" · ") }}</div>{% endif %}
+      </div>
+      {% if c.date %}<span class="pf-when">{{ c.date }}</span>{% endif %}
+    </li>
+    {%- endfor %}
+  </ul>
+</section>
+{%- endif %}
+
+{% if p.awards or p.extra -%}
+<section class="card pf-part" aria-labelledby="pf-more">
+  <h2 id="pf-more">Awards and more</h2>
+  {% if p.awards %}<h3 class="pf-sub">Awards</h3>{{ bullets(p.awards) }}{% endif %}
+  {% if p.extra %}<h3 class="pf-sub">Talks, publications and other</h3>{{ bullets(p.extra) }}{% endif %}
+</section>
+{%- endif %}
+
+{% if p.rules or p.do_not_claim or p.never_terms -%}
+<section class="card pf-part" aria-labelledby="pf-rules">
+  <h2 id="pf-rules">How Recrute writes about you</h2>
+  <p class="muted">These come from the instructions in your own resume files. The AI follows them every time it writes a resume, cover letter or answer.</p>
+  {% if p.rules -%}
+  <h3 class="pf-sub">Writing rules</h3>
+  <ul class="pf-bullets">{% for r in p.rules %}<li>{{ r }}</li>{% endfor %}</ul>
+  {%- endif %}
+  {% if p.do_not_claim or p.never_terms -%}
+  <h3 class="pf-sub">Never claimed</h3>
+  {% if p.do_not_claim %}<ul class="pf-bullets">{% for r in p.do_not_claim %}<li>{{ r }}</li>{% endfor %}</ul>{% endif %}
+  {% if p.never_terms -%}
+  <p class="muted" style="margin-bottom: 6px">Blocked words: anything Recrute writes that uses one of these is stopped before it reaches you.</p>
+  <div class="pills">{% for t in p.never_terms %}{{ ui.chip(t, "danger") }}{% endfor %}</div>
+  {%- endif %}
+  {%- endif %}
+</section>
+{%- endif %}
+
+{% if held -%}
+<section class="card pf-part pf-held" id="held" aria-labelledby="pf-held">
+  <h2 id="pf-held">Held back until you confirm <span class="pf-count">{{ held | length }}</span></h2>
+  <p class="muted">Your resume files mark these as unsure (for example “[confirm]”, “TBD” or “decide whether to list”), so Recrute never uses them. To start using one, settle it in your resume file and remove the note, then read your resume files again.</p>
+  <ul class="pf-rows">
+    {% for it in held -%}
+    <li><div>{% if it.where %}<div class="pf-held-where">{{ it.where }}</div>{% endif %}{{ it.text }}</div></li>
+    {%- endfor %}
+  </ul>
+</section>
+{%- endif %}
+{%- endmacro %}

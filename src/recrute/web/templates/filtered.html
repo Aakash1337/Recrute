@@ -1,20 +1,107 @@
 {% extends "base.html" %}
-{% block title %}Filtered · Recrute{% endblock %}
+{% import "_ui.html" as ui %}
+{% block title %}Filtered out · Recrute{% endblock %}
+{% block head %}
+<style>
+  .reason-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 var(--sp-3); }
+  .reason-tabs a { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface); color: var(--text-2); font-size: var(--fs-sm); font-weight: 500; }
+  .reason-tabs a:hover { text-decoration: none; border-color: var(--accent); color: var(--accent-text); }
+  .reason-tabs a[aria-current] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
+  .reason-tabs a b { font-weight: 500; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .reason-tabs a[aria-current] b { color: inherit; }
+  .reason-tabs .gap { flex-basis: var(--sp-2); }
+  .filtered-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: 0 0 var(--sp-3); }
+  .filtered-bar input[type="search"] { flex: 1 1 240px; max-width: 420px; min-width: 0; }
+  .filtered-bar .count { all: unset; margin-left: auto; color: var(--text-2); }
+  .filtered td.job { min-width: 280px; }
+  .filtered td.job > a { font-weight: 600; }
+  .filtered .job-line { margin-top: 3px; font-size: var(--fs-sm); color: var(--text-2); line-height: 1.75; }
+  .filtered .job-company, .filtered .job-pay { color: var(--text); font-weight: 500; }
+  .filtered td.why { min-width: 220px; max-width: 420px; }
+  .filtered td.why p { margin: 3px 0 0; color: var(--text-2); font-size: var(--fs-sm); }
+  .filtered td.act { white-space: nowrap; text-align: right; }
+  .filtered td.act .msg, .filtered td.act .restore-next { white-space: normal; }
+  .filtered td.act a.posting { display: inline-block; margin-top: 6px; font-size: var(--fs-sm); }
+  .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2) var(--sp-4); margin: var(--sp-3) 0 0; color: var(--text-2); }
+  @media (max-width: 700px) {
+    .filtered table, .filtered tbody, .filtered tr, .filtered td { display: block; width: auto; max-width: none; min-width: 0; }
+    .filtered thead { display: none; }
+    .filtered tr { padding: var(--sp-3); border-bottom: 1px solid var(--border); }
+    .filtered tr:last-child { border-bottom: 0; }
+    .filtered td { padding: 0; border: 0; }
+    .filtered td + td { margin-top: var(--sp-2); }
+    .filtered td.act { text-align: left; }
+    .filtered td.act a.posting { margin: 0 0 0 var(--sp-3); }
+    .filtered td.act br { display: none; }
+    .filtered-bar .count { margin-left: 0; flex-basis: 100%; }
+  }
+</style>
+{% endblock %}
 {% block content %}
-<form hx-get="/filtered" hx-target="body" hx-push-url="true">
-  <input name="q" value="{{ q }}" placeholder="search title / company / reason"> <button>Search</button>
+{% call ui.page_header("Filtered out", "Jobs Recrute set aside for you automatically, because one of your rules ruled them out or their fit score was too low. Nothing here was applied to. If one deserves a second look, move it back to Review.") %}
+  <a class="btn" href="/queue">Go to Review</a>
+{% endcall %}
+
+{% if not total %}
+{{ ui.empty_state("Nothing has been filtered out yet", "When one of your rules or a low fit score sets a job aside, it is listed here with the reason, and you can move it back to Review.", "/queue", "Go to Review") }}
+{% else %}
+<nav class="reason-tabs" aria-label="Why the jobs were filtered out">
+  {% for key, label, n in chips %}
+  {% if key == 'all' %}<span class="gap" aria-hidden="true"></span>{% endif %}
+  <a href="{{ link(reason=key, sort='', page=1) }}"{% if key == view %} aria-current="true"{% endif %}{% if key | filter_category_help %} title="{{ key | filter_category_help }}"{% endif %}>{{ label }} <b>{{ n | num }}</b></a>
+  {% endfor %}
+</nav>
+{% if view_help %}<p class="muted">{{ view_help }}</p>{% endif %}
+
+<form class="filtered-bar" action="/filtered" method="get" role="search" aria-label="Search the filtered jobs">
+  <input type="hidden" name="reason" value="{{ view }}">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search by job title or company" aria-label="Search by job title or company">
+  <select name="sort" aria-label="Sort by" onchange="this.form.submit()">
+    {% for value, label in sorts.items() %}<option value="{{ value }}"{{ ' selected' if sort == value }}>{{ label }}</option>{% endfor %}
+  </select>
+  <button>Search</button>
+  {% if q %}<a class="btn ghost" href="{{ link(q='', page=1) }}">Clear search</a>{% endif %}
+  <span class="count" aria-live="polite">
+    {%- if rows %}Showing <b>{{ first | num }}–{{ last | num }}</b> of {{ matched | num }}{% if q %} matching “{{ q }}”{% endif %}{% if matched != total %} ({{ total | num }} filtered out in all){% endif %}
+    {%- endif -%}
+  </span>
 </form>
-<p class="muted">Jobs dropped by rules or low fit score. Restoring one sends it straight to the review queue.</p>
+
+{% if rows %}
+<div class="table-wrap filtered">
 <table>
-  <tr><th>job</th><th>reason</th><th></th></tr>
+  <thead><tr><th scope="col">Job</th><th scope="col">Why it was set aside</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+  <tbody>
   {% for job, company in rows %}
   <tr>
-    <td><a href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">{{ job.title }}</a><br>{% include "_job_row_meta.html" %}</td>
-    <td>{{ job.filter_reason }}</td>
-    <td><button hx-post="/jobs/{{ job.id }}/restore" hx-swap="outerHTML">Restore</button></td>
+    <td class="job">
+      <a href="/jobs/{{ job.id }}" title="See the job, its fit and the posting">{{ job.title }}</a>
+      <div class="job-line">{% include "_job_row_meta.html" %}</div>
+    </td>
+    <td class="why">
+      {{ ui.chip(job.filter_reason | filter_reason_category | filter_category_label) }}
+      <p>{{ job.filter_reason | filter_reason }}</p>
+    </td>
+    <td class="act">
+      <button class="sm" hx-post="/jobs/{{ job.id }}/restore" hx-swap="outerHTML" aria-label="Move “{{ job.title }}” back to Review" title="Put this job in your Review list so you can approve it">Move back to Review</button>
+      <br><a class="posting" href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer" aria-label="Open the posting for “{{ job.title }}” in a new tab">Posting ↗</a>
+    </td>
   </tr>
-  {% else %}
-  <tr><td colspan="3" class="muted">Nothing filtered out.</td></tr>
   {% endfor %}
+  </tbody>
 </table>
+</div>
+<nav class="pager" aria-label="Pages">
+  <span>Page {{ page_no | num }} of {{ pages | num }}</span>
+  <span class="actions">
+    {% if page_no > 1 %}<a class="btn" href="{{ link(page=page_no - 1) }}" rel="prev">← Previous</a>{% else %}<span class="btn" aria-disabled="true">← Previous</span>{% endif %}
+    {% if page_no < pages %}<a class="btn" href="{{ link(page=page_no + 1) }}" rel="next">Next →</a>{% else %}<span class="btn" aria-disabled="true">Next →</span>{% endif %}
+  </span>
+</nav>
+{% elif q %}
+{{ ui.empty_state("No filtered jobs match “" ~ q ~ "”" ~ ("" if view == "all" else " in " ~ view_label), "Check the spelling, or search everything that was filtered out.", link(q='', page=1) if view == "all" else link(reason='all', page=1), "Clear search" if view == "all" else "Search everything") }}
+{% else %}
+{{ ui.empty_state("Nothing here", "No jobs were filtered out for this reason.", link(reason='all', sort='', page=1), "Show everything") }}
+{% endif %}
+{% endif %}
 {% endblock %}

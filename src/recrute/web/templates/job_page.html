@@ -1,16 +1,17 @@
 {% extends "base.html" %}
-{% block title %}{{ job.title }} · Recrute{% endblock %}
+{% block title %}{{ job.title }}{% if company %} at {{ company.name }}{% endif %} · Recrute{% endblock %}
 {% block content %}
-<p><a href="/queue">← review queue</a></p>
-<div class="pane" style="max-height:none">{% include "_job_detail.html" %}</div>
-<p id="decision-result"></p>
+<p><a href="{{ '/filtered' if view.can_restore else '/queue' }}">← Back to {{ 'Filtered' if view.can_restore else 'Review' }}</a></p>
+<div id="decision-result" aria-live="polite"></div>
+<div class="pane job-page" style="max-height:none; max-width: 980px">{% include "_job_detail.html" %}</div>
 {% endblock %}
 {% block scripts %}
 <script>
   window.recruteDecide = function (action, reason) {
     const values = {action: action};
     if (reason) values.reason = reason;
-    htmx.ajax('POST', '/jobs/{{ job.id }}/decide', {target: '#decision-result', values: values});
+    htmx.ajax('POST', '/jobs/{{ job.id }}/decide', {target: '#decision-result', values: values})
+      .then(() => window.scrollTo({top: 0, behavior: 'smooth'}));
   };
 </script>
 {% endblock %}

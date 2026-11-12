@@ -1,0 +1,51 @@
+{# One email on the Inbox page (also returned by itself after you confirm or dismiss it).
+   expects: r (tracking_view.EmailRow), job_options, kinds; optional: saved (a message) #}
+{% import "_ui.html" as ui %}
+{% set e = r.event %}
+<li class="mail t-{{ 'warn' if r.needs_check else r.kind_tone }}{{ ' is-other' if e.kind == 'other' }}" id="mail-{{ e.id }}">
+  <div class="mail-main">
+    <div class="mail-head">
+      {{ ui.badge(r.kind_label, r.kind_tone, dot=True) }}
+      <h3>{{ e.subject or "(no subject)" }}</h3>
+    </div>
+    <p class="mail-from">
+      <span>From {% if r.sender_name %}<b>{{ r.sender_name }}</b> <span class="muted">{{ r.sender_addr }}</span>{% else %}<b>{{ r.sender_addr or "an unknown sender" }}</b>{% endif %}</span>
+      {% if e.received_at %}<span>Received <time datetime="{{ e.received_at | iso }}">{{ e.received_at | datetime(true) }}</time> <span class="muted">({{ e.received_at | relative }})</span></span>{% endif %}
+    </p>
+    {% if e.summary %}<p class="mail-summary">{{ e.summary }}</p>{% endif %}
+    {% if e.kind != "other" or r.job %}
+    <p class="mail-match">
+      {% if e.kind != "other" %}{{ ui.badge(r.match[0], r.match[1], r.match[2]) }}{% endif %}
+      {% if r.job %}
+      <span><a href="/jobs/{{ r.job.id }}">{{ r.job.title }}</a>{% if r.company %} at <a href="/companies/{{ r.company.id }}">{{ r.company.name }}</a>{% endif %}</span>
+      {{ ui.status_badge(r.job.status) }}
+      {% elif e.kind != "other" %}<span class="muted">Not linked to any of your applications.</span>{% endif %}
+    </p>
+    {% endif %}
+  </div>
+  <div class="mail-side">
+    {% if r.needs_check %}
+    <form class="mail-form" hx-post="/inbox/{{ e.id }}/confirm" hx-target="#mail-result-{{ e.id }}" hx-swap="innerHTML">
+      <label class="label" for="mail-job-{{ e.id }}">Which job is it about?</label>
+      <select id="mail-job-{{ e.id }}" name="job_id">
+        <option value="">{{ "Keep the job shown" if r.job else "Choose the job…" }}</option>
+        {% for o in job_options %}<option value="{{ o.id }}"{{ ' selected' if o.id == e.job_id }}>{{ o.label }}</option>{% endfor %}
+      </select>
+      <label class="label" for="mail-kind-{{ e.id }}">What does it say?</label>
+      <select id="mail-kind-{{ e.id }}" name="kind">
+        {% for k, label in kinds.items() if k != "other" %}<option value="{{ k }}"{{ ' selected' if k == e.kind }}>{{ label }}</option>{% endfor %}
+      </select>
+      <button class="primary" title="Save this and update the application's status to match">Confirm</button>
+    </form>
+    <form hx-post="/inbox/{{ e.id }}/confirm" hx-target="#mail-result-{{ e.id }}" hx-swap="innerHTML">
+      <input type="hidden" name="kind" value="other">
+      <button class="ghost" title="This email isn't about one of your applications: nothing changes">Not about a job</button>
+    </form>
+    {% elif e.kind == "other" %}
+    <p class="mail-done muted">{{ "Dismissed by you" if e.confirmed else "Nothing to do" }}</p>
+    {% else %}
+    <p class="mail-done"><span class="ok">✓</span> Handled</p>
+    {% endif %}
+    <div class="mail-result" id="mail-result-{{ e.id }}" aria-live="polite">{% if saved %}<span class="msg msg-ok ok" role="status">{{ saved }}</span>{% endif %}</div>
+  </div>
+</li>

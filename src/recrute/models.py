@@ -188,6 +188,7 @@ class LLMCall(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     task: str = Field(index=True)
     provider: str
+    model: str | None = None  # model that answered (or was requested); None = CLI default
     cache_key: str = Field(index=True)
     ok: bool
     error: str | None = None
@@ -199,4 +200,59 @@ class LLMCall(SQLModel, table=True):
 class Setting(SQLModel, table=True):
     key: str = Field(primary_key=True)
     value: Any = Field(default=None, sa_column=Column(JSON))
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class JobBrief(SQLModel, table=True):
+    """A plain-language summary of ONE posting (what they ask for, what they offer), built by
+    the AI from the posting text alone (no profile data). Display-only: it never writes Job
+    columns. See research/briefs.py."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    job_id: int = Field(foreign_key="job.id", index=True, unique=True)
+    status: str = "none"  # none | queued | running | ok | failed | skipped
+    data: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    description_hash: str = ""  # the Job.description_hash `data` was built from
+    version: int = 0  # research.briefs.BRIEF_VERSION when built
+    provider: str | None = None
+    model: str | None = None
+    created_at: datetime | None = None  # when `data` was produced
+    requested_at: datetime | None = None  # someone pressed the button
+    refresh: bool = False  # the request asked for a fresh answer (skip the AI cache)
+    claim_token: str = ""  # whoever is building it now (worker or web), see claim_brief
+    claimed_at: datetime | None = None
+    attempts: int = 0  # failed attempts since the last success
+    error_kind: str | None = None  # a stable category, never raw error text
+    retry_after: datetime | None = None  # usage limit: not before this time
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class CompanyResearch(SQLModel, table=True):
+    """What a company does, its news and culture, researched on the web from public data only;
+    plus a separate, tool-less "fit for you" note. See research/company.py."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    company_id: int = Field(foreign_key="company.id", index=True, unique=True)
+    status: str = "none"  # none | queued | running | ok | limited | not_found | failed
+    data: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    gathered: list[Any] = Field(default_factory=list, sa_column=Column(JSON))  # public snippets
+    matched: str | None = None  # confident | ambiguous | not_found
+    web: bool = False  # data came from web research (False: the careers page/Wikipedia only)
+    version: int = 0
+    provider: str | None = None
+    model: str | None = None
+    researched_at: datetime | None = None
+    next_refresh_at: datetime | None = None
+    requested_at: datetime | None = None
+    refresh: bool = False
+    claim_token: str = ""
+    claimed_at: datetime | None = None
+    attempts: int = 0
+    error_kind: str | None = None
+    retry_after: datetime | None = None
+    fit: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    fit_profile_hash: str = ""
+    fit_provider: str | None = None
+    fit_model: str | None = None
+    fit_at: datetime | None = None
     updated_at: datetime = Field(default_factory=utcnow)

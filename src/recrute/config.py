@@ -33,6 +33,8 @@ class ProviderConfig(BaseModel):
     command: str
     model: str = ""  # empty = CLI default
     extra_args: list[str] = Field(default_factory=list)
+    # claude only: cap on the agent loop (--max-turns) for requests that may use web tools
+    web_max_turns: int = Field(default=14, ge=1)
 
 
 class Route(BaseModel):
@@ -44,6 +46,26 @@ class Route(BaseModel):
         """"claude" or "claude:sonnet" -> Route."""
         provider, _, model = spec.partition(":")
         return cls.model_validate({"provider": provider, "model": model})
+
+
+# task -> ordered list of "provider" or "provider:model"; later entries are fallbacks when
+# earlier ones fail or hit a usage limit. A [llm.routing] table in recrute.toml is merged over
+# these per task, so tasks it doesn't list keep their own default route.
+DEFAULT_ROUTING: dict[str, list[str]] = {
+    "default": ["claude:sonnet", "codex"],
+    "triage": ["codex", "claude:haiku"],
+    "tailor": ["claude:sonnet", "codex"],
+    "verify": ["claude:sonnet", "codex"],
+    "extract": ["claude:sonnet", "codex"],
+    "extract_postings": ["codex", "claude:haiku"],
+    "answers": ["claude:sonnet", "codex"],
+    "classify_email": ["codex", "claude:haiku"],
+    "followup": ["claude:sonnet", "codex"],
+    "form_map": ["claude:sonnet", "codex"],
+    "job_brief": ["claude:haiku", "codex"],
+    "company_research": ["claude:sonnet", "codex"],
+    "company_fit": ["claude:haiku", "codex"],
+}
 
 
 class LLMConfig(BaseModel):
@@ -64,22 +86,20 @@ class LLMConfig(BaseModel):
             merged[name] = {**base, **(cfg.model_dump() if isinstance(cfg, BaseModel) else cfg)}
         return merged
 
-    # task -> ordered list of "provider" or "provider:model"; later entries are fallbacks when
-    # earlier ones fail or hit a usage limit.
     routing: dict[str, list[str]] = Field(
-        default_factory=lambda: {
-            "default": ["claude:sonnet", "codex"],
-            "triage": ["codex", "claude:haiku"],
-            "tailor": ["claude:sonnet", "codex"],
-            "verify": ["claude:sonnet", "codex"],
-            "extract": ["claude:sonnet", "codex"],
-            "extract_postings": ["codex", "claude:haiku"],
-            "answers": ["claude:sonnet", "codex"],
-            "classify_email": ["codex", "claude:haiku"],
-            "followup": ["claude:sonnet", "codex"],
-            "form_map": ["claude:sonnet", "codex"],
-        }
+        default_factory=lambda: {task: list(specs) for task, specs in DEFAULT_ROUTING.items()}
     )
+
+    @field_validator("routing", mode="before")
+    @classmethod
+    def _merge_default_routing(cls, value):
+        """A user's [llm.routing] table overrides routes per task; it must not drop the
+        defaults of tasks it doesn't mention (they would silently run on "default")."""
+        if value is None:
+            value = {}
+        if not isinstance(value, dict):
+            return value  # let pydantic report the type error
+        return {**{task: list(specs) for task, specs in DEFAULT_ROUTING.items()}, **value}
 
     def route(self, task: str) -> list[Route]:
         specs = self.routing.get(task) or self.routing.get("default") or ["claude"]

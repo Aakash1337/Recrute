@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% block title %}{{ company.name }} · Recrute{% endblock %}
+{% block content %}
+<p><a href="/companies">← Back to Companies</a></p>
+{% call ui.page_header(company.name, (live | length | plural("job")) ~ " for you right now" if live else "No jobs for you right now") %}
+  {% if board %}<a class="btn" href="{{ board | safe_url }}" target="_blank" rel="noopener noreferrer">Open their job board ↗</a>{% endif %}
+  {% if company.ats %}<button hx-post="/companies/{{ company.id }}/toggle" hx-swap="innerHTML" title="Pause or resume checking this company's job board">{{ 'Pause' if company.active else 'Resume checking' }}</button>{% endif %}
+{% endcall %}
+
+<dl class="glance">
+  <div><dt>Job board</dt><dd>{{ source_label(company.ats) if company.ats else "None linked" }}{% if not company.ats %}<small>Its jobs reach Recrute through job sites.</small>{% endif %}</dd></div>
+  <div><dt>Checking</dt><dd>{% if not company.ats %}Not directly{% elif company.active %}On{% else %}Paused{% endif %}{% if company.last_polled_at %}<small>Last checked {{ company.last_polled_at | relative }}</small>{% endif %}</dd></div>
+  <div><dt>How it got here</dt><dd>{{ origin }}</dd></div>
+  {% if company.cap_exempt %}<div><dt>Visa</dt><dd>Likely H-1B cap-exempt<small>Can sponsor H-1B at any time of year.</small></dd></div>{% endif %}
+  {% if company.e_verify %}<div><dt>E-Verify</dt><dd>Enrolled<small>Needed for the STEM OPT extension.</small></dd></div>{% endif %}
+  {% if company.h1b_recent_approvals %}<div><dt>H-1B approvals</dt><dd>{{ company.h1b_recent_approvals | num }}<small>Recent, from USCIS data.</small></dd></div>{% endif %}
+</dl>
+{% if company.poll_error %}{{ ui.error_block(friendly_error(company.poll_error)) }}{% endif %}
+
+{# (company research is loaded here) #}
+{% include "_company_research_slot.html" ignore missing %}
+
+{% call ui.section("Jobs for you", "In Review or somewhere along an application, best fit first.") %}
+{% if live %}
+<div class="card flush"><div class="table-wrap"><table>
+  <thead><tr><th>Job</th><th class="num">Fit</th><th>Where</th><th>Pay</th><th>Status</th><th>Posted</th></tr></thead>
+  <tbody>
+  {% for j in live %}
+  <tr>
+    <td><a href="/jobs/{{ j.id }}"><strong>{{ j.title }}</strong></a></td>
+    <td class="num">{% if j.score is not none %}<span class="score">{{ j.score }}</span>{% else %}<span class="muted">–</span>{% endif %}</td>
+    <td>{{ ui.location_list(j.locations) }}{% if j.remote %} <span class="muted">· {{ remote_label(j.remote) }}</span>{% endif %}</td>
+    <td>{{ pay(j) or '–' }}</td>
+    <td>{{ ui.status_badge(j.status) }}</td>
+    <td class="muted">{{ ui.when(j.posted_at or j.first_seen) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div></div>
+{% else %}
+{{ ui.empty_state("Nothing here right now", "None of this company's current postings passed your filters. New ones show up after the next check.") }}
+{% endif %}
+{% endcall %}
+
+{% if aside %}
+<details class="box" style="margin-top: var(--sp-4)"><summary>Set aside ({{ aside_total | num }}): filtered out, rejected or taken down</summary>
+  <table>
+    <thead><tr><th>Job</th><th>Why</th></tr></thead>
+    <tbody>
+    {% for j in aside %}
+    <tr><td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td>
+        <td class="muted">{{ status_label(j.status) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if aside_total > aside | length %}<p class="muted">Showing the first {{ aside | length }}. The rest are under Filtered.</p>{% endif %}
+</details>
+{% endif %}
+{% endblock %}

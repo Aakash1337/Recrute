@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{#- expects: status, friendly {title, detail, technical}, links [(href, label)], bare (inside a
+    frame: no navigation) -#}
+{% block title %}{{ friendly.title }} · Recrute{% endblock %}
+{% block nav %}{% if not bare %}{{ super() }}{% endif %}{% endblock %}
+{% block content %}
+<div class="error-page">
+  <p class="error-code">{{ 'Page not found' if status == 404 else 'Error ' ~ status }}</p>
+  <h1>{{ friendly.title }}</h1>
+  <p class="lead">{{ friendly.detail }}</p>
+  {% if not bare %}
+  <div class="actions">
+    {% for href, label in links %}
+    <a class="btn{{ ' primary' if loop.first }}" href="{{ href }}">{{ label }}</a>
+    {% endfor %}
+    <button type="button" class="ghost" onclick="history.back()">Go back</button>
+  </div>
+  {% endif %}
+  {% if friendly.technical %}
+  <details class="tech error-tech"><summary>Technical details</summary><code>{{ friendly.technical }}</code></details>
+  {% endif %}
+</div>
+{% endblock %}
+{% block head %}
+<style>
+  .error-page { max-width: 560px; margin: var(--sp-7) auto; padding: var(--sp-6); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); }
+  .error-code { margin: 0 0 var(--sp-2); font-size: var(--fs-xs); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .error-page h1 { margin-bottom: var(--sp-2); }
+  .error-page .actions { margin-top: var(--sp-5); }
+  .error-tech { margin-top: var(--sp-5); }
+  @media (max-width: 600px) { .error-page { margin: var(--sp-4) 0; padding: var(--sp-5) var(--sp-4); } }
+</style>
+{% endblock %}

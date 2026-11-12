@@ -1,7 +1,8 @@
 """Background worker: runs periodic pipeline tasks and records each run in TaskRun.
 
-Two threads: "pipeline" (discovery, rules, triage, packets, inbox, digests) and "apply" (the
-drip scheduler, which drives a browser and must never be blocked by a long discovery run).
+Three threads: "pipeline" (discovery, rules, triage, packets, inbox, digests), "apply" (the
+drip scheduler, which drives a browser and must never be blocked by a long discovery run) and
+"research" (job summaries and company research, which can take minutes per item).
 Every task is idempotent and resumable: state lives in the DB, so restarts are safe.
 """
 
@@ -94,6 +95,11 @@ def default_tasks() -> list[Task]:
         Task("maintenance", timedelta(hours=1), t.maintenance),
         Task("digest", timedelta(minutes=30), t.daily_digest),
         Task("apply", timedelta(minutes=1), t.apply_due, thread="apply"),
+        # AI research has its own thread: a 1-3 minute web lookup must never hold up
+        # discovery, scoring or packets, nor the apply thread
+        Task("briefs", timedelta(minutes=5), t.build_briefs, thread="research"),
+        Task("company_research", timedelta(minutes=15), t.research_companies,
+             thread="research"),
     ]
 
 

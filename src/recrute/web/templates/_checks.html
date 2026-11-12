@@ -1,9 +1,46 @@
-<table>
+{#- System checks, loaded into the dashboard after it renders. Each check is already in plain
+    words (views_dashboard.describe_check): file paths only appear as hover text, commands in
+    a "To fix" line, raw tool output behind "Technical details". -#}
+{% import "_ui.html" as ui %}
+{% set words = {'ok': 'Passed', 'warn': 'Suggestion', 'problem': 'Problem'} %}
+{% set tones = {'ok': 'ok', 'warn': 'warn', 'problem': 'danger'} %}
+<p class="checks-line">
+  {{ ui.badge(summary.text, summary.tone, dot=True) }}
+  <span class="muted">{{ summary.passed }} of {{ summary.total }} passed
+    {%- if summary.warnings %} · {{ summary.warnings | length | plural('optional suggestion') }}{% endif %}
+    {%- if summary.problems %} · {{ summary.problems | length | plural('problem') }} that {{ 'stops' if summary.problems | length == 1 else 'stop' }} Recrute from working{% endif %}</span>
+</p>
+<div class="table-wrap">
+<table class="checks">
+  <thead><tr><th scope="col">Check</th><th scope="col">Result</th><th scope="col">Details</th></tr></thead>
+  <tbody>
   {% for c in checks %}
-  <tr>
-    <td class="{{ 'ok' if c.ok else ('bad' if c.required else 'warn') }}">{{ '✔' if c.ok else ('✖' if c.required else '!') }}</td>
-    <td>{{ c.name }}</td>
-    <td class="muted">{{ c.detail }}</td>
+  <tr data-check="{{ c.name }}">
+    <th scope="row" class="check-name">{{ c.label }}</th>
+    <td class="nowrap">{{ ui.badge(words[c.state], tones[c.state], dot=True) }}</td>
+    <td>
+      <span{% if c.where %} title="{{ c.where }}"{% endif %}>{{ c.detail }}</span>
+      {%- if c.fix %}<div class="check-fix">To fix, run <code>{{ c.fix }}</code> in a terminal.</div>{% endif %}
+      {%- if c.link %}<div class="check-fix"><a href="{{ c.link[0] }}">{{ c.link[1] }} →</a></div>{% endif %}
+      {%- if c.technical %}<details class="tech"><summary>Technical details</summary><code>{{ c.technical }}</code></details>{% endif %}
+    </td>
   </tr>
   {% endfor %}
+  </tbody>
 </table>
+</div>
+{% if oob %}
+{#- the System status summary line, and a warning at the top of the page when something required is missing -#}
+<span id="checks-summary" hx-swap-oob="true">{{ ui.badge('Setup: ' ~ summary.text, summary.tone, dot=True) }}</span>
+<div id="checks-alert" hx-swap-oob="true">
+  {%- if summary.problems %}
+  {% call ui.alert("danger", "Recrute is missing something it needs") %}
+  <ul class="alert-list">
+    {% for c in summary.problems %}
+    <li><strong>{{ c.label }}:</strong> {{ c.detail }}{% if c.fix %} To fix, run <code>{{ c.fix }}</code> in a terminal.{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endcall %}
+  {%- endif %}
+</div>
+{% endif %}

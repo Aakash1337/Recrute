@@ -1,21 +1,131 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Packets · Recrute{% endblock %}
+{% block head %}
+{% if building %}<meta http-equiv="refresh" content="90">{% endif %}
+<style>
+  .pk-filters { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 0 0 var(--sp-4); }
+  .pk-filters a { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface); color: var(--text-2); font-size: var(--fs-sm); font-weight: 500; text-decoration: none; }
+  .pk-filters a:hover { border-color: var(--border-strong); color: var(--text); }
+  .pk-filters a[aria-current] { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); }
+  .pk-filters .n { font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 400; }
+  .pk-filters a[aria-current] .n { color: inherit; }
+  .pk-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-3); }
+  .pk-item { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--sp-2) var(--sp-4); align-items: center; padding: var(--sp-4); background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--tone, var(--border-strong)); border-radius: var(--r); box-shadow: var(--shadow-sm); transition: border-color .12s, box-shadow .12s; }
+  .pk-item.linked:hover { border-color: var(--border-strong); border-left-color: var(--tone, var(--border-strong)); box-shadow: var(--shadow); }
+  .pk-item h2 { margin: 0; font-size: var(--fs-md); font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--text); }
+  .pk-item h2 a { color: inherit; text-decoration: none; }
+  .pk-item h2 a::after { content: ""; position: absolute; inset: 0; border-radius: var(--r); }
+  .pk-item h2 a:focus-visible { outline: none; }
+  .pk-item h2 a:focus-visible::after { box-shadow: 0 0 0 3px var(--focus-ring); }
+  .pk-meta { margin: 2px 0 0; color: var(--muted); font-size: var(--fs-sm); }
+  .pk-meta > span + span::before { content: "·"; margin: 0 6px; color: var(--faint); }
+  .pk-needs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: var(--sp-2); }
+  .pk-needs .age { color: var(--muted); font-size: var(--fs-xs); margin-left: 2px; }
+  .pk-side { display: flex; align-items: center; gap: var(--sp-3); }
+  .pk-fit { display: grid; justify-items: center; min-width: 52px; line-height: 1.15; }
+  .pk-fit b { font-size: var(--fs-xl); font-weight: 650; font-variant-numeric: tabular-nums; color: var(--tone, var(--text)); }
+  .pk-fit span { font-size: 11px; color: var(--muted); }
+  .pk-go { position: relative; z-index: 1; }
+  .pk-building { margin: 0; padding: 0; list-style: none; }
+  .pk-building li { display: flex; flex-wrap: wrap; gap: 2px var(--sp-3); align-items: baseline; padding: 6px 0; border-top: 1px solid var(--border); }
+  .pk-building li:first-child { border-top: 0; }
+  .pk-building .what { font-weight: 500; }
+  .pk-building .note { color: var(--muted); font-size: var(--fs-sm); }
+  .pk-foot { margin-top: var(--sp-4); color: var(--muted); font-size: var(--fs-sm); }
+  @media (max-width: 640px) {
+    .pk-item { grid-template-columns: minmax(0, 1fr); }
+    .pk-side { justify-content: space-between; }
+    .pk-fit { grid-auto-flow: column; gap: 6px; align-items: baseline; }
+  }
+</style>
+{% endblock %}
 {% block content %}
-<p class="muted">CP2: review each application packet (focused resume, cover letter if needed, every form answer), then press <b>Go ahead</b>.</p>
-{% if profile_missing %}<p class="warn">No structured profile yet: add your mega resume to <code>resources/resume/</code> and ingest it on the <a href="/profile">Profile</a> page. Packets can't be built until then.</p>{% endif %}
-{% if building %}<p class="muted">Building {{ building | length }} packet(s)…</p>{% endif %}
-<table>
-  <tr><th>job</th><th>new answers</th><th>flags</th><th></th></tr>
-  {% for job, company, p in items %}
-  {% set blocks = p.flags | selectattr('severity', 'equalto', 'block') | list %}
-  <tr>
-    <td><a href="/packets/{{ job.id }}"><b>{{ job.title }}</b></a><br>{% include "_job_row_meta.html" %}</td>
-    <td>{{ p.answers | selectattr('needs_review') | list | length }}</td>
-    <td>{% if blocks %}<span class="flag-block">{{ blocks | length }} blocking</span>{% endif %} {{ (p.flags | length) - (blocks | length) }} warn</td>
-    <td><a class="btn" href="/packets/{{ job.id }}">Review</a></td>
-  </tr>
-  {% else %}
-  <tr><td colspan="4" class="muted">No packets waiting.</td></tr>
+{{ ui.page_header("Packets", "A packet is one application, ready to send: a resume tailored to the job, a cover letter when the form asks for one, and an answer to every question. Check each one, then approve it. Nothing is sent before you approve.") }}
+
+{% if profile_missing %}
+{% call ui.alert("warn", "Recrute doesn't know your background yet") %}
+<div class="alert-text">Packets are written from your profile. <a href="/profile">Add your resume on the Profile page</a>, then approved jobs will get a packet here.</div>
+{% endcall %}
+{% endif %}
+
+{% if building %}
+{% call ui.card("Being prepared now", (building | length | plural("packet")) ~ " on the way. Each usually takes a few minutes; this page checks again by itself.") %}
+<ul class="pk-building">
+  {% for b in building[:8] %}
+  <li>
+    <span class="what">{{ b.job.title }}</span>
+    <span class="note">{{ b.company.name if b.company else "" }}</span>
+    <span class="spacer"></span>
+    <span class="note">
+      {% if b.failures %}{{ ui.badge(b.failures | plural("failed try", "failed tries") ~ " so far", "warn", "Recrute tries a few times. If it keeps failing, the job moves to Applications under “Needs you”.") }}{% endif %}
+      {% if b.rebuild %}Rebuilding with your note{% else %}Building{% endif %}{% if b.since %}, started {{ ui.when(b.since) }}{% endif %}
+    </span>
+  </li>
   {% endfor %}
-</table>
+</ul>
+{% if building | length > 8 %}<p class="pk-foot">…and {{ (building | length) - 8 }} more.</p>{% endif %}
+{% endcall %}
+{% endif %}
+
+{% if total %}
+<nav class="pk-filters" aria-label="Show">
+  {% for f in filters %}
+  <a href="/packets{{ '' if f.key == 'all' else '?show=' ~ f.key }}"{% if f.key == show %} aria-current="true"{% endif %}>{{ f.label }} <span class="n">{{ f.count }}</span></a>
+  {% endfor %}
+</nav>
+{% endif %}
+
+{% if items %}
+<ul class="pk-list">
+  {% for p in items %}
+  {% set job = p.job %}
+  {% set tone = {"ready": "ok", "answers": "warn", "form": "warn", "error": "danger"}.get(p.state, "danger" if p.must_check else "info") %}
+  <li class="pk-item t-{{ tone }}{{ ' linked' if not p.error }}">
+    <div>
+      <h2>{% if p.error %}{{ job.title }}{% else %}<a href="/packets/{{ job.id }}">{{ job.title }}</a>{% endif %}</h2>
+      <p class="pk-meta">
+        {% if p.company %}<span>{{ p.company.name }}</span>{% endif %}
+        {% if job.locations %}<span>{{ ui.location_list(job.locations) }}</span>{% endif %}
+        {% if job.remote %}<span>{{ job.remote | remote_label }}</span>{% endif %}
+        {% if job | pay %}<span>{{ job | pay }}</span>{% endif %}
+        {% if job.priority %}<span>{{ priority_label(job.priority.value) }}</span>{% endif %}
+      </p>
+      <div class="pk-needs">
+        {% if p.error %}
+          {{ ui.badge("Can't be opened", "danger") }}
+          <span class="age">This packet was built by an older version of Recrute. Approve the job again in Review to get a fresh one.</span>
+        {% else %}
+          {% if p.ready %}{{ ui.badge("Ready to approve", "ok", dot=True) }}{% endif %}
+          {% if p.missing %}{{ ui.badge(p.missing | plural("answer needs you", "answers need you"), "warn", "Required questions that are still empty") }}{% endif %}
+          {% if p.form_not_read %}{{ ui.badge("Form couldn't be read", "warn", "Recrute couldn't read this site's application form, so there are no answers to check. The resume is ready.") }}{% endif %}
+          {% if p.to_check %}
+            {%- set parts = [] -%}
+            {%- if p.must_check %}{% set _ = parts.append(p.must_check | plural("claim") ~ " to confirm") %}{% endif -%}
+            {%- if p.ai_drafts %}{% set _ = parts.append(p.ai_drafts | plural("AI-drafted answer") ~ " to read") %}{% endif -%}
+            {%- if p.worth_a_look %}{% set _ = parts.append(p.worth_a_look | plural("smaller note")) %}{% endif -%}
+            {{ ui.badge(p.to_check | plural("thing") ~ " to check", "danger" if p.must_check else "neutral", parts | join(", ")) }}
+          {% elif p.ready %}<span class="age">Nothing flagged</span>{% endif %}
+          {% if p.packet.generated_at %}<span class="age">Built {{ ui.when(p.packet.generated_at) }}</span>{% endif %}
+        {% endif %}
+      </div>
+    </div>
+    <div class="pk-side">
+      {% if job.score is not none %}
+      {% set ft = "ok" if job.score >= 80 else ("info" if job.score >= 65 else ("warn" if job.score >= 50 else "neutral")) %}
+      <div class="pk-fit t-{{ ft }}" title="How well this job fits you, out of 100"><b>{{ job.score }}</b><span>fit</span></div>
+      {% endif %}
+      {% if not p.error %}<a class="btn pk-go{{ ' primary' if p.ready }}" href="/packets/{{ job.id }}" tabindex="-1" aria-hidden="true">Review</a>{% endif %}
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+<p class="pk-foot">Ready ones come first, then the best fits. {% if show != "all" %}Showing {{ items | length }} of {{ total }}. <a href="/packets">Show all</a>{% endif %}</p>
+{% elif total %}
+{{ ui.empty_state("No packets match this filter", "Try another filter to see the " ~ (total | plural("packet")) ~ " waiting for you.", "/packets", "Show all packets") }}
+{% elif building %}
+{{ ui.empty_state("Nothing to review yet", "Your packets are still being prepared. They'll appear here as soon as they're ready.") }}
+{% else %}
+{{ ui.empty_state("No packets waiting", "When you approve a job in Review, Recrute prepares its application here: usually within a few minutes.", "/queue", "Go to Review") }}
+{% endif %}
 {% endblock %}

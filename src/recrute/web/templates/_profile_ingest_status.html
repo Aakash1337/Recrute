@@ -1,0 +1,13 @@
+{#- The progress line under "Read my resume files". While reading runs it asks the server again
+    every few seconds; when reading finishes the server sends the page on to the result.
+    Needs: running, elapsed, error (a friendly_error dict or None). -#}
+{% import "_ui.html" as ui %}
+<div id="ingest-status" class="ingest-status" aria-live="polite"
+     {%- if running %} hx-get="/profile/ingest/status?watching=1" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+  {% if running -%}
+  <p class="loading">Reading your resume files…{% if elapsed %} <span class="muted">({{ elapsed if elapsed == 'just started' else elapsed ~ ' so far' }})</span>{% endif %}</p>
+  <p class="help">This usually takes a minute or two. You can leave this page: the result will be waiting here when you come back.</p>
+  {%- elif error -%}
+  {{ ui.error_block(error) }}
+  {%- endif %}
+</div>

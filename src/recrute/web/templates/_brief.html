@@ -1,0 +1,135 @@
+{#- The job summary card: GET/POST /jobs/{id}/brief (views_research.py).
+    Embed with:  <div hx-get="/jobs/{{ job.id }}/brief" hx-trigger="load" hx-swap="outerHTML"></div>
+    While the summary is being made the card polls itself; every button swaps the whole card. -#}
+{% import "_ui.html" as ui %}
+{%- set card_id = "job-brief-" ~ job.id -%}
+{%- macro ask(label, cls="sm", refresh=False) -%}
+<button type="button" class="{{ cls }}" hx-post="/jobs/{{ job.id }}/brief" hx-target="#{{ card_id }}" hx-swap="outerHTML"
+        {%- if refresh %} hx-vals='{"refresh": "1"}'{% endif %}>{{ label }}</button>
+{%- endmacro -%}
+{%- macro quoted(text, quote) -%}
+{%- if quote -%}
+<details class="rs-q"><summary>{{ text }}</summary><blockquote class="rs-quote">“{{ quote }}”<cite>from the posting</cite></blockquote></details>
+{%- else -%}{{ text }}{%- endif -%}
+{%- endmacro -%}
+<section class="card rs" id="{{ card_id }}" aria-label="Summary of the posting"{% if working %} hx-get="/jobs/{{ job.id }}/brief?poll=1" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+  {% include "_research_style.html" %}
+  <div class="rs-head">
+    <h3>Summary of the posting</h3>
+    {%- if data and not working %}<span class="muted">Select any requirement to see the posting's exact words</span>{% endif %}
+  </div>
+
+  {% if working -%}
+  <p class="loading" role="status">{{ "Updating the summary…" if data else "Reading the posting and writing a summary… this usually takes 10 to 30 seconds." }}</p>
+  {%- elif state == "paused" -%}
+  {% call ui.alert("info", "The AI is at its usage limit") %}
+    <div class="alert-text">This summary will be tried again around {{ retry_at | time }} if Recrute's background worker is running. You can also try again yourself later.</div>
+    <div class="rs-act">{{ ask("Try again now") }}</div>
+  {% endcall %}
+  {%- elif state == "stalled" -%}
+  {% call ui.alert("warn", "This summary didn't start") %}
+    <div class="alert-text">It was queued, but nothing picked it up (Recrute may have been restarted meanwhile).</div>
+    <div class="rs-act">{{ ask("Try again") }}</div>
+  {% endcall %}
+  {%- elif state == "failed" -%}
+  {% call ui.alert("danger", error.title) %}
+    <div class="alert-text">{{ error.detail }}</div>
+    <div class="rs-act">{{ ask("Try again", refresh=True) }}</div>
+  {% endcall %}
+  {%- elif too_short -%}
+  {% call ui.alert("info", "There isn't enough posting text to summarize") %}
+    <div class="alert-text">Only a short snippet of this posting was captured, so a summary would be guesswork. <a href="{{ posting_url | safe_url }}" target="_blank" rel="noopener noreferrer">Open the posting</a> to read it in full.</div>
+  {% endcall %}
+  {%- endif %}
+
+  {% if stale and not working -%}
+  {% call ui.alert("warn", "The posting changed since this summary was made") %}
+    <div class="alert-text">The summary below describes the earlier text.</div>
+    <div class="rs-act">{{ ask("Summarize again") }}</div>
+  {% endcall %}
+  {%- endif %}
+
+  {% if data and data.summary %}<p class="rs-lead">{{ data.summary }}</p>{% endif %}
+
+  {% if glance -%}
+  {#- (before a summary exists these facts only repeat the job pane's own strip: hidden there) #}
+  <h4 class="rs-h{{ ' rs-fallback' if not data }}">At a glance</h4>
+  <dl class="rs-glance{{ ' rs-fallback' if not data }}">
+    {%- for f in glance %}
+    <div class="rs-fact">
+      <dt>{{ f.label }}</dt>
+      <dd class="{{ 'muted' if f.tone == 'muted' else ('t-' ~ f.tone if f.tone) }}">{{ f.value }}
+        {%- if f.note %}<span class="rs-note">{{ f.note }}</span>{% endif %}
+        {%- if f.quote %}<details class="rs-q inline"><summary>the posting's words</summary><blockquote class="rs-quote">“{{ f.quote }}”</blockquote></details>{% endif %}
+      </dd>
+    </div>
+    {%- endfor %}
+  </dl>
+  {%- endif %}
+
+  {% if state == "none" and not too_short -%}
+  <div class="rs-start">
+    <p>Get a plain-language summary of this posting: what they ask for, what they offer and anything to watch out for. Only the posting is read, not your profile.</p>
+    {{ ask("Summarize this posting", cls="primary") }}
+  </div>
+  {%- endif %}
+
+  {% if data -%}
+  {% if flags -%}
+  <h4 class="rs-h">Watch-outs</h4>
+  <ul class="rs-flags">
+    {%- for f in flags %}
+    <li>{% if f.quote %}<details class="rs-q"><summary><span>{{ ui.badge(f.label, "warn") }} {{ f.text }}</span></summary><blockquote class="rs-quote">“{{ f.quote }}”<cite>from the posting{{ " · found by a text check" if f.source == "check" }}</cite></blockquote></details>
+        {%- else %}{{ ui.badge(f.label, "warn") }} {{ f.text }}{% endif %}</li>
+    {%- endfor %}
+  </ul>
+  {%- endif %}
+
+  {% if must or nice -%}
+  <div class="rs-cols">
+    {%- for title, groups, empty in (("Must have", must, "The posting doesn't list firm requirements."), ("Nice to have", nice, "No extras are listed.")) %}
+    <div>
+      <h4 class="rs-h">{{ title }}</h4>
+      {%- for g in groups %}
+      <p class="rs-group">{{ g.label }}</p>
+      <ul class="rs-reqs">
+        {%- for r in g["items"] %}
+        <li>{{ quoted(r.text, r.quote) }}</li>
+        {%- endfor %}
+      </ul>
+      {%- else %}
+      <p class="muted">{{ empty }}</p>
+      {%- endfor %}
+    </div>
+    {%- endfor %}
+  </div>
+  {%- endif %}
+
+  {% if data.responsibilities -%}
+  <h4 class="rs-h">What you'd do</h4>
+  <ul class="rs-list">{% for r in data.responsibilities %}<li>{{ r }}</li>{% endfor %}</ul>
+  {%- endif %}
+
+  {% if perks -%}
+  <h4 class="rs-h">What they offer</h4>
+  <div class="rs-chips">{% for p in perks %}{{ ui.chip(p, title=equity_quote if loop.first and equity_quote else None) }}{% endfor %}</div>
+  {%- endif %}
+
+  {% if data.about_company or data.about_team or data.role.team or data.role.reports_to -%}
+  <h4 class="rs-h">About {{ company_name or "the company" }} and the team <span class="rs-from">· in the posting's own telling</span></h4>
+  {% if data.about_company %}<p>{{ data.about_company }}</p>{% endif %}
+  {% if data.about_team %}<p>{{ data.about_team }}</p>{% endif %}
+  {{ ui.facts([("Team", data.role.team), ("Reports to", data.role.reports_to)]) }}
+  {%- endif %}
+
+  {% if data.interview_process -%}
+  <h4 class="rs-h">Interview process</h4>
+  <ol class="rs-list">{% for step in data.interview_process %}<li>{{ step }}</li>{% endfor %}</ol>
+  {%- endif %}
+
+  <div class="rs-foot">
+    <span class="rs-grow">Summarized from the posting by {{ by }}{% if brief.created_at %} · {{ ui.when(brief.created_at) }}{% endif %}. Summaries can miss things: check the posting before you rely on a detail.</span>
+    {% if not working %}{{ ask("Summarize again", cls="ghost sm", refresh=True) }}{% endif %}
+  </div>
+  {%- endif %}
+</section>

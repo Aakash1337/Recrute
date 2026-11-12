@@ -1,10 +1,25 @@
-<form id="knob" hx-post="/settings/apps-per-day" hx-trigger="change" hx-swap="outerHTML">
-  <label>
-    Applications per day:
-    <input type="range" name="value" min="{{ apps_min }}" max="{{ apps_max }}"
-           value="{{ settings.apps_per_day }}"
-           oninput="this.nextElementSibling.textContent = this.value">
-    <b>{{ settings.apps_per_day }}</b>
-  </label>
-  {% if error %}<span class="bad">{{ error }}</span>{% elif saved %}<span class="ok">saved</span>{% endif %}
+{#- The "applications per day" control (dashboard and Settings). The slider and the number box
+    stay in sync; it saves by itself a moment after you stop changing it. -#}
+<form id="knob" class="knob" hx-post="/settings/apps-per-day" hx-trigger="change delay:500ms" hx-swap="outerHTML">
+  <style>
+    .knob { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 var(--sp-3); }
+    .knob label { font-weight: 600; }
+    .knob input[type="range"] { flex: 1 1 160px; min-width: 120px; max-width: 360px; }
+    .knob input[type="number"] { width: 5.5em; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .knob .knob-saved { animation: knob-fade 5s ease-in forwards; }
+    @keyframes knob-fade { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+  </style>
+  <label for="knob-value">Applications per day</label>
+  <input type="range" min="{{ apps_min }}" max="{{ apps_max }}" value="{{ settings.apps_per_day }}"
+         aria-label="Applications per day (slider)" tabindex="-1"
+         oninput="this.form.elements.value.value = this.value">
+  <input type="number" id="knob-value" name="value" min="{{ apps_min }}" max="{{ apps_max }}" step="1"
+         value="{{ settings.apps_per_day }}" inputmode="numeric" aria-describedby="knob-help"
+         oninput="this.previousElementSibling.value = this.value">
+  <span class="help" id="knob-help">a day at most ({{ apps_min }}–{{ apps_max }})</span>
+  {% if error -%}
+  <span class="msg msg-error bad" role="alert"><span class="msg-detail">{{ error }}</span></span>
+  {%- elif saved -%}
+  <span class="msg msg-ok ok knob-saved" role="status">Saved: up to {{ settings.apps_per_day | plural('application') }} a day</span>
+  {%- endif %}
 </form>

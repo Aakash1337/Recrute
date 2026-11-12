@@ -1,0 +1,8 @@
+{# "Showing 42 of 160 jobs" above the Review list. expects: shown, matched, total, f #}
+<span id="queue-count" data-shown="{{ shown }}" data-matched="{{ matched }}" data-total="{{ total }}" data-filtered="{{ '1' if f.active else '' }}" aria-live="polite">
+{%- if not total %}No jobs waiting for review
+{%- elif f.active %}Showing <b>{{ shown | num }}</b> of {{ total | num }} jobs{% if shown < matched %} ({{ matched | num }} match){% endif %}
+{%- elif shown < total %}Showing <b>{{ shown | num }}</b> of {{ total | num }} jobs
+{%- else %}<b>{{ total | num }}</b> {{ 'job' if total == 1 else 'jobs' }} to review
+{%- endif %}</span>
+{% if f.active %}<a class="btn ghost sm" href="/queue{% if f.sort != 'best' %}?sort={{ f.sort }}{% endif %}">Clear filters</a>{% endif %}

@@ -1,47 +1,224 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Applications · Recrute{% endblock %}
-{% block content %}
-{% set labels = {'needs_human': 'Needs you', 'approved': 'Queued (drip scheduler)', 'applying': 'Submitting now', 'applied': 'Applied', 'acknowledged': 'Acknowledged', 'interviewing': 'Interviewing', 'offer': 'Offers', 'declined': 'Declined', 'ghosted': 'Ghosted'} %}
-{% for channel, info in suspended %}
-<p class="bad">⏸ {{ channel }} submissions are paused until {{ info.get('until', '?') }}: {{ info.get('reason', '') }}.
-  Check the account in the automation browser, then <button hx-post="/channels/{{ channel }}/resume" hx-swap="outerHTML">Resume {{ channel }}</button></p>
-{% endfor %}
-{% if reminders %}
-<h2>Reminders</h2>
-<ul>{% for r in reminders %}<li>{{ r.message }} {% if r.kind == 'ghosted' %}<button hx-post="/applications/{{ r.job_id }}/ghosted" hx-swap="outerHTML">Mark ghosted</button>{% endif %}</li>{% endfor %}</ul>
-{% endif %}
-{% if not (groups.values() | select | list) %}<p class="muted">No applications yet. Jobs appear here once you say "Go ahead" on a packet.</p>{% endif %}
-{% for key in ['needs_human', 'approved', 'applying', 'applied', 'acknowledged', 'interviewing', 'offer', 'declined', 'ghosted'] %}
-{% set rows = groups.get(key, []) %}
-{% if rows %}
-<h2>{{ labels[key] }} ({{ rows | length }})</h2>
-<table>
-  {% for job, company, app in rows %}
-  <tr>
-    <td><b>{{ job.title }}</b><br>{% include "_job_row_meta.html" %}</td>
-    <td class="muted">
-      {% if app %}{{ app.channel }}{% if app.trial %} · trial{% endif %}{% if app.scheduled_for %} · next slot {{ app.scheduled_for }}{% endif %}{% if app.submitted_at %} · submitted {{ app.submitted_at | ago }}{% endif %}{% endif %}
-      {% if app and app.outcome and app.outcome.get('reason') %}<br><span class="warn">{{ app.outcome.get('reason') }}</span>{% endif %}
-      {% if app and app.outcome and app.outcome.get('assist_expired') %}<br><span class="warn">{{ app.outcome.get('assist_expired') }}</span>{% endif %}
-      {% if app and app.outcome and app.outcome.get('assist_deferred') %}<br><span class="warn">pre-fill waiting: {{ app.outcome.get('assist_deferred') }}</span>{% endif %}
-      {% if app and app.outcome and app.outcome.get('unmatched_fields') %}<br>unanswered: {{ app.outcome.get('unmatched_fields') | join(', ') }}{% endif %}
-      {% if app and app.last_error %}<br><span class="bad">{{ app.last_error }}</span>{% endif %}
-    </td>
-    <td>
-      <a href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">posting ↗</a>
-      {% if app and app.receipt_dir %}· <a href="/receipt/{{ app.receipt_dir }}" target="_blank">receipt</a>{% endif %}
-      {% if key == 'needs_human' %}
-        {% if app and app.packet and app.approved_at %}<button hx-post="/applications/{{ job.id }}/assist" hx-swap="outerHTML">Open &amp; pre-fill</button> <a href="/live">live view</a>{% endif %}
-        {% if not (app and app.packet) or not app.approved_at or (app.outcome or {}).get('packet_failures') or ((app.outcome or {}).get('details') or {}).get('artifact_integrity') %}<button hx-post="/applications/{{ job.id }}/rebuild" hx-swap="outerHTML">Rebuild packet</button>{% endif %}
-        <button class="primary" hx-post="/applications/{{ job.id }}/mark-applied" hx-swap="outerHTML">I submitted it</button>
-        <button hx-post="/applications/{{ job.id }}/skip" hx-swap="outerHTML">Give up</button>
-      {% elif key == 'approved' %}
-        <button hx-post="/applications/{{ job.id }}/skip" hx-swap="outerHTML">Cancel</button>
+{% block head %}
+<style>
+  .ap-filters { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 0 0 var(--sp-4); }
+  .ap-filters a { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface); color: var(--text-2); font-size: var(--fs-sm); font-weight: 500; text-decoration: none; }
+  .ap-filters a:hover { border-color: var(--border-strong); color: var(--text); }
+  .ap-filters a[aria-current] { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); }
+  .ap-filters .n { font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 400; }
+  .ap-filters a[aria-current] .n { color: inherit; }
+  .ap-notices { display: grid; gap: var(--sp-3); margin: 0 0 var(--sp-4); }
+  .ap-notices .alert { margin: 0; }
+  .ap-notice-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); margin-top: var(--sp-2); }
+  .ap-group { margin: 0 0 var(--sp-6); }
+  .ap-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--sp-3); margin: 0 0 var(--sp-3); }
+  .ap-group-head h2 { margin: 0; display: inline-flex; align-items: center; gap: var(--sp-2); }
+  .ap-group-head p { margin: 0; color: var(--muted); font-size: var(--fs-sm); }
+  .ap-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-3); }
+  .ap-item { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 220px); gap: var(--sp-3) var(--sp-5); padding: var(--sp-4); background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--tone, var(--border-strong)); border-radius: var(--r); box-shadow: var(--shadow-sm); scroll-margin-top: calc(var(--nav-h) + var(--sp-3)); }
+  .ap-item > * { --tone: initial; --tone-soft: initial; --tone-border: initial; }
+  .ap-item:target { box-shadow: 0 0 0 3px var(--focus-ring); }
+  .ap-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); }
+  .ap-head h3 { margin: 0; font-size: var(--fs-md); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  .ap-meta { margin: 4px 0 0; font-size: var(--fs-sm); color: var(--text-2); line-height: 1.75; }
+  .ap-meta .job-company, .ap-meta .job-pay { color: var(--text); font-weight: 500; }
+  .ap-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 0; margin: 2px 0 0; font-size: var(--fs-sm); color: var(--text-2); }
+  .ap-facts > span + span::before { content: "·"; margin: 0 6px; color: var(--faint); }
+  .ap-what { margin-top: var(--sp-3); padding: var(--sp-3); border-radius: var(--r-sm); background: var(--surface-2); }
+  .ap-what p { margin: 0; }
+  .ap-what p + p, .ap-what ul + p, .ap-what p + ul, .ap-what p + details { margin-top: var(--sp-2); }
+  .ap-headline { color: var(--text); }
+  .ap-next { color: var(--text-2); font-size: var(--fs-sm); }
+  .ap-next b { color: var(--text); font-weight: 600; }
+  .ap-qs { margin: var(--sp-1) 0 0; padding-left: 1.25em; font-size: var(--fs-sm); }
+  .ap-qs li { margin: 2px 0; }
+  .ap-note { font-size: var(--fs-sm); }
+  .ap-history { margin-top: var(--sp-2); font-size: var(--fs-sm); }
+  .ap-history > summary { color: var(--muted); cursor: pointer; width: fit-content; }
+  .ap-history .timeline li { grid-template-columns: 11.5em minmax(0, 1fr); }
+  .ap-side { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+  .ap-actions { display: grid; gap: var(--sp-2); }
+  .ap-actions button, .ap-actions .btn { width: 100%; }
+  .ap-links { list-style: none; margin: var(--sp-1) 0 0; padding: 0; display: grid; gap: 3px; font-size: var(--fs-sm); }
+  .ap-result:empty { display: none; }
+  .ap-result { font-size: var(--fs-sm); }
+  .settled { opacity: .75; }
+  .settled .ap-what { display: none; }
+  .ap-more { margin-top: var(--sp-3); }
+  .ap-more > summary { cursor: pointer; color: var(--accent-text); font-weight: 500; font-size: var(--fs-sm); width: fit-content; margin-bottom: var(--sp-3); }
+  .ap-followups { margin: 0 0 var(--sp-4); }
+  .ap-reminders { list-style: none; margin: 0; padding: 0; }
+  .ap-reminders li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); padding: var(--sp-2) 0; border-top: 1px solid var(--border); }
+  .ap-reminders li:first-child { border-top: 0; padding-top: 0; }
+  .ap-reminders li:last-child { padding-bottom: 0; }
+  .ap-reminders .txt { flex: 1 1 280px; min-width: 0; }
+  @media (max-width: 760px) {
+    .ap-item { grid-template-columns: minmax(0, 1fr); }
+    .ap-actions { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+    .ap-links { display: flex; flex-wrap: wrap; gap: 2px var(--sp-4); }
+    .ap-history .timeline li { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>
+{% endblock %}
+
+{% macro stamp(dt) -%}
+<time datetime="{{ dt | iso }}">{{ dt | datetime(true) }}</time> <span class="muted">({{ dt | relative }})</span>
+{%- endmacro %}
+
+{% macro app_row(r) %}
+{% set job = r.job %}{% set company = r.company %}{% set app = r.app %}
+<li class="ap-item t-{{ r.tone }}" id="app-{{ job.id }}" data-settles>
+  <div class="ap-main">
+    <div class="ap-head">
+      <h3><a href="/jobs/{{ job.id }}">{{ job.title }}</a></h3>
+      {{ ui.badge(r.badge[0], r.badge[1], dot=True) }}
+    </div>
+    <div class="ap-meta">{% include "_job_row_meta.html" %}</div>
+    <div class="ap-facts">
+      <span>{{ r.channel }}</span>
+      {% if r.trial %}<span>{{ ui.badge("Practice mode", "neutral", TRIAL_NOTE) }}</span>{% endif %}
+      {% if r.when %}<span>{{ r.when[0] }} {{ stamp(r.when[1]) }}</span>{% endif %}
+      {% if app and app.attempts and r.group in ('needs', 'queued') %}<span>{{ app.attempts | plural("try", "tries") }} so far</span>{% endif %}
+    </div>
+    <div class="ap-what">
+      <p class="ap-headline">{{ r.headline }}</p>
+      {% if r.questions %}
+      <p class="ap-note"><b>{{ "Question" if r.questions | length == 1 else "Questions" }} you still need to answer:</b></p>
+      <ul class="ap-qs">{% for q in r.questions %}<li>{{ q }}</li>{% endfor %}</ul>
       {% endif %}
-    </td>
-  </tr>
+      {% if r.form_errors %}
+      <p class="ap-note"><b>The form said:</b></p>
+      <ul class="ap-qs">{% for e in r.form_errors %}<li>{{ e }}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if r.next_step %}<p class="ap-next"><b>What to do:</b> {{ r.next_step }}</p>{% endif %}
+      {% for tone, text in r.notes %}<p class="ap-note"><span class="badge t-{{ tone }}">{{ "Heads-up" if tone == "warn" else "Note" }}</span> {{ text }}</p>{% endfor %}
+      {% if r.technical %}<details class="tech"><summary>Technical details</summary><code>{{ r.technical }}</code></details>{% endif %}
+    </div>
+    {% if r.history %}
+    <details class="ap-history">
+      <summary>History ({{ r.history | length | plural("step") }})</summary>
+      <ol class="timeline">{% for e in r.history %}<li><time datetime="{{ e.when | iso }}" title="{{ e.when | relative }}">{{ e.when | datetime(true) }}</time><span>{{ e.text }}</span></li>{% endfor %}</ol>
+    </details>
+    {% endif %}
+  </div>
+  <div class="ap-side">
+    {% set target = "#app-result-" ~ job.id %}
+    {% if r.actions %}
+    <div class="ap-actions">
+      {% for a in r.actions %}
+        {% if a == "assist" %}<button class="primary" data-keeps hx-post="/applications/{{ job.id }}/assist" hx-target="{{ target }}" hx-swap="innerHTML" title="Recrute opens the form in its browser, fills in your approved answers and leaves it open for you">Open &amp; pre-fill</button>
+        {% elif a == "rebuild" %}<button class="primary" hx-post="/applications/{{ job.id }}/rebuild" hx-target="{{ target }}" hx-swap="innerHTML">Rebuild packet</button>
+        {% elif a == "build" %}<button hx-post="/applications/{{ job.id }}/rebuild" hx-target="{{ target }}" hx-swap="innerHTML" title="Recrute writes a tailored resume and answers for this job; you check them on the Packets page">Build a packet for me</button>
+        {% elif a == "applied" %}<button{% if r.group == "manual" %} class="primary"{% endif %} hx-post="/applications/{{ job.id }}/mark-applied" hx-target="{{ target }}" hx-swap="innerHTML" title="Tell Recrute this application was sent, so it tracks the replies">{{ "I've applied" if r.group == "manual" else "I submitted it" }}</button>
+        {% elif a == "skip" %}<button class="ghost" hx-post="/applications/{{ job.id }}/skip" hx-target="{{ target }}" hx-swap="innerHTML" hx-confirm="{{ "Don't send the application to “" ~ job.title ~ "”? It leaves your applications." if r.group == "queued" else "Stop applying to “" ~ job.title ~ "”? It leaves your applications." }}">{{ "Don't send" if r.group == "queued" else "Stop, I won't apply" }}</button>
+        {% elif a == "ghosted" %}<button hx-post="/applications/{{ job.id }}/ghosted" hx-target="{{ target }}" hx-swap="innerHTML" title="Close this one out: they never answered">Mark as no reply</button>
+        {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div class="ap-result" id="app-result-{{ job.id }}" aria-live="polite"></div>
+    <ul class="ap-links">
+      {% if r.group == "needs" and "assist" in r.actions %}<li><a href="/live">Open the Live browser</a></li>{% endif %}
+      {% if job.apply_url | safe_url != "#" %}<li><a href="{{ job.apply_url | safe_url }}" target="_blank" rel="noopener noreferrer">Open the posting ↗</a></li>{% endif %}
+      {% if r.has_packet %}<li><a href="/packets/{{ job.id }}">{{ "What was sent" if app.submitted_at else "What will be sent" }}</a></li>{% endif %}
+      {% if r.receipt %}<li><a href="{{ r.receipt.href }}">{{ r.receipt.title }}</a></li>{% endif %}
+      {% if r.email %}<li><a href="/inbox?show=matched#mail-{{ r.email.id }}">Latest email about it</a></li>{% endif %}
+      {% if company %}<li><a href="/companies/{{ company.id }}">About {{ company.name }}</a></li>{% endif %}
+    </ul>
+  </div>
+</li>
+{% endmacro %}
+
+{% block content %}
+{{ ui.page_header("Applications", "Everything you've approved, from waiting in the queue to the employer's answer. Each one says what happened and whether there's anything for you to do.") }}
+
+{% if notices %}
+<div class="ap-notices">
+  {% for n in notices %}
+  <div data-settles>
+  {% call ui.alert("warn", n.label ~ " is paused" ~ ((" until " ~ (n.until | datetime(true))) if n.until else " until you resume it")) %}
+    <div class="alert-text">
+      {{ n.why | capitalize_first }}
+      {%- if n.job %} while Recrute was applying to <a href="/jobs/{{ n.job.id }}">{{ n.job.title }}</a>{% endif %}.
+      Nothing is sent through {{ n.label }} {% if n.until %}until then <span class="muted">({{ n.until | relative }})</span>{% else %}until you resume it{% endif %}; everything else carries on.
+    </div>
+    <div class="ap-notice-actions">
+      <button hx-post="/channels/{{ n.channel }}/resume" hx-target="#resume-result-{{ loop.index }}" hx-swap="innerHTML" hx-confirm="Resume {{ n.label }} now? Only do this once you've checked the account and it looks fine.">Resume {{ n.label }} now</button>
+      <a href="/live">Check the account in the Live browser</a>
+      <span class="ap-result" id="resume-result-{{ loop.index }}" aria-live="polite"></span>
+    </div>
+    {% if n.technical %}<details class="tech"><summary>Technical details</summary><code>{{ n.technical }}</code></details>{% endif %}
+  {% endcall %}
+  </div>
   {% endfor %}
-</table>
+</div>
 {% endif %}
+
+{% if reminders %}
+<div class="ap-followups">
+{% call ui.card("Worth a follow-up", "Applications that have gone a while without an answer. Recrute never emails employers: a follow-up is yours to send.") %}
+<ul class="ap-reminders">
+  {% for r, job in reminders %}
+  <li data-settles>
+    <span class="txt">
+      <a href="{{ '#app-' ~ r.job_id if job else '/jobs/' ~ r.job_id }}">{{ r.title }}</a>{% if r.company %} at {{ r.company }}{% endif %}:
+      no reply for {{ r.days_since }} days <span class="muted">(applied {{ r.applied_at | date(true) }})</span>.
+      {% if r.kind == "ghosted" %}It's probably time to close this one out.{% else %}A short, polite follow-up email can help.{% endif %}
+    </span>
+    {% if r.kind == "ghosted" %}<button class="sm" hx-post="/applications/{{ r.job_id }}/ghosted" hx-target="#reminder-result-{{ r.job_id }}" hx-swap="innerHTML">Mark as no reply</button>{% endif %}
+    <span class="ap-result" id="reminder-result-{{ r.job_id }}" aria-live="polite"></span>
+  </li>
+  {% endfor %}
+</ul>
+{% endcall %}
+</div>
+{% endif %}
+
+{% if total %}
+{% if filters | length > 2 %}
+<nav class="ap-filters" aria-label="Show">
+  {% for f in filters %}
+  <a href="/applications{{ '' if f.key == 'all' else '?show=' ~ f.key }}"{% if f.key == show %} aria-current="true"{% endif %}>{{ f.label }} <span class="n">{{ f.count }}</span></a>
+  {% endfor %}
+</nav>
+{% endif %}
+
+{% for g in groups %}
+<section class="ap-group" id="group-{{ g.key }}" aria-labelledby="group-{{ g.key }}-title">
+  <div class="ap-group-head">
+    <h2 id="group-{{ g.key }}-title">{{ g.title }} <span class="count{{ ' warn' if g.key == 'needs' }}">{{ g.rows | length }}</span></h2>
+    <p>{{ g.hint }}</p>
+  </div>
+  {% set first = g.rows[:g.fold] if g.fold and g.rows | length > g.fold else g.rows %}
+  <ul class="ap-list">{% for r in first %}{{ app_row(r) }}{% endfor %}</ul>
+  {% if first | length < g.rows | length %}
+  <details class="ap-more">
+    <summary>Show {{ (g.rows | length) - (first | length) }} more in “{{ g.title }}”</summary>
+    <ul class="ap-list">{% for r in g.rows[g.fold:] %}{{ app_row(r) }}{% endfor %}</ul>
+  </details>
+  {% endif %}
+</section>
 {% endfor %}
+{% elif nav and nav.packets %}
+{{ ui.empty_state("No applications yet", "An application shows up here once you approve its packet. " ~ (nav.packets | plural("packet is", "packets are")) ~ " ready for you to check right now.", "/packets", "Check your packets") }}
+{% else %}
+{{ ui.empty_state("No applications yet", "This page fills up as you go: pick jobs in Review, check and approve their packets, and each approved application appears here with its progress, from queued to sent to the employer's reply.", "/queue", "Go to Review") }}
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // After an action worked, the row no longer offers it (the list is as it was when the page
+  // loaded; the message says where the application went).
+  document.body.addEventListener('htmx:afterRequest', function (e) {
+    const el = e.detail.elt, xhr = e.detail.xhr;
+    if (!el || !el.closest || !xhr || xhr.status < 200 || xhr.status >= 300) return;
+    const box = el.closest('[data-settles]');
+    if (!box || el.hasAttribute('data-keeps') || !/^\/(applications|channels)\//.test((e.detail.pathInfo || {}).requestPath || '')) return;
+    box.classList.add('settled');
+    box.querySelectorAll('button[hx-post]').forEach(function (b) { b.remove(); });
+  });
+</script>
 {% endblock %}

@@ -1,0 +1,62 @@
+{#- Styles shared by _brief.html and _company_research.html. Included INSIDE each card's root
+    element, so a card swapped in by htmx brings its styles along without piling up copies. -#}
+<style>
+  .rs { margin: 0 0 var(--sp-4); }
+  .rs-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--sp-1) var(--sp-3); margin: 0 0 var(--sp-3); }
+  .rs-head h3 { margin: 0; font-size: var(--fs-md); font-weight: 600; }
+  .rs-head .muted a { color: inherit; text-decoration: underline; }
+  .rs-lead { margin: 0 0 var(--sp-3); color: var(--text); max-width: 75ch; }
+  .rs-h { margin: var(--sp-4) 0 var(--sp-2); font-size: var(--fs-xs); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  .rs-h .rs-from { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .rs-glance { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); gap: var(--sp-2); margin: 0 0 var(--sp-3); padding: 0; }
+  .rs-fact { margin: 0; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); min-width: 0; }
+  .rs-fact dt { font-size: var(--fs-xs); color: var(--muted); margin: 0 0 1px; }
+  .rs-fact dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+  .rs-fact dd.muted { font-weight: 400; }
+  .rs-fact dd.t-ok, .rs-fact dd.t-danger { color: var(--tone); }
+  .rs-fact .rs-note { display: block; font-size: var(--fs-xs); font-weight: 400; color: var(--muted); }
+  .rs-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 0 var(--sp-5); }
+  .rs-cols > div { min-width: 0; }
+  .rs-group { margin: 0 0 var(--sp-2); font-size: var(--fs-sm); font-weight: 600; color: var(--text-2); }
+  .rs-list { margin: 0 0 var(--sp-3); padding: 0 0 0 var(--sp-4); }
+  .rs-list li { margin: 0 0 var(--sp-1); overflow-wrap: anywhere; }
+  .rs-list.plain { list-style: none; padding-left: 0; }
+  .rs .rs-sub { display: block; color: var(--text-2); font-size: var(--fs-sm); font-weight: 400; }
+  .rs-fact blockquote.rs-quote { font-weight: 400; margin-left: 0; }
+  .rs-reqs { list-style: none; margin: 0 0 var(--sp-3); padding: 0; }
+  .rs-reqs li { margin: 0 0 var(--sp-1); }
+  .rs details.rs-q > summary { display: flex; align-items: baseline; font-weight: 400; color: var(--text); }
+  .rs details.rs-q > summary::before { align-self: flex-start; margin-top: 7px; color: var(--faint, var(--muted)); }
+  .rs details.rs-q.inline { display: inline-block; vertical-align: baseline; }
+  .rs details.rs-q.inline > summary { display: inline-flex; font-size: var(--fs-xs); color: var(--muted); }
+  .rs blockquote.rs-quote { margin: var(--sp-1) 0 var(--sp-2) 11px; padding: var(--sp-1) var(--sp-3); border-left: 3px solid var(--border-strong); color: var(--text-2); font-size: var(--fs-sm); font-style: italic; overflow-wrap: anywhere; }
+  .rs blockquote.rs-quote cite { display: block; font-style: normal; font-size: var(--fs-xs); color: var(--muted); }
+  .rs-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-2); margin: 0 0 var(--sp-3); }
+  .rs-chips .pill { white-space: normal; }
+  .rs-flags { list-style: none; margin: 0 0 var(--sp-3); padding: var(--sp-2) var(--sp-3); border: 1px solid var(--warn-border); background: var(--warn-soft); border-radius: var(--r-sm); }
+  .rs-flags li { margin: 0 0 var(--sp-1); }
+  .rs-flags li:last-child { margin-bottom: 0; }
+  .rs-flags .badge { margin-right: var(--sp-1); }
+  .rs-fit { padding: var(--sp-2) var(--sp-3); border: 1px solid var(--tone-border, var(--border)); background: var(--tone-soft, var(--surface-2)); border-radius: var(--r-sm); margin: 0 0 var(--sp-3); }
+  .rs-fit .rs-h { margin-top: 0; color: var(--tone, var(--muted)); }
+  .rs-fit .rs-list { margin-bottom: 0; }
+  .rs-news { list-style: none; margin: 0 0 var(--sp-3); padding: 0; }
+  .rs-news li { margin: 0 0 var(--sp-2); padding-left: var(--sp-3); border-left: 2px solid var(--border); }
+  .rs-news time, .rs-news .rs-date { display: block; font-size: var(--fs-xs); color: var(--muted); }
+  .rs-news .rs-headline { font-weight: 600; }
+  .rs-cite { font-size: 10.5px; line-height: 0; margin-left: 1px; }
+  .rs-cite a { padding: 0 2px; text-decoration: none; color: var(--accent-text, var(--accent)); }
+  .rs-cite a:hover { text-decoration: underline; }
+  .rs-sources { margin: 0; padding: 0 0 0 var(--sp-5); font-size: var(--fs-sm); color: var(--text-2); }
+  .rs-sources li { margin: 0 0 2px; overflow-wrap: anywhere; }
+  .rs-sources li:target { background: var(--hl); }
+  .rs-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); margin: var(--sp-4) 0 0; padding-top: var(--sp-3); border-top: 1px solid var(--border); font-size: var(--fs-xs); color: var(--muted); }
+  .rs-foot .rs-grow { flex: 1 1 auto; }
+  .rs-start { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); }
+  .rs-start p { flex: 1 1 320px; margin: 0; color: var(--text-2); font-size: var(--fs-sm); max-width: 70ch; }
+  .rs-form { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); }
+  .rs-form input { flex: 1 1 180px; max-width: 280px; }
+  .rs .alert { margin-bottom: var(--sp-3); }
+  .rs .alert .rs-act { margin-top: var(--sp-2); }
+  .rs .loading { margin: 0 0 var(--sp-3); }
+</style>

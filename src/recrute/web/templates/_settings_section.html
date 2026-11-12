@@ -1,0 +1,113 @@
+{#- One section of the Settings page: a card of labelled fields with its own Save button.
+    Returned again by POST /settings/section/<id>: with "saved" after a save, or with a message
+    under each field that needs fixing (then nothing was saved).
+    Needs: sec (settings_form.Section), groups (settings_form.grouped), errors, saved, problem. -#}
+{% macro control(f) -%}
+{%- set described = (f.id ~ '-help ' if f.help else '') ~ (f.id ~ '-err' if f.error else '') -%}
+{%- set aria %}{% if described %} aria-describedby="{{ described | trim }}"{% endif %}{% if f.error %} aria-invalid="true"{% endif %}{% endset -%}
+{%- if f.kind == 'toggle' -%}
+  <input type="checkbox" class="switch" role="switch" id="{{ f.id }}" name="{{ f.name }}"{{ ' checked' if f.value }}{{ aria }}><span class="switch-state" aria-hidden="true"></span>
+{%- elif f.kind == 'range' -%}
+  <span class="set-range">
+    <input type="range" min="{{ f.min }}" max="{{ f.max }}" value="{{ f.value }}" tabindex="-1" aria-hidden="true"
+           oninput="this.nextElementSibling.value = this.value">
+    <input type="number" id="{{ f.id }}" name="{{ f.name }}" min="{{ f.min }}" max="{{ f.max }}" step="1" value="{{ f.value }}"
+           inputmode="numeric" class="set-num"{{ aria }} oninput="this.previousElementSibling.value = this.value">
+  </span>
+  {%- if f.unit %} <span class="set-unit">{{ f.unit }}</span>{% endif %}
+{%- elif f.kind == 'hours' -%}
+  <span class="set-hours">
+    <label for="{{ f.id }}">From</label>
+    <select id="{{ f.id }}" name="{{ f.name }}.start"{{ aria }}>
+      {%- for o in f.options[0] %}<option value="{{ o[0] }}"{{ ' selected' if (f.value[0] | string) == o[0] }}>{{ o[1] }}</option>{% endfor -%}
+    </select>
+    <label for="{{ f.id }}-end">to</label>
+    <select id="{{ f.id }}-end" name="{{ f.name }}.end"{% if f.error %} aria-invalid="true"{% endif %}>
+      {%- for o in f.options[1] %}<option value="{{ o[0] }}"{{ ' selected' if (f.value[1] | string) == o[0] }}>{{ o[1] }}</option>{% endfor -%}
+    </select>
+  </span>
+{%- elif f.kind in ('number', 'decimal') -%}
+  <input type="number" id="{{ f.id }}" name="{{ f.name }}" value="{{ f.value if f.value is not none }}" class="set-num"
+         {%- if f.min is not none %} min="{{ f.min }}"{% endif %}{% if f.max is not none %} max="{{ f.max }}"{% endif %}
+         step="{{ 'any' if f.kind == 'decimal' else '1' }}" inputmode="{{ 'decimal' if f.kind == 'decimal' else 'numeric' }}"{{ aria }}>
+  {%- if f.unit %} <span class="set-unit">{{ f.unit }}</span>{% endif %}
+{%- elif f.kind == 'select' -%}
+  <select id="{{ f.id }}" name="{{ f.name }}"{{ aria }}>
+    {%- for o in f.options %}<option value="{{ o[0] }}"{{ ' selected' if (f.value | string) == o[0] }}>{{ o[1] }}</option>{% endfor -%}
+  </select>
+{%- elif f.kind == 'radio' -%}
+  <span class="set-choices" role="radiogroup" aria-labelledby="{{ f.id }}-label">
+    {%- for o in f.options %}
+    <label class="set-choice"><input type="radio" name="{{ f.name }}" value="{{ o[0] }}"{{ ' checked' if (f.value | string) == o[0] }}>
+      <span><span class="set-choice-title">{{ o[1] }}</span>{% if o[2] %}<span class="help">{{ o[2] }}</span>{% endif %}</span></label>
+    {%- endfor %}
+  </span>
+{%- elif f.kind == 'checks' -%}
+  <span class="set-checks" role="group" aria-labelledby="{{ f.id }}-label">
+    {%- for o in f.options %}
+    <label><input type="checkbox" name="{{ f.name }}" value="{{ o[0] }}"{{ ' checked' if o[0] in (f.value or []) }}> {{ o[1] }}</label>
+    {%- endfor %}
+  </span>
+{%- else -%}
+  <input type="{{ {'url': 'url', 'email': 'email'}.get(f.kind, 'text') }}" id="{{ f.id }}" name="{{ f.name }}" value="{{ f.value if f.value is not none }}"
+         class="set-text"{% if f.placeholder %} placeholder="{{ f.placeholder }}"{% endif %} autocomplete="off" spellcheck="false"{{ aria }}>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro row(f) -%}
+<div class="set-row{{ ' has-error' if f.error }}{{ ' set-row-wide' if f.kind == 'radio' }}"{% if f.show_for %} data-show-for="{{ f.show_for }}"{% endif %}{{ ' hidden' if f.hidden }}>
+  <div class="set-what">
+    {%- if f.kind in ('radio', 'checks') %}
+    <span class="set-label" id="{{ f.id }}-label">{{ f.label }}</span>
+    {%- else %}
+    <label class="set-label" for="{{ f.id }}">{{ f.label }}</label>
+    {%- endif %}
+    {%- if f.help %}<p class="help" id="{{ f.id }}-help">{{ f.help }}</p>{% endif %}
+    {%- if f.command %}<p class="set-cmd"><code>{{ f.command }}</code> <button type="button" class="sm ghost" data-copy-text="{{ f.command }}">Copy</button><span class="help">Run it in a terminal on the computer running Recrute.</span></p>{% endif %}
+    {%- if f.status %}<p class="set-status{{ ' warn' if f.status.tone == 'warn' }}">{{ f.status.text }}</p>{% endif %}
+  </div>
+  <div class="set-control">
+    {{ control(f) }}
+    {%- if f.error %}<p class="set-error" id="{{ f.id }}-err">{{ f.error }}</p>{% endif %}
+    {%- if f.warn %}<p class="set-caution">{{ f.warn }}</p>{% endif %}
+    {%- if f.caution and not f.error %}<p class="set-caution">{{ f.caution }}</p>{% endif %}
+  </div>
+</div>
+{%- endmacro %}
+
+<section class="card set-section" id="{{ sec.id }}" aria-labelledby="{{ sec.id }}-title">
+  <form hx-post="/settings/section/{{ sec.id }}" hx-target="closest .set-section" hx-swap="outerHTML" novalidate>
+    <div class="set-head">
+      <h2 class="set-title" id="{{ sec.id }}-title">{{ sec.title }}</h2>
+      {% if sec.subtitle %}<p class="set-sub">{{ sec.subtitle }}</p>{% endif %}
+    </div>
+    {% if sec.note -%}
+    <div class="alert t-{{ sec.note_tone }} set-note"><span class="alert-icon" aria-hidden="true">{{ '!' if sec.note_tone == 'warn' else 'i' }}</span><div class="alert-body"><div class="alert-text">{{ sec.note }}</div></div></div>
+    {%- endif %}
+    {% if errors or problem -%}
+    <div class="alert t-danger" role="alert"><span class="alert-icon" aria-hidden="true">!</span><div class="alert-body">
+      <div class="alert-title">Nothing was saved yet</div>
+      <div class="alert-text">{% if errors %}{{ 'One setting needs' if errors | length == 1 else (errors | length) ~ ' settings need' }} fixing below. Correct {{ 'it' if errors | length == 1 else 'them' }}, then save again.{% else %}{{ problem.detail }}{% endif %}</div>
+      {%- if problem and problem.technical %}<details class="tech"><summary>Technical details</summary><code>{{ problem.technical }}</code></details>{% endif %}
+    </div></div>
+    {%- endif %}
+    {% for g in groups %}
+    {% if g.title -%}
+    <div class="set-group"><h3>{{ g.title }}</h3>{% if g.help %}<p class="help">{{ g.help }}</p>{% endif %}</div>
+    {%- endif %}
+    <div class="set-rows">
+      {% for f in g.fields %}{{ row(f) }}{% endfor %}
+    </div>
+    {% endfor %}
+    <div class="set-foot">
+      <button class="primary">Save {{ sec.nav or sec.title }}</button>
+      {% if sec.extra == 'notify_test' -%}
+      <button type="button" hx-post="/settings/notify/test" hx-target="#notify-test-result" hx-swap="innerHTML" hx-params="none"
+              title="Uses the channel as it is saved: save your changes first">Send a test notification</button>
+      {%- endif %}
+      {% if saved %}<span class="msg msg-ok ok set-saved" role="status">{{ saved }}</span>{% endif %}
+      <span class="set-dirty" hidden>You have changes that aren't saved yet.</span>
+      {% if sec.extra == 'notify_test' %}<span id="notify-test-result" aria-live="polite"></span>{% endif %}
+    </div>
+  </form>
+</section>

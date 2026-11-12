@@ -1,10 +1,24 @@
-{# expects: job, company #}
-{% if job.priority %}<span class="chip {{ job.priority.value }}">{{ job.priority.value }}</span>{% endif %}
-{% if job.score is not none %}<span class="score">{{ job.score }}</span>{% endif %}
-<span class="muted">{{ company.name if company else '' }} · {{ (job.locations or ['?'])[:2] | join(' / ') }}{% if job.remote %} · {{ job.remote }}{% endif %}
-{% if job.salary_max %} · {{ job.salary_min | money }}–{{ job.salary_max | money }}{% endif %} · {{ (job.posted_at or job.first_seen) | ago }}</span>
-{% set b = job.badges or {} %}
-{% if b.get('sponsorship') == 'will_sponsor' %}<span class="badge" title="Posting mentions sponsorship">🛂 sponsors</span>{% elif b.get('sponsorship') == 'no_sponsorship' %}<span class="badge" title="Posting says no sponsorship">🛂 no sponsor</span>{% endif %}
-{% if b.get('h1b') %}<span class="badge" title="Recent H-1B approvals (USCIS)">📊 H-1B {{ b.get('h1b') }}</span>{% endif %}
-{% if b.get('e_verify') is sameas true %}<span class="badge" title="E-Verify enrolled">✅ E-Verify</span>{% elif b.get('e_verify') is sameas false %}<span class="badge" title="Not found in E-Verify list">E-Verify?</span>{% endif %}
-{% if b.get('cap_exempt') %}<span class="badge" title="Likely H-1B cap-exempt">🎓 cap-exempt</span>{% endif %}
+{# One line of facts about a job, for lists and tables. Inline elements only.
+   expects: job, company
+   optional: meta_hide_track / meta_hide_fit (the caller shows them itself);
+             unscored_ids (ids of jobs with no real fit score: they say "Not scored yet") #}
+{% import "_ui.html" as ui %}
+{%- set b = job.badges or {} -%}
+{%- set ns = namespace(n=0) -%}
+{%- set visa_note = "Shown for your information only: it never changes which jobs you see or their order." -%}
+{% if job.priority and not meta_hide_track %}<span class="badge" title="The track from your criteria this job belongs to"><span class="dot" style="background: var(--{{ job.priority.value | lower }})" aria-hidden="true"></span>{{ job.priority | priority_label }}</span>{% endif %}
+{% if not meta_hide_fit %}
+{%- if unscored_ids is defined and job.id in unscored_ids %}{{ ui.badge("Not scored yet", "neutral", "This job has no fit score: it was moved back from Filtered before it was scored") }}
+{%- elif job.score is not none %}<span class="badge t-{{ job.score | fit_tone }}" title="{{ job.score | fit_band }}: fit score {{ job.score }} out of 100">Fit {{ job.score }}</span>{% endif %}
+{% endif %}
+<span class="job-facts">
+{%- if company %}<span class="job-company">{{ company.name }}</span>{% set ns.n = 1 %}{% endif %}
+{%- if ns.n %} · {% endif %}{% set ns.n = 1 %}{% set places = job | row_locations %}{% if places %}{{ ui.location_list(places) }}{% else %}<span class="muted">Location not stated</span>{% endif %}
+{%- if job.remote | remote_label %} · {{ ui.chip(job.remote | remote_label) }}{% endif %}
+{%- if job | pay %} · <span class="job-pay nowrap">{{ job | pay }}</span>{% endif %}
+{%- if job.posted_at or job.first_seen %} · <span class="muted nowrap">{{ 'Posted' if job.posted_at else 'Found' }} {{ ui.when(job.posted_at or job.first_seen) }}</span>{% endif -%}
+</span>
+{% if b.get('sponsorship') == 'will_sponsor' %}{{ ui.badge("Sponsors visas", "ok", "The posting mentions visa sponsorship. " ~ visa_note) }}{% elif b.get('sponsorship') == 'no_sponsorship' %}{{ ui.badge("No visa sponsorship", "warn", "The posting says it doesn't sponsor visas. " ~ visa_note) }}{% endif %}
+{% if b.get('h1b') %}{{ ui.badge("H-1B approvals: " ~ b.get('h1b'), "info", "Recent H-1B approvals for this employer (USCIS data). " ~ visa_note) }}{% endif %}
+{% if b.get('e_verify') is sameas true %}{{ ui.badge("E-Verify employer", "info", "Enrolled in E-Verify (needed for the STEM OPT extension). " ~ visa_note) }}{% elif b.get('e_verify') is sameas false %}{{ ui.badge("Not in E-Verify list", "neutral", "Not found in the list of E-Verify employers. " ~ visa_note) }}{% endif %}
+{% if b.get('cap_exempt') %}{{ ui.badge("Likely H-1B cap-exempt", "info", "Universities and some nonprofits can sponsor H-1B at any time of year. " ~ visa_note) }}{% endif %}
